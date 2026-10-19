@@ -1,0 +1,2 @@
+"""ALIGN asynchronous worker service."""
+

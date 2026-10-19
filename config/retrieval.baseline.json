@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "manifest_id": "retrieval-baseline-v1",
+  "mode": "synthetic_fixture_only",
+  "semantic_index_available": false,
+  "embedding_dimensions": 1536
+}
+

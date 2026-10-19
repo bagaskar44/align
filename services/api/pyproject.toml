@@ -1,0 +1,32 @@
+[project]
+name = "align-api"
+version = "0.1.0"
+description = "ALIGN modular-monolith API and domain services"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "align-domain",
+  "alembic>=1.14,<2",
+  "argon2-cffi>=23.1,<26",
+  "boto3>=1.35,<2",
+  "defusedxml>=0.7.1,<1",
+  "fastapi>=0.115,<1",
+  "pillow>=10,<13",
+  "psycopg[binary]>=3.2,<4",
+  "pypdf>=5,<7",
+  "python-multipart>=0.0.18,<1",
+  "pydantic-settings>=2.6,<3",
+  "redis>=5,<7",
+  "sqlalchemy>=2.0.36,<3",
+  "uvicorn[standard]>=0.32,<1",
+]
+
+[project.scripts]
+align = "align_api.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.26,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/align_api"]
+

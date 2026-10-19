@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "policy_id": "batching-baseline-v1",
+  "baseline_elements": 1,
+  "maximum_elements": 1,
+  "candidate_profiles": [
+    { "elements": 3, "active": false, "requires_validation": true },
+    { "elements": 5, "active": false, "requires_validation": true }
+  ],
+  "status": "baseline_not_empirically_verified"
+}
+

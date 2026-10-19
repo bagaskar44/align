@@ -1,6 +1,6 @@
 # B1 — Identitas dan Konteks
 
-**Status implementasi: BELUM DIMULAI. Hasil pengujian: BELUM DIJALANKAN.**
+**Status implementasi: B1 parsial; gate belum lengkap.** Per 20 Oktober 2026, provisioning dan konteks manual, konflik KK/RPP, approval immutable, serta parsing dua DOCX dengan profil native lulus. Profil Docling PDF/gambar belum dijalankan karena MemAvailable worker terakhir 8,364,532 kB (sekitar 7,98 GiB), di bawah kebutuhan 9 GiB. Guard admission diuji pada kondisi kapasitas cukup, kurang, dan tidak diketahui; langkah handover rinci ada di `docs/handover/B1.md`. B2 belum dimulai.
 
 [Indeks dan matriks](README.md) · [Master normatif](../../ALIGN_IMPLEMENTATION_SPEC.md) · [Predecessor: B0](B0-fondasi.md) · [Berikutnya: B2](B2-tugas-dan-spesifikasi.md)
 
@@ -100,12 +100,12 @@ Jalankan integration dengan DB/storage/worker nyata dan Playwright alur manual/c
 
 ## 6. Gate dan handover
 
-- [ ] Provisioning/auth/course/enrollment dan object permissions bekerja beserta regression B0.
-- [ ] Manual context tanpa CPMK dan konflik KK/RPP dapat diselesaikan/diblokir secara benar.
-- [ ] Context upload/parse/provenance yang dipakai berfungsi atau limitation/capacity dinyatakan spesifik; manual tetap tersedia. Gate ekstraksi yang belum diuji tetap incomplete, bukan diganti mock parser.
-- [ ] Approval menghasilkan immutable ContextVersion; stale revision/foreign sources ditolak.
-- [ ] Traceability, migrations, fixture sumber aktual dan report diperbarui.
-- [ ] `docs/handover/B1.md` mencatat command, coverage format/profile, kapasitas, status live guard serta pekerjaan B2/B3 yang masih tersisa.
+- [x] Provisioning/auth/course/enrollment: provisioning admin, scope role admin, dan larangan akses konteks tanpa enrollment dosen lulus browser regression; revocation dan seluruh objek AC-MVP-02/04 masih berscope lanjutan.
+- [x] Manual context tanpa CPMK dan konflik KK/RPP: keduanya dibuktikan browser, termasuk approval yang diblokir sebelum resolve.
+- [ ] Upload/parse/provenance: upload privat, hash, evidence/anchor, native DOCX, dan guard admission unit lulus; profil Docling untuk PDF/JPG/JPEG/PNG belum diuji. Manual tetap berjalan. Detail kapasitas dicatat di handover; batas format ini membuat gate ekstraksi belum lengkap.
+- [ ] Approval menghasilkan ContextVersion immutable: approval dan trigger immutability PostgreSQL teruji; stale revision dan foreign source belum memiliki skenario runtime khusus.
+- [x] Traceability, migration, fixture sintetis dan report diperbarui.
+- [x] `docs/handover/B1.md` mencatat command, coverage format/profile, kapasitas, live guard, serta batas B2/B3.
 
 **BERHENTI setelah B1; jangan mulai B2 otomatis.** Kunci provider/dana yang belum tersedia tidak menghalangi gate mock/manual, tetapi tidak boleh dinyatakan live verified.
 

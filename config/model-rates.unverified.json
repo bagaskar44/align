@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "status": "unverified",
+  "currency": "USD",
+  "rates": null,
+  "note": "Live calls remain blocked until a verified capability and rate manifest and the full ledger guard are active."
+}
+

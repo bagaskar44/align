@@ -1,6 +1,6 @@
 # B0 — Fondasi
 
-**Status implementasi: BELUM DIMULAI. Hasil pengujian: BELUM DIJALANKAN.**
+**Status implementasi: SELESAI untuk cakupan fondasi B0; pipeline lokal lengkap lulus pada 19 Oktober 2026.** Compose, migration PostgreSQL, seed rerunnable, baseline release, outbox smoke, dan browser smoke berhasil diverifikasi. Acceptance criteria yang mencakup alur akademik atau tahap berikutnya tetap parsial; lihat [traceability](../../requirements_traceability.md) dan [handover](../handover/B0.md).
 
 [Indeks dan matriks](README.md) · [Master normatif](../../ALIGN_IMPLEMENTATION_SPEC.md) · [Tahap berikutnya: B1](B1-identitas-dan-konteks.md)
 
@@ -96,12 +96,12 @@ Gunakan pytest, PostgreSQL+pgvector nyata untuk integration, dan Playwright smok
 
 ## 6. Gate selesai dan handover
 
-- [ ] Lockfiles, migration awal, Compose services, typed config dan `.env.example` tersedia.
-- [ ] Install/build/start/migrate/seed/login dibuktikan pada environment tercatat.
-- [ ] Adapter mock dan label simulasi bekerja; live guard menolak prasyarat tidak lengkap.
-- [ ] Baseline manifests dan interface shared tersedia tanpa klaim verification empiris.
-- [ ] CI lokal/tersedia, test report dan traceability awal aktual.
-- [ ] Handover `docs/handover/B0.md` memuat command tepat, hasil, limitations dan kebutuhan B1; seluruh status awal diperbarui hanya berdasarkan bukti.
+- [x] Lockfiles, migration awal, Compose services, typed config dan `.env.example` tersedia.
+- [x] Install/build/start/migrate/seed/login dibuktikan pada environment tercatat.
+- [x] Adapter mock dan label simulasi bekerja; live guard menolak prasyarat tidak lengkap.
+- [x] Baseline manifests dan interface shared tersedia tanpa klaim verification empiris.
+- [x] CI lokal, test report dan traceability awal aktual.
+- [x] Handover `docs/handover/B0.md` memuat command tepat, hasil, limitations dan kebutuhan tahap berikutnya; status hanya diperbarui berdasarkan bukti.
 
 **BERHENTI setelah B0.** B1 hanya dimulai atas inisiasi pengguna. Gate B0 tidak menyatakan AC-MVP-01 lengkap atau aplikasi siap memakai data nyata.
 

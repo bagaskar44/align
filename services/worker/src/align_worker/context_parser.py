@@ -1,0 +1,853 @@
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import func, select
+
+from align_api.config import Settings, get_settings
+from align_api.idempotency import canonical_hash
+from align_api.models import (
+    AuditEvent,
+    ContextConflict,
+    ContextVersion,
+    EvidenceItem,
+    FileAsset,
+    Job,
+    JobStage,
+    NormativeFileLink,
+    OutboxEvent,
+    ParseArtifact,
+    ParserCheckpoint,
+    ProcessingTimeReservation,
+    SourceUnit,
+)
+from align_api.storage import storage_client
+from align_worker.database import SessionFactory
+from align_worker.parser_admission import AdmissionLease, acquire_parser_lease, release_parser_lease
+
+MAX_CHILD_RESULT_BYTES = 64 * 1024 * 1024
+
+
+def _safe_limitation(code: str) -> dict[str, str]:
+    messages = {
+        "parser_capacity_unavailable": "Kapasitas parser belum cukup; berkas tetap dapat ditinjau manual.",
+        "parser_resource_unavailable": "Resource parser atau model lokal belum tersedia; berkas tetap dapat ditinjau manual.",
+        "parser_isolation_unavailable": "Isolasi proses parser tidak tersedia pada runtime ini.",
+        "parser_timeout": "Parser mencapai batas waktu; unit sumber tetap tercatat.",
+        "parser_failed": "Parser gagal membaca sebagian atau seluruh isi; sumber asli tetap tersedia.",
+        "parser_storage_unavailable": "Penyimpanan sumber sementara tidak tersedia; coba lagi setelah layanan pulih.",
+        "processing_limit": "Batas waktu aktif konteks tercapai; unit berikutnya belum diproses.",
+    }
+    return {"code": code, "message": messages.get(code, "Parser belum menghasilkan ekstraksi yang dapat diverifikasi.")}
+
+
+def _fallback_inventory(asset: FileAsset, failure_code: str) -> list[dict[str, Any]]:
+    preflight = asset.preflight_json
+    limitation = _safe_limitation(failure_code)
+    root_label = "DOCX package root" if asset.mime.startswith("application/vnd.openxmlformats") else "PDF root" if asset.mime == "application/pdf" else "IMAGE root"
+    root_anchor = {"format": "file", "locator_note": root_label}
+    units: list[dict[str, Any]] = [
+        {
+            "unit_key": canonical_hash(root_anchor),
+            "unit_type": "root",
+            "anchor": root_anchor,
+            "parse_status": "partially_parsed",
+            "limitations": [limitation],
+        }
+    ]
+    if asset.mime == "application/pdf":
+        for page_no in range(1, int(preflight.get("pages", 0)) + 1):
+            anchor = {"format": "pdf", "page": page_no, "locator_note": "Page inventory; exact geometry populated after parsing"}
+            units.append(
+                {
+                    "unit_key": canonical_hash(anchor),
+                    "unit_type": "page",
+                    "anchor": anchor,
+                    "parse_status": "partially_parsed",
+                    "limitations": [limitation],
+                }
+            )
+    elif asset.mime in {"image/jpeg", "image/png"}:
+        width, height = int(preflight.get("width", 0)), int(preflight.get("height", 0))
+        anchor = {
+            "format": "image",
+            "width": width,
+            "height": height,
+            "bbox": [0, 0, width, height],
+            "coordinate_system": "original_pixels_top_left",
+            "transform_id": None,
+        }
+        units.append(
+            {
+                    "unit_key": canonical_hash(anchor),
+                "unit_type": "image",
+                "anchor": anchor,
+                "parse_status": "partially_parsed",
+                "limitations": [limitation],
+            }
+        )
+    elif asset.mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        parts = preflight.get("docx_parts", [])
+        if isinstance(parts, list):
+            for index, part in enumerate(parts, start=1):
+                if not isinstance(part, str):
+                    continue
+                if part == "word/document.xml":
+                    anchor = {"format": "docx", "part": part, "structural_path": "/word/document.xml", "item_kind": "media", "item_index": 0}
+                else:
+                    anchor = {"format": "docx", "part": part, "structural_path": f"/{part}", "item_kind": "media", "item_index": index}
+                units.append(
+                    {
+                        "unit_key": canonical_hash(anchor),
+                        "unit_type": "container",
+                        "anchor": anchor,
+                        "parse_status": "partially_parsed",
+                        "limitations": [limitation],
+                    }
+                )
+        media_parts = preflight.get("docx_media_parts", [])
+        if isinstance(media_parts, list):
+            for index, part in enumerate(media_parts, start=1):
+                if not isinstance(part, str):
+                    continue
+                anchor = {
+                    "format": "docx",
+                    "part": part,
+                    "structural_path": f"/{part}",
+                    "item_kind": "media",
+                    "item_index": index,
+                }
+                units.append(
+                    {
+                    "unit_key": canonical_hash(anchor),
+                        "unit_type": "media",
+                        "anchor": anchor,
+                        "parse_status": "partially_parsed",
+                        "limitations": [limitation],
+                    }
+                )
+    return units
+
+
+def _safe_environment(temp_dir: str) -> dict[str, str]:
+    return {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": temp_dir,
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "HF_HUB_OFFLINE": "1",
+        "HF_HUB_DISABLE_TELEMETRY": "1",
+        "DOCLING_ARTIFACTS_PATH": os.environ.get("DOCLING_ARTIFACTS_PATH", "/opt/docling-models"),
+        "TOKENIZERS_PARALLELISM": "false",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+    }
+
+
+def _preexec_limits(memory_bytes: int, cpu_seconds: int) -> Any:
+    def apply() -> None:
+        import resource
+
+        resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))  # type: ignore[attr-defined]
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))  # type: ignore[attr-defined]
+        resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_CHILD_RESULT_BYTES, MAX_CHILD_RESULT_BYTES))  # type: ignore[attr-defined]
+        resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))  # type: ignore[attr-defined]
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))  # type: ignore[attr-defined]
+
+    return apply
+
+
+def _run_child(path: str, filename: str, output_path: str, memory_bytes: int, soft_seconds: int, hard_seconds: int) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    if os.name != "posix":
+        return None, "parser_isolation_unavailable", None
+    with tempfile.TemporaryDirectory(prefix="align-parser-") as temp_dir:
+        try:
+            # Fixed Python module invocation; all untrusted filenames are positional arguments and no shell is used.
+            process = subprocess.Popen(  # noqa: S603
+                [sys.executable, "-m", "align_worker.parser_child", path, filename, output_path],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                cwd=temp_dir,
+                env=_safe_environment(temp_dir),
+                close_fds=True,
+                start_new_session=True,
+                preexec_fn=_preexec_limits(memory_bytes, hard_seconds),
+            )
+        except OSError:
+            return None, "parser_resource_unavailable", None
+        try:
+            process.wait(timeout=max(1, min(soft_seconds, hard_seconds)))
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)  # type: ignore[attr-defined]
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=max(1, hard_seconds - soft_seconds))
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)  # type: ignore[attr-defined]
+                except ProcessLookupError:
+                    pass
+                process.wait()
+            return None, "parser_timeout", None
+        if not Path(output_path).is_file():
+            return None, "parser_failed", str(process.returncode)
+        output = Path(output_path)
+        if output.stat().st_size > MAX_CHILD_RESULT_BYTES:
+            return None, "parser_failed", str(process.returncode)
+        try:
+            payload = json.loads(output.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None, "parser_failed", str(process.returncode)
+        if not isinstance(payload, dict):
+            return None, "parser_failed", str(process.returncode)
+        if process.returncode != 0 and not payload.get("failure_code"):
+            return None, "parser_failed", str(process.returncode)
+        return payload, None, str(process.returncode)
+
+
+def _create_or_update_units(db: Any, artifact: ParseArtifact, result_units: list[dict[str, Any]]) -> dict[str, UUID]:
+    root_id: UUID | None = None
+    unit_ids: dict[str, UUID] = {}
+    normalized_units: list[tuple[dict[str, Any], UUID]] = []
+    for index, item in enumerate(result_units):
+        if not isinstance(item, dict):
+            continue
+        key = item.get("unit_key")
+        anchor = item.get("anchor")
+        if not isinstance(key, str) or not isinstance(anchor, dict):
+            continue
+        existing = db.scalar(
+            select(SourceUnit).where(SourceUnit.parse_artifact_id == artifact.id, SourceUnit.locator_key == key).with_for_update()
+        )
+        if existing is None:
+            existing = SourceUnit(
+                parse_artifact_id=artifact.id,
+                locator_key=key,
+                unit_type=str(item.get("unit_type", "unsupported"))[:24],
+                source_order=index,
+                anchor_json=anchor,
+                parse_status=str(item.get("parse_status", "partially_parsed")),
+                limitations_json=item.get("limitations", []),
+            )
+            db.add(existing)
+            db.flush()
+        else:
+            existing.unit_type = str(item.get("unit_type", "unsupported"))[:24]
+            existing.source_order = min(existing.source_order, index)
+            existing.anchor_json = anchor
+            existing.parse_status = str(item.get("parse_status", "partially_parsed"))
+            existing.limitations_json = item.get("limitations", [])
+        if item.get("unit_type") == "root":
+            root_id = existing.id
+        normalized_units.append((item, existing.id))
+        unit_ids[key] = existing.id
+    page_ids: dict[int, UUID] = {}
+    image_id: UUID | None = None
+    container_ids: dict[str, UUID] = {}
+    for item, unit_id in normalized_units:
+        anchor = item.get("anchor", {})
+        if item.get("unit_type") == "page" and anchor.get("format") == "pdf":
+            page_ids[int(anchor["page"])] = unit_id
+        elif item.get("unit_type") == "image" and anchor.get("format") == "image":
+            image_id = unit_id
+        elif item.get("unit_type") == "container" and anchor.get("format") == "docx":
+            container_ids[str(anchor.get("part", ""))] = unit_id
+    for item, unit_id in normalized_units:
+        if item.get("unit_type") == "root":
+            continue
+        anchor = item.get("anchor", {})
+        parent_id = root_id
+        if anchor.get("format") == "pdf" and item.get("unit_type") != "page":
+            parent_id = page_ids.get(int(anchor.get("page", 0)), root_id)
+        elif anchor.get("format") == "image" and item.get("unit_type") != "image":
+            parent_id = image_id or root_id
+        elif anchor.get("format") == "docx" and item.get("unit_type") not in {"container", "root"}:
+            parent_id = container_ids.get(str(anchor.get("part", "")), root_id)
+        existing = db.get(SourceUnit, unit_id)
+        if existing is not None:
+            existing.parent_id = parent_id
+    return unit_ids
+
+
+def _inventory_for_failure(db: Any, artifact: ParseArtifact, asset: FileAsset, failure_code: str) -> tuple[dict[str, UUID], list[dict[str, Any]]]:
+    units = _fallback_inventory(asset, failure_code)
+    unit_ids = _create_or_update_units(db, artifact, units)
+    return unit_ids, units
+
+
+def _insert_evidence(
+    db: Any,
+    artifact: ParseArtifact,
+    asset: FileAsset,
+    context_id: UUID,
+    unit_ids: dict[str, UUID],
+    result: dict[str, Any],
+) -> int:
+    records = result.get("evidence", [])
+    if not isinstance(records, list):
+        return 0
+    inserted = 0
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        unit_id = unit_ids.get(str(item.get("unit_key", "")))
+        content = item.get("content")
+        anchor = item.get("anchor")
+        kind = item.get("type")
+        if unit_id is None or not isinstance(content, dict) or not isinstance(anchor, dict) or kind not in {
+            "paragraph", "table", "diagram", "image_text", "numeric_observation"
+        }:
+            continue
+        exists = db.scalar(
+            select(EvidenceItem.id).where(
+                EvidenceItem.source_unit_id == unit_id,
+                EvidenceItem.file_asset_id == asset.id,
+                EvidenceItem.type == kind,
+            )
+        )
+        if exists is not None:
+            continue
+        db.add(
+            EvidenceItem(
+                source_unit_id=unit_id,
+                context_version_id=context_id,
+                file_asset_id=asset.id,
+                source_sha256=asset.sha256,
+                type=kind,
+                anchor_json=anchor,
+                content_original_json=content,
+                content_normalized_json=content,
+                parse_status=str(item.get("parse_status", "parsed")),
+                limitations_json=item.get("limitations", []),
+                parser_manifest_id=None,
+            )
+        )
+        inserted += 1
+    return inserted
+
+
+def _candidate_ref(asset: FileAsset, source_role: str, candidate: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "file_id": str(asset.id),
+        "source_sha256": asset.sha256,
+        "source_role": source_role,
+        "anchor": candidate.get("anchor", {}),
+    }
+
+
+def _merge_field_candidates(db: Any, context_id: UUID, candidates: list[dict[str, Any]], request_id: UUID) -> bool:
+    context = db.scalar(select(ContextVersion).where(ContextVersion.id == context_id).with_for_update())
+    if context is None or context.state != "draft":
+        return False
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        key = candidate.get("field_path")
+        value = candidate.get("value")
+        source_ref = candidate.get("source_ref")
+        if isinstance(key, str) and isinstance(value, str) and key in {
+            "course_code", "course_title", "context_description", "number_locale", "language"
+        } and isinstance(source_ref, dict):
+            grouped.setdefault(key, []).append({"value": value.strip(), "source_ref": source_ref})
+    fields = dict(context.fields_json)
+    changed = False
+    for key, source_candidates in grouped.items():
+        normalized_values: dict[str, dict[str, Any]] = {}
+        for candidate in source_candidates:
+            normalized_values.setdefault(candidate["value"].strip().casefold(), candidate)
+        current = fields.get(key, {})
+        current_value = str(current.get("value", "")).strip() if isinstance(current, dict) else ""
+        current_candidate = {
+            "value": current_value,
+            "source_ref": {"kind": "course_catalog"} if key in {"course_code", "course_title"} else None,
+        }
+        differs = any(value != current_value.casefold() for value in normalized_values)
+        multiple_sources = len(normalized_values) > 1
+        conflict = db.scalar(
+            select(ContextConflict)
+            .where(ContextConflict.context_version_id == context_id, ContextConflict.field_path == key)
+            .with_for_update()
+        )
+        if conflict is not None and conflict.resolution_json is not None:
+            prior_candidates = list(conflict.candidate_values_json)
+            prior_values = {str(item.get("value", "")).strip().casefold() for item in prior_candidates}
+            new_values = {
+                str(item.get("value", "")).strip().casefold()
+                for item in source_candidates
+                if str(item.get("value", "")).strip().casefold() not in prior_values
+            }
+            merged_candidates = [*prior_candidates, *source_candidates]
+            unique_unresolved_candidates: list[dict[str, Any]] = []
+            seen_unresolved: set[tuple[str, str]] = set()
+            for item in merged_candidates:
+                value = str(item.get("value", "")).strip()
+                ref = item.get("source_ref")
+                signature = (value.casefold(), canonical_hash(ref) if isinstance(ref, dict) else "manual")
+                if value and signature not in seen_unresolved:
+                    unique_unresolved_candidates.append(item)
+                    seen_unresolved.add(signature)
+            if new_values:
+                history = list(conflict.resolution_history_json or [])
+                history.append(dict(conflict.resolution_json))
+                conflict.resolution_history_json = history
+                conflict.resolution_json = None
+                conflict.resolved_by = None
+                conflict.resolved_at = None
+                conflict.candidate_values_json = unique_unresolved_candidates
+                fields[key] = {**(current if isinstance(current, dict) else {}), "resolution_status": "conflicting"}
+                changed = True
+            elif unique_unresolved_candidates != prior_candidates:
+                conflict.candidate_values_json = unique_unresolved_candidates
+                refs = [item["source_ref"] for item in unique_unresolved_candidates if isinstance(item.get("source_ref"), dict)]
+                distinct = {canonical_hash(ref): ref for ref in refs}
+                if isinstance(current, dict):
+                    fields[key] = {**current, "source_refs": list(distinct.values())}
+                changed = True
+            continue
+        if differs or multiple_sources:
+            candidate_values = [current_candidate] if current_value else []
+            candidate_values.extend(source_candidates)
+            unique_candidates: list[dict[str, Any]] = []
+            seen: set[tuple[str, str]] = set()
+            for candidate in candidate_values:
+                value = str(candidate.get("value", "")).strip()
+                ref = candidate.get("source_ref")
+                ref_hash = canonical_hash(ref) if isinstance(ref, dict) else "manual"
+                signature = (value.casefold(), ref_hash)
+                if value and signature not in seen:
+                    unique_candidates.append(candidate)
+                    seen.add(signature)
+            if conflict is None:
+                conflict = ContextConflict(
+                    context_version_id=context_id,
+                    field_path=key,
+                    candidate_values_json=unique_candidates,
+                )
+                db.add(conflict)
+            else:
+                previous_values = conflict.candidate_values_json
+                conflict.candidate_values_json = unique_candidates
+                if previous_values == unique_candidates and isinstance(current, dict) and current.get("resolution_status") == "conflicting":
+                    continue
+            fields[key] = {
+                **(current if isinstance(current, dict) else {}),
+                "source_refs": [candidate["source_ref"] for candidate in source_candidates],
+                "resolution_status": "conflicting",
+            }
+            changed = True
+            continue
+        chosen = next(iter(normalized_values.values()))
+        if current_value and current_value.casefold() == chosen["value"].casefold():
+            current_refs = current.get("source_refs", []) if isinstance(current, dict) else []
+            refs = [*current_refs, *(item["source_ref"] for item in source_candidates)]
+            distinct = {canonical_hash(ref): ref for ref in refs if isinstance(ref, dict)}
+            if isinstance(current, dict) and current.get("source_refs") != list(distinct.values()):
+                fields[key] = {**current, "source_refs": list(distinct.values())}
+                changed = True
+            continue
+        fields[key] = {
+            "value": chosen["value"],
+            "origin": "extracted",
+            "source_refs": [item["source_ref"] for item in source_candidates],
+            "resolution_status": "proposed",
+        }
+        changed = True
+    if not changed:
+        return False
+    context.fields_json = fields
+    context.revision += 1
+    db.add(
+        AuditEvent(
+            worker_id="align-parser",
+            action="context.parser_candidates.recorded",
+            object_type="context_version",
+            object_id=context.id,
+            old_version_refs_json={"revision": context.revision - 1},
+            new_version_refs_json={"revision": context.revision, "candidate_fields": sorted(grouped)},
+            request_id=request_id,
+        )
+    )
+    return True
+
+
+def _download_and_run(asset: FileAsset, settings: Settings, lease: AdmissionLease, soft_seconds: int, hard_seconds: int) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    suffix = Path(asset.original_name).suffix.lower()
+    with tempfile.TemporaryDirectory(prefix="align-source-") as temp_dir:
+        source_path = str(Path(temp_dir) / f"source{suffix}")
+        output_path = str(Path(temp_dir) / "result.json")
+        try:
+            storage_client(settings).download_file(settings.s3_bucket, asset.object_key, source_path)
+        except Exception:
+            return None, "parser_storage_unavailable", None
+        return _run_child(source_path, asset.original_name, output_path, lease.memory_bytes, soft_seconds, hard_seconds)
+
+
+def _finish_checkpoint(
+    db: Any,
+    job: Job,
+    artifact: ParseArtifact,
+    asset: FileAsset,
+    checkpoint: ParserCheckpoint,
+    result: dict[str, Any] | None,
+    failure_code: str | None,
+    process_exit: str | None,
+    context_id: UUID,
+    reservation: ProcessingTimeReservation,
+    started: float,
+    request_id: UUID,
+) -> tuple[int, list[dict[str, Any]]]:
+    elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
+    reservation.actual_active_ms = min(elapsed_ms, reservation.reserved_active_ms)
+    reservation.state = "settled"
+    reservation.finished_at = datetime.now(UTC)
+    if result is not None and result.get("failure_code"):
+        failure_code = str(result["failure_code"])
+    limitations = result.get("limitations", []) if result is not None else []
+    if not isinstance(limitations, list):
+        limitations = []
+    if failure_code:
+        limitations = [*limitations, _safe_limitation(failure_code)]
+        result_units = _fallback_inventory(asset, failure_code)
+        unit_ids = _create_or_update_units(db, artifact, result_units)
+        evidence_count = 0
+        artifact.status = "blocked" if failure_code in {"parser_capacity_unavailable", "parser_storage_unavailable"} else "unsupported" if failure_code in {"parser_resource_unavailable", "parser_isolation_unavailable"} else "failed"
+        checkpoint.status = "blocked" if artifact.status == "blocked" else "failed"
+        checkpoint.limitations_json = limitations
+        checkpoint.covered_unit_refs_json = [item["anchor"] for item in result_units]
+        checkpoint.output_refs_json = {"failure_code": failure_code, "process_exit": process_exit}
+    else:
+        assert result is not None
+        result_units = result.get("units", [])
+        if not isinstance(result_units, list):
+            result_units = []
+        unit_ids = _create_or_update_units(db, artifact, result_units)
+        evidence_count = _insert_evidence(db, artifact, asset, context_id, unit_ids, result)
+        artifact_status = result.get("parse_status", "parsed")
+        artifact.status = artifact_status if artifact_status in {"parsed", "partially_parsed", "unreadable", "unsupported", "failed"} else "partially_parsed"
+        artifact.limitations_json = limitations
+        checkpoint.status = "succeeded"
+        checkpoint.limitations_json = limitations
+        checkpoint.covered_unit_refs_json = [item.get("anchor", {}) for item in result_units if isinstance(item, dict)]
+        serialized = json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        checkpoint.output_refs_json = {
+            "result_sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+            "unit_count": len(unit_ids),
+            "evidence_count": evidence_count,
+            "parser": result.get("parser", "unknown"),
+        }
+        raw_candidates = result.get("candidate_fields", [])
+        if isinstance(raw_candidates, list):
+            checkpoint.output_refs_json["candidate_fields"] = [
+                {
+                    "field_path": item["field_path"],
+                    "value": item["value"],
+                    "anchor": item.get("anchor", {}),
+                }
+                for item in raw_candidates[:100]
+                if isinstance(item, dict)
+                and item.get("field_path") in {"course_code", "course_title", "context_description", "number_locale", "language"}
+                and isinstance(item.get("value"), str)
+                and item["value"].strip()
+                and len(item["value"]) <= 4000
+            ]
+    checkpoint.finished_at = datetime.now(UTC)
+    checkpoint.actual_active_ms = reservation.actual_active_ms
+    if process_exit is not None:
+        checkpoint.output_refs_json["process_exit"] = process_exit
+    checkpoint.output_refs_json["file_sha256"] = asset.sha256
+    checkpoint.output_refs_json["task_key"] = checkpoint.task_key
+    checkpoint.output_refs_json["child_isolated"] = True
+    artifact.limitations_json = limitations
+    return evidence_count, limitations
+
+
+def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint: str) -> dict[str, Any]:
+    settings = get_settings()
+    with SessionFactory() as db:
+        job = db.get(Job, job_id)
+        if job is None or job.type != "context_draft":
+            return {"status": "missing"}
+        if job.lease_fence != expected_fence or job.input_fingerprint != expected_fingerprint:
+            return {"status": "stale", "fenced": True}
+        context_id = job.subject_id
+        source_ids = job.scope_json.get("file_ids", [])
+        parse_ids = job.scope_json.get("parse_artifact_ids", [])
+        if not isinstance(source_ids, list) or not isinstance(parse_ids, list) or len(source_ids) != len(parse_ids):
+            return {"status": "failed", "reason": "CONTEXT_SOURCE_SCOPE_INVALID"}
+        rows = db.execute(
+            select(FileAsset, NormativeFileLink, ParseArtifact)
+            .join(NormativeFileLink, NormativeFileLink.file_asset_id == FileAsset.id)
+            .join(ParseArtifact, ParseArtifact.file_asset_id == FileAsset.id)
+            .where(
+                NormativeFileLink.context_version_id == context_id,
+                ParseArtifact.context_version_id == context_id,
+                FileAsset.id.in_([UUID(item) for item in source_ids]),
+                ParseArtifact.id.in_([UUID(item) for item in parse_ids]),
+            )
+            .order_by(FileAsset.id)
+        ).all()
+        if len(rows) != len(source_ids):
+            return {"status": "failed", "reason": "CONTEXT_SOURCE_SCOPE_INVALID"}
+        stage = db.scalar(select(JobStage).where(JobStage.job_id == job.id, JobStage.stage_name == "parse_context").with_for_update())
+        if stage is None:
+            return {"status": "failed", "reason": "CONTEXT_PARSE_STAGE_MISSING"}
+        context = db.get(ContextVersion, context_id)
+        context_revision = context.revision if context is not None else 0
+        request_id = job.id
+
+    retryable_failure = False
+    all_candidates: list[dict[str, Any]] = []
+    evidence_total = 0
+    terminal_limits: list[dict[str, Any]] = []
+    for asset, link, artifact in rows:
+        profile = str(asset.preflight_json.get("parser_profile", settings.parser_profile_document))
+        heavy = profile == settings.parser_profile_document
+        parser_module = "docling" if heavy else "docx"
+        missing_dependency = importlib.util.find_spec(parser_module) is None
+        task_key = canonical_hash(
+            {
+                "context_version_id": str(context_id),
+                "file_sha256": asset.sha256,
+                "parser_profile": profile,
+                "stage": "parse_source_units",
+                "unit_locator": {"format": "file", "locator_note": asset.original_name},
+            }
+        )
+        with SessionFactory.begin() as db:
+            job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+            if job is None or job.lease_fence != expected_fence or job.input_fingerprint != expected_fingerprint:
+                return {"status": "stale", "fenced": True}
+            checkpoint = db.scalar(
+                select(ParserCheckpoint)
+                .where(ParserCheckpoint.parse_artifact_id == artifact.id, ParserCheckpoint.task_key == task_key)
+                .with_for_update()
+            )
+            if checkpoint is not None and checkpoint.status == "succeeded":
+                evidence_total += int(checkpoint.output_refs_json.get("evidence_count", 0))
+                terminal_limits.extend(checkpoint.limitations_json or [])
+                replay_candidates = checkpoint.output_refs_json.get("candidate_fields", [])
+                if isinstance(replay_candidates, list):
+                    for candidate in replay_candidates:
+                        if isinstance(candidate, dict):
+                            item = dict(candidate)
+                            item["source_ref"] = _candidate_ref(asset, link.source_role, item)
+                            all_candidates.append(item)
+                continue
+            attempt_no = int(
+                db.scalar(
+                    select(func.max(ProcessingTimeReservation.attempt_no)).where(
+                        ProcessingTimeReservation.job_id == job_id,
+                        ProcessingTimeReservation.task_key == task_key,
+                    )
+                )
+                or 0
+            ) + 1
+            limit_seconds = int(job.job_limits_json.get("max_active_seconds", settings.job_max_active_seconds))
+            reservations = db.scalars(
+                select(ProcessingTimeReservation).where(ProcessingTimeReservation.job_id == job_id)
+            ).all()
+            used_ms = sum(
+                item.actual_active_ms if item.actual_active_ms is not None else item.reserved_active_ms
+                for item in reservations
+                if item.state in {"held", "settled"}
+            )
+            remaining_ms = limit_seconds * 1000 - used_ms
+            failure_code: str | None
+            if remaining_ms <= 0:
+                failure_code = "processing_limit"
+                lease = None
+            elif missing_dependency:
+                failure_code = "parser_resource_unavailable"
+                lease = None
+            else:
+                lease, admission_reason = acquire_parser_lease(settings, profile)
+                failure_code = None if lease is not None else admission_reason
+            soft_seconds = max(1, min(settings.parser_task_soft_seconds, remaining_ms // 1000 if remaining_ms > 0 else 1))
+            hard_seconds = max(soft_seconds, min(settings.parser_task_hard_seconds, remaining_ms // 1000 if remaining_ms > 0 else soft_seconds))
+            reservation = ProcessingTimeReservation(
+                job_id=job_id,
+                task_key=task_key,
+                attempt_no=attempt_no,
+                reserved_active_ms=max(0, min(soft_seconds, remaining_ms // 1000 if remaining_ms > 0 else 0) * 1000),
+                state="held",
+                started_at=datetime.now(UTC),
+            )
+            db.add(reservation)
+            db.flush()
+            if checkpoint is None:
+                checkpoint = ParserCheckpoint(
+                    job_id=job_id,
+                    parse_artifact_id=artifact.id,
+                    task_key=task_key,
+                    file_hash=asset.sha256,
+                    namespace_version_id=context_id,
+                    canonical_unit_locator_json={"format": "file", "locator_note": asset.original_name},
+                    stage="parse_source_units",
+                    status="running",
+                    output_refs_json={},
+                    covered_unit_refs_json=[],
+                    limitations_json=[],
+                    admission_node=lease.node_id if lease else settings.parser_node_id,
+                    admission_lease=lease.lease_id if lease else None,
+                    admission_fence=lease.fence if lease else None,
+                )
+                db.add(checkpoint)
+            else:
+                checkpoint.status = "running"
+                checkpoint.admission_node = lease.node_id if lease else settings.parser_node_id
+                checkpoint.admission_lease = lease.lease_id if lease else None
+                checkpoint.admission_fence = lease.fence if lease else None
+            checkpoint.started_at = datetime.now(UTC)
+            checkpoint.limitations_json = []
+            db.add(checkpoint)
+            artifact_row = db.scalar(select(ParseArtifact).where(ParseArtifact.id == artifact.id).with_for_update())
+            if artifact_row is not None:
+                artifact_row.status = "running"
+        started = time.monotonic()
+        result: dict[str, Any] | None = None
+        process_exit: str | None = None
+        if failure_code is None and lease is not None:
+            result, failure_code, process_exit = _download_and_run(asset, settings, lease, soft_seconds, hard_seconds)
+        try:
+            with SessionFactory.begin() as db:
+                current_job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+                if current_job is None or current_job.lease_fence != expected_fence or current_job.input_fingerprint != expected_fingerprint:
+                    return {"status": "stale", "fenced": True}
+                artifact_row = db.scalar(select(ParseArtifact).where(ParseArtifact.id == artifact.id).with_for_update())
+                checkpoint_row = db.scalar(
+                    select(ParserCheckpoint)
+                    .where(ParserCheckpoint.parse_artifact_id == artifact.id, ParserCheckpoint.task_key == task_key)
+                    .with_for_update()
+                )
+                reservation_row = db.scalar(
+                    select(ProcessingTimeReservation).where(
+                        ProcessingTimeReservation.job_id == job_id,
+                        ProcessingTimeReservation.task_key == task_key,
+                        ProcessingTimeReservation.attempt_no == attempt_no,
+                    ).with_for_update()
+                )
+                if artifact_row is None or checkpoint_row is None or reservation_row is None:
+                    return {"status": "failed", "reason": "PARSER_CHECKPOINT_MISSING"}
+                count, limitations = _finish_checkpoint(
+                    db,
+                    current_job,
+                    artifact_row,
+                    asset,
+                    checkpoint_row,
+                    result,
+                    failure_code,
+                    process_exit,
+                    context_id,
+                    reservation_row,
+                    started,
+                    request_id,
+                )
+                evidence_total += count
+                terminal_limits.extend(limitations)
+                if artifact_row.status == "blocked":
+                    retryable_failure = retryable_failure or attempt_no < settings.parser_max_attempts
+                    if attempt_no >= settings.parser_max_attempts:
+                        terminal_limits.append(
+                            {
+                                "code": "parser_retry_limit_reached",
+                                "asset_id": str(asset.id),
+                                "attempts": attempt_no,
+                            }
+                        )
+                elif result is not None and not result.get("failure_code"):
+                    candidate_items = result.get("candidate_fields", [])
+                    if isinstance(candidate_items, list):
+                        for candidate in candidate_items:
+                            if isinstance(candidate, dict):
+                                item = dict(candidate)
+                                item["source_ref"] = _candidate_ref(asset, link.source_role, item)
+                                all_candidates.append(item)
+                db.add(
+                    AuditEvent(
+                        worker_id="align-parser",
+                        action="context.file.parsed" if artifact_row.status not in {"blocked", "failed", "unsupported"} else "context.file.parse_limited",
+                        object_type="file_asset",
+                        object_id=asset.id,
+                        old_version_refs_json={"sha256": asset.sha256},
+                        new_version_refs_json={"parse_status": artifact_row.status, "unit_count": len(checkpoint_row.covered_unit_refs_json), "evidence_count": count},
+                        request_id=request_id,
+                    )
+                )
+        finally:
+            if lease is not None:
+                release_parser_lease(settings, lease)
+
+    with SessionFactory.begin() as db:
+        job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+        if job is None:
+            return {"status": "missing"}
+        if job.lease_fence != expected_fence or job.input_fingerprint != expected_fingerprint:
+            return {"status": "stale", "fenced": True}
+        stage = db.scalar(
+            select(JobStage)
+            .where(JobStage.job_id == job_id, JobStage.stage_name == "parse_context")
+            .with_for_update()
+        )
+        if stage is None:
+            job.status = "failed"
+            job.last_error_code = "CONTEXT_PARSE_STAGE_MISSING"
+            job.lease_until = None
+            return {"status": "failed", "reason": "CONTEXT_PARSE_STAGE_MISSING"}
+        if all_candidates:
+            _merge_field_candidates(db, context_id, all_candidates, request_id)
+        if retryable_failure:
+            job.status = "blocked"
+            retry_code = next(
+                (
+                    item.get("code")
+                    for item in terminal_limits
+                    if item.get("code") in {"parser_capacity_unavailable", "parser_storage_unavailable"}
+                ),
+                "parser_capacity_unavailable",
+            )
+            job.last_error_code = retry_code
+            stage.status = "blocked"
+            stage.failure_code = retry_code
+            stage.output_refs_json = {"evidence_count": evidence_total, "limitations": terminal_limits}
+            db.add(
+                OutboxEvent(
+                    event_type="job.parse_context",
+                    subject_id=job.id,
+                    payload_json={"job_id": str(job.id)},
+                    next_attempt_at=datetime.now(UTC) + timedelta(seconds=60),
+                )
+            )
+            result_status = "blocked"
+        else:
+            job.status = "ready_for_review"
+            job.completion_kind = "completed_with_limits" if terminal_limits else "completed"
+            job.last_error_code = None
+            stage.status = "succeeded"
+            stage.failure_code = None
+            stage.output_refs_json = {"evidence_count": evidence_total, "limitations": terminal_limits}
+            result_status = "ready_for_review"
+        job.lease_until = None
+        stage.finished_at = datetime.now(UTC)
+        stage.attempt_count += 0
+        return {
+            "status": result_status,
+            "job_id": str(job_id),
+            "context_version_id": str(context_id),
+            "evidence_count": evidence_total,
+            "limitations": terminal_limits,
+            "context_revision_at_start": context_revision,
+        }

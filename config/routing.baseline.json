@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "policy_id": "routing-baseline-v1",
+  "mode": "manual_and_explicit_mock",
+  "default_route": "mock",
+  "allow_live": false,
+  "max_provider_calls": 16,
+  "unknown_capability_action": "manual",
+  "unavailable_source_action": "abstain",
+  "status": "baseline_not_empirically_verified"
+}
+

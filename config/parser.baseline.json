@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "manifest_id": "parser-baseline-v1",
+  "profiles": {
+    "native_ooxml_v1": { "available": false, "memory_bytes": 2147483648 },
+    "docling_native_v1": { "available": false, "memory_bytes": 8589934592 }
+  },
+  "isolated_child": false,
+  "status": "capability_unavailable"
+}
+

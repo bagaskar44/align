@@ -1,8 +1,8 @@
 # Panduan Implementasi ALIGN per Tahap
 
-Tanggal penyusunan: 19 Oktober 2026 (Asia/Jakarta). Bahasa implementasi produk dan dokumen: Indonesia.
+Tanggal pembaruan: 20 Oktober 2026 (Asia/Jakarta). Bahasa implementasi produk dan dokumen: Indonesia.
 
-**Status seluruh tahap: BELUM DIIMPLEMENTASIKAN; seluruh hasil pengujian: BELUM DIJALANKAN.** Paket ini adalah instruksi kerja, bukan laporan keberhasilan software atau penelitian.
+**Status: gate lokal B0 selesai; implementasi B1 berjalan dan gate B1 masih parsial.** Per 20 Oktober 2026, provisioning, konteks manual, konflik KK/RPP, approval, dan parsing native DOCX lulus alur browser. Profil Docling untuk PDF/gambar belum terverifikasi karena MemAvailable 7,98 GiB masih di bawah kebutuhan 9 GiB. B2–B9 belum dimulai. Lihat [traceability](../../requirements_traceability.md), [handover B0](../handover/B0.md), dan [handover B1](../handover/B1.md).
 
 ## 1. Otoritas dan cara menggunakan paket
 

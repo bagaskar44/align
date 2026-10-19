@@ -1,0 +1,16 @@
+{
+  "name": "align",
+  "private": true,
+  "packageManager": "pnpm@10.18.3",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "corepack pnpm --dir apps/web dev",
+    "build": "corepack pnpm --dir apps/web build",
+    "lint": "corepack pnpm --dir apps/web lint",
+    "typecheck": "corepack pnpm --dir apps/web typecheck",
+    "test:e2e": "corepack pnpm --dir apps/web test:e2e"
+  }
+}
+

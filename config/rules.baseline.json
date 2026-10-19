@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "manifest_id": "rules-baseline-v1",
+  "contract_schemas_available": true,
+  "academic_execution_available": false,
+  "status": "manual_and_contract_smoke_only"
+}
+

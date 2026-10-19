@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "version_label": "align-b0-synthetic-baseline-v1",
+  "provider_mode": "mock",
+  "data_mode": "synthetic",
+  "manifests": {
+    "parser": "parser.baseline.json",
+    "model": "model.mock.json",
+    "retrieval": "retrieval.baseline.json",
+    "rules": "rules.baseline.json",
+    "prompt": "prompt.baseline.json",
+    "routing": "routing.baseline.json",
+    "batching": "batching.baseline.json"
+  },
+  "grounding_registry_version": "grounding-registry-v1",
+  "lint_registry_version": "lint-registry-v1",
+  "capabilities_available": ["manual_auth", "mock_provider_schema"],
+  "capabilities_unavailable": ["native_parser", "document_parser", "ocr", "live_provider", "paid_calls"],
+  "activation_checks": {
+    "mock_schema_contract": true,
+    "paid_calls_fail_closed": true,
+    "baseline_batch_size": 1,
+    "empirical_verification": false
+  }
+}
+

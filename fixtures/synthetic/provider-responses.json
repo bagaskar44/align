@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "label": "SIMULASI • data sintetis",
+  "responses": {
+    "extract_fields": { "status": "mocked", "payload": { "fixture_result": "extract_fields" } },
+    "rerank": { "status": "mocked", "payload": { "fixture_result": "rerank" } },
+    "interpret_evidence": { "status": "mocked", "payload": { "fixture_result": "interpret_evidence" } },
+    "verify_claim": { "status": "mocked", "payload": { "fixture_result": "verify_claim" } },
+    "draft_feedback": { "status": "mocked", "payload": { "fixture_result": "draft_feedback" } },
+    "interpret_region": { "status": "mocked", "payload": { "fixture_result": "interpret_region" } },
+    "embed": { "status": "mocked", "payload": { "dimensions": 1536, "vector_fill": 0.0 } }
+  }
+}
+
