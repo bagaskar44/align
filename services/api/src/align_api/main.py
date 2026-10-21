@@ -13,6 +13,7 @@ from redis.exceptions import RedisError
 from sqlalchemy import text
 
 from align_api.admin import router as admin_router
+from align_api.assignments import router as assignments_router
 from align_api.auth import change_password, login, logout, me
 from align_api.config import get_settings
 from align_api.contexts import router as contexts_router
@@ -54,10 +55,13 @@ def create_app() -> FastAPI:
     router.add_api_route("/auth/login", login, methods=["POST"], name="login")
     router.add_api_route("/auth/logout", logout, methods=["POST"], status_code=204, name="logout")
     router.add_api_route("/me", me, methods=["GET"], name="me")
-    router.add_api_route("/me/password", change_password, methods=["PUT"], status_code=204, name="change_password")
+    router.add_api_route(
+        "/me/password", change_password, methods=["PUT"], status_code=204, name="change_password"
+    )
     router.include_router(courses_router)
     router.include_router(admin_router)
     router.include_router(contexts_router)
+    router.include_router(assignments_router)
     app.include_router(router)
 
     @app.get("/health/live", tags=["health"])
@@ -114,9 +118,13 @@ def _storage_client() -> Any:
         aws_access_key_id=settings.s3_access_key_id,
         aws_secret_access_key=settings.s3_secret_access_key.get_secret_value(),
         region_name=settings.s3_region,
-        config=BotoConfig(s3={"addressing_style": "path" if settings.s3_use_path_style else "virtual"}, connect_timeout=2, read_timeout=3, retries={"max_attempts": 1}),
+        config=BotoConfig(
+            s3={"addressing_style": "path" if settings.s3_use_path_style else "virtual"},
+            connect_timeout=2,
+            read_timeout=3,
+            retries={"max_attempts": 1},
+        ),
     )
 
 
 app = create_app()
-

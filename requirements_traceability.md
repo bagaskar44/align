@@ -1,7 +1,25 @@
 # Requirements traceability B0–B1
 
 Sumber normatif: `ALIGN_IMPLEMENTATION_SPEC.md` v2 dan alokasi tahap pada `docs/implementation/README.md`.
-Status berikut menggabungkan bukti B0 dan kandidat B1 per 21 Oktober 2026. Verifikasi lokal mock/synthetic mencakup auth/context, native DOCX dan Docling nyata; hasil akhir, hardware dan batas gate ada di `docs/handover/B1.md`. Acceptance bersama yang berakhir pada B3–B8 tetap parsial/pending; smoke parser dan mock bukan benchmark atau bukti inference live. B2 belum dimulai.
+Bagian matriks di bawah mencatat baseline B0/B1 per 21 Oktober 2026. Verifikasi lokal mock/synthetic mencakup auth/context, native DOCX dan Docling nyata; hasil akhir, hardware dan batas gate ada di `docs/handover/B1.md`. Acceptance bersama yang berakhir pada B3–B8 tetap parsial/pending; smoke parser dan mock bukan benchmark atau bukti inference live. Status implementasi tahap B2 yang dimulai sesudah baseline tersebut dicatat terpisah berikut ini; gate B2 masih pending. Lihat `docs/handover/B2.md` untuk hasil aktual dan sisa pekerjaan.
+
+## Overlay implementasi B2
+
+| ID | Status B2 aktual | Bukti / batas |
+|---|---|---|
+| FR-03 | Parsial | Assignment/version, criteria/requirements, specification v2, package/spec approval dan publikasi tersedia; Rubrik belum diparse melalui B1 dan UI masih memakai editor JSON. `tests/integration/test_b2_assignment_flow.py`; `docs/handover/B2.md`. |
+| FR-08 | Parsial | Rubrik diikat sebagai file privat/hash pada assignment version; retrieval/parse bundle dan proposal dari isi file belum tersedia. |
+| FR-10 | Schema/approval B2 tersedia; comparison engine B6 | NumericPolicy Decimal, locale/unit/tolerance/rounding divalidasi dan approval teruji; tidak menjalankan comparison numerik mahasiswa. |
+| FR-20 | Parsial | Schema/derivation validation, deterministic lint, stale report, resolution dan fidelity confirmation tersedia; semantic-negative, race test dan UI derivation visual masih pending. |
+| INV-01, INV-13, INV-15 | Parsial | Requirement refs diturunkan dari paket dan compiler menolak mandatory requirement yang tidak dicakup; excerpt yang benar tetap tidak dianggap dukungan semantik. Semantic executor dan negative gate belum dibangun. |
+| INV-04 | Kontrak NumericPolicy tersedia | Policy menetapkan comparability/tolerance eksplisit; deteksi finding numerik otomatis tetap B6. |
+| AC-MVP-07 | Lulus untuk flow API yang diuji | Original instruction tersimpan/hash-bound, CRLF dinormalisasi ke LF, summary berlabel dan student payload mempertahankan instruksi. |
+| AC-MVP-08 | Guard schema tersedia | Request schema strict dan tidak mendefinisikan score/grade field; belum ada suite audit UI penuh. |
+| AC-MVP-09 | Lulus subset invalid yang diuji | Operator invalid ditolak tanpa revisi payload; mandatory requirement hilang menjadi blocking/non-override. Cycle/predicate/role partition lengkap belum menjadi matrix B2. |
+| AC-MVP-53 | Parsial | Condition fidelity lint/review dan human-only resolution diuji; semantic-fidelity negative tambahan masih pending. |
+| AC-MVP-54 | Lulus subset report/resolution yang diuji | Report stale ditolak, blocking tidak dapat di-override, duplicate/stale resolution ditolak; konkurensi approve dua actor belum diuji. |
+| AC-MVP-65 | Lulus fixture kompatibilitas terbatas | Fixture schema 1 sintetis dapat dibaca tanpa v2 grounding/lint rekaan; update/lint/approve ditolak dan new-version memulai draft. Tidak ada data deployment lama yang diklaim. |
+| AC-MVP-15, AC-MVP-20, AC-MVP-50–52, AC-MVP-63 | Pending tahap pemilik / acceptance bersama | Late policy snapshot mulai B3; applicability/evidence semantics B5; numeric absence B6; robustness/equivalence B7. Schema awal tidak dianggap lulus gate tersebut. |
 
 ## Functional requirements
 

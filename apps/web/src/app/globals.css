@@ -172,6 +172,39 @@ h1 { margin-bottom: 10px; font-size: clamp(30px, 5vw, 42px); line-height: 1.15; 
 .roster-row .field { font-size: 11px; }
 .roster-row .field select { min-height: 36px; padding: 6px 8px; }
 .roster-row small { display: block; color: var(--subtle); font-size: 10px; }
+.workspace-panel { display: grid; gap: 18px; margin-top: 20px; padding: clamp(18px, 3vw, 28px); background: var(--surface); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 8px 28px rgb(15 23 42 / 3%); }
+.workspace-heading, .workspace-subheading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.workspace-heading h2, .workspace-subheading h3 { margin: 0; }
+.workspace-heading h2 { font-size: 22px; }
+.workspace-subheading h3 { font-size: 17px; }
+.assignment-start-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; align-items: end; gap: 12px; }
+.assignment-select { max-width: 560px; }
+.assignment-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.field-wide, .assignment-form-grid > .help-text, .field-actions { grid-column: 1 / -1; }
+.help-text { margin: 0; color: var(--muted); font-size: 12px; font-weight: 400; }
+.field-actions, .button-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.assignment-step { display: grid; gap: 12px; padding-top: 20px; border-top: 1px solid var(--border); }
+.assignment-step > h3, .student-task-preview h3 { margin: 0; font-size: 17px; }
+.code-editor { min-height: 230px !important; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important; font-size: 12px !important; line-height: 1.5; tab-size: 2; }
+.check-row { display: flex; align-items: center; gap: 10px; color: var(--text); font-size: 13px; }
+.check-row input { width: 18px; height: 18px; accent-color: var(--accent); }
+.check-row a { margin-left: 8px; color: var(--accent-hover); font-weight: 700; }
+.form-success { margin: 0; padding: 11px 13px; color: #14532d; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 9px; font-size: 13px; }
+.lint-panel { display: grid; gap: 10px; padding: 14px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: 11px; }
+.lint-panel h4 { margin: 0; font-size: 14px; }
+.list-row { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 12px; background: #fff; border: 1px solid var(--border); border-radius: 10px; font-size: 13px; }
+.list-row p { margin: 3px 0; color: var(--muted); }
+.list-row small { color: var(--subtle); }
+.assignment-list { display: grid; gap: 8px; }
+.assignment-card { width: 100%; flex-direction: column; align-items: flex-start; text-align: left; cursor: pointer; }
+.assignment-card span { color: var(--muted); font-size: 12px; }
+.student-task-preview { display: grid; gap: 14px; padding-top: 20px; border-top: 1px solid var(--border); }
+.instruction-preview { max-height: 520px; margin: 0; padding: 16px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); background: var(--surface-muted); border: 1px solid var(--border); border-radius: 10px; font: inherit; }
+.criterion-card { padding: 14px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: 10px; }
+.criterion-card h4 { margin: 0 0 7px; font-size: 14px; }
+.criterion-card p { margin-bottom: 7px; }
+.criterion-card ul { margin: 0; padding-left: 20px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 
 @media (max-width: 600px) {
   .topbar { min-height: 68px; padding-inline: 20px; }
@@ -187,4 +220,8 @@ h1 { margin-bottom: 10px; font-size: clamp(30px, 5vw, 42px); line-height: 1.15; 
   .panel { padding: 20px; }
   .roster-row { grid-template-columns: minmax(0, 1fr) 120px; }
   .compact-list li { align-items: flex-start; }
+  .assignment-start-grid, .assignment-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .field-wide, .assignment-form-grid > .help-text, .field-actions { grid-column: auto; }
+  .workspace-heading, .workspace-subheading { align-items: flex-start; }
+  .list-row { align-items: flex-start; flex-direction: column; }
 }

@@ -28,6 +28,23 @@ export type Profile = {
   runtime_limits: Record<string, number>;
 };
 
+export type AssignmentSummary = {
+  id: string;
+  title: string;
+  administrative_state?: string;
+  revision?: number;
+  active_version_id?: string | null;
+  version_no?: number | null;
+  version_state?: string | null;
+  draft_version_id?: string | null;
+  draft_version_no?: number | null;
+  version_id?: string;
+  state?: string;
+  mode?: "individual" | "group";
+  opens_at?: string;
+  due_at?: string;
+};
+
 type ApiResult<T> =
   | { kind: "ok"; data: T }
   | { kind: "unauthenticated" }
@@ -69,6 +86,10 @@ export function getCourse(courseId: string): Promise<ApiResult<Course>> {
 
 export function getContextVersions(courseId: string): Promise<ApiResult<{ items: Array<{ id: string; version_no: number; state: string; revision: number; content_hash: string | null }>; next_cursor: string | null }>> {
   return requestServer(`/courses/${courseId}/context-versions`);
+}
+
+export function getCourseAssignments(courseId: string): Promise<ApiResult<{ items: AssignmentSummary[]; next_cursor: string | null }>> {
+  return requestServer(`/courses/${courseId}/assignments`);
 }
 
 export function getAdminUsers(): Promise<ApiResult<{ items: AdminUser[]; next_cursor: string | null }>> {

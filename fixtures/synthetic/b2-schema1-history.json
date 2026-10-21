@@ -1,0 +1,20 @@
+{
+  "fixture_kind": "synthetic_schema_1_history_compatibility",
+  "note": "Synthetic compatibility record only; it is not a recovered production assignment and makes no claim about an external legacy payload catalog.",
+  "schema_version": 1,
+  "payload": {
+    "schema_version": 1,
+    "elements": [
+      {
+        "element_id": "2a5d9f10-5c78-4b5e-9c16-8a8f3f349a02",
+        "element_code": "LEGACY-MANUAL-01",
+        "criterion_id": "b2c85e93-c04d-4bc2-a3fa-b5e468bb0ef7",
+        "requirement_ids": [],
+        "target_kind": "descriptor",
+        "expected_evidence": "Bukti teks sintetis untuk histori kompatibilitas.",
+        "accepted_evidence_types": ["paragraph"],
+        "operators": ["locate_evidence", "request_human_review"]
+      }
+    ]
+  }
+}

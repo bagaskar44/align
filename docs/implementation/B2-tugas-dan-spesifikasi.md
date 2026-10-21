@@ -1,6 +1,6 @@
 # B2 — Tugas dan Spesifikasi
 
-**Status implementasi: BELUM DIMULAI. Hasil pengujian: BELUM DIJALANKAN.**
+**Status per 21 Oktober 2026: IMPLEMENTASI B2 PARSIAL; gate B2 belum lulus.** API inti, migration 0004, editor web awal, lint, dan integrasi PostgreSQL/Redis tersedia. Host: 45 passed/28 skipped; integration Compose: 22 passed/6 skipped; frontend lint/typecheck/build Webpack lulus. Rincian ID/hash, command dan batas ada di [handover B2](../handover/B2.md).
 
 [Indeks dan matriks](README.md) · [Master](../../ALIGN_IMPLEMENTATION_SPEC.md) · [Predecessor: B1](B1-identitas-dan-konteks.md) · [Berikutnya: B3](B3-submission-dan-viewer.md)
 
@@ -64,6 +64,14 @@ Scope mencakup editor, generator draft via mock/configured adapter, compiler/lin
 
 Editor assignment mempertahankan instruction asli, criteria/requirements dan optional outcomes. Spec editor memperlihatkan decision question dan derivation berdampingan, applicability, grounding/roles, evidence alternatives, DAG, NumericPolicy, boundary dan lint/resolution. Publish preview memperlihatkan persis paket mahasiswa. Disabled action memberi alasan dan field link; bukan sekadar tombol mati. Keyboard/error/focus serta no-store mengikuti master.
 
+### Status implementasi yang diperiksa
+
+- API menangani assignment/version, criteria/requirements, NumericPolicy, Specification v2, lint/resolution, approval, publish, student serialization dan group roster. Pengujian integrasi mencakup jalur publish, stale report, blocking non-override, schema 1 read-only, Unicode span, version clone dan akses roster.
+- Draft mock instruksi mengembalikan kutipan baris asli dengan code-point span, hash dan `mandatory=null`. Proposal tidak dimasukkan otomatis ke paket resmi, tidak memanggil provider dan berbiaya nol.
+- Rubrik tersimpan privat, dapat diunduh, dan hash-nya terikat ke versi. **Rubrik belum melewati parser bersama B1**; belum ada usulan criteria dari isi file. Generator yang tersedia hanya excerpt instruksi, bukan adapter model semantik.
+- Web menyediakan alur assignment, unggah/unduh, criteria dan NumericPolicy JSON, template spec human-only, lint, approval, publish dan tampilan tugas mahasiswa. **UI masih mengedit criteria/spec/NumericPolicy sebagai JSON**; pemetaan span code-point visual dan editor terstruktur untuk DSL/roles/evidence belum tersedia.
+- Belum ada Playwright B2 end-to-end, race test dua dosen untuk approval/publish, fixture semantic-negative lengkap, atau bukti concurrency DB untuk seluruh invalidation. Karena item B2 tersebut masih terbuka, gate tetap pending walaupun flow API sintetis lulus.
+
 ## 4. Kontrak API dan penyimpanan
 
 Path berikut berprefix `/api/v1`; semua action version/job memakai Idempotency-Key sesuai Bagian 16.1.
@@ -103,16 +111,18 @@ Migration: assignments/versions, criterion_set_versions, criteria, requirements,
 | Schema 1 fixture | Histori terbaca tanpa auto-approve/mengisi kontrak rekaan; kreasi v2 menuntut fields/lint |
 | Mahasiswa membaca detail/list/export public task | Tidak mendapat internal DSL/prompt/lint resolution/biaya; akses course asing 404 |
 
+Hasil aktual dan batas pengujian tersimpan di `docs/handover/B2.md`. Tabel di atas tetap menjadi acceptance yang harus dituntaskan; baris yang tidak disebut sebagai lulus pada handover masih pending.
+
 Jalankan domain/DB/API tests serta Playwright alur context→draft package→lint resolution→approval→publish→student task. Catat hasil mock/live terpisah. Uji schema/provider failure tidak menghilangkan draft.
 
 ## 6. Gate dan handover
 
-- [ ] Paket dan CheckSpecification schema 2 lengkap, berversi, dapat dipublikasikan dan dibaca mahasiswa berizin.
-- [ ] NumericPolicy schema/approval dan registry/DSL/DAG constraints tersedia.
-- [ ] Lint, resolution, fidelity approval, invalidation dan concurrency sesuai kontrak.
-- [ ] Fixtures sumber asli, semantic fidelity negatives dan schema 1 history tersedia; tidak ada grade/dashboard fields.
-- [ ] Regresi B0/B1, OpenAPI/client dan traceability diperbarui.
-- [ ] `docs/handover/B2.md` menyertakan approved synthetic assignment IDs/versions, manifest hashes, command/results dan dependensi B3/B4/B5.
+- [x] API inti paket, schema v2, NumericPolicy, lint/resolution, approval/publish dan student serializer tersedia; flow sintetis DB/API lulus.
+- [ ] Rubrik memakai parser bersama B1; drafting criteria dapat memakai adapter mock/configured tanpa mengesahkan tuntutan.
+- [ ] UI terstruktur menunjukkan derivasi/span code-point, applicability, grounding/roles, evidence, DAG, NumericPolicy, boundary dan lint/resolution.
+- [ ] Semantic-negative, invalidation/concurrency, fixture sumber asli dan Playwright B2 lengkap; schema 1 synthetic history read-only sudah diuji.
+- [x] Regresi unit B0/B1/B2, lint/typecheck/build frontend serta traceability diperbarui.
+- [x] `docs/handover/B2.md` menyertakan assignment/version sintetis approved, content hashes, command/results dan dependensi tahap berikut.
 
 **BERHENTI setelah B2.** Schema grounding tersedia tidak berarti executor atau semantic verification sudah selesai.
 

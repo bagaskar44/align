@@ -1,0 +1,670 @@
+"""B2 assignment/package/specification flow against isolated PostgreSQL and Redis."""
+
+from __future__ import annotations
+
+import json
+import os
+from contextlib import ExitStack
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from uuid import UUID, uuid4
+
+import pytest
+from fastapi.testclient import TestClient
+
+from align_api.config import get_settings
+from align_api.db import SessionFactory
+from align_api.main import create_app
+from align_api.models import ContextVersion, Course, Enrollment, SpecificationVersion, User
+from align_api.security import hash_password
+from align_domain.assignment_contracts import canonical_hash
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("ALIGN_RUN_INTEGRATION") != "true",
+    reason="requires isolated Compose PostgreSQL and Redis",
+)
+PASSWORD = "Synthetic-B2-integration-password-2026"  # noqa: S105 -- synthetic fixture only
+
+
+@pytest.fixture
+def b2_scenario():
+    settings = get_settings().model_copy(
+        update={
+            "app_origin": "http://testserver",
+            "redis_url": "redis://redis:6379/0",
+            "s3_endpoint": "http://object-storage:9090",
+            "redis_queue_prefix": f"b2-test-{uuid4().hex}",
+        }
+    )
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: settings
+    suffix = uuid4().hex
+    lecturer, student_a, student_b, outsider = [
+        User(
+            normalized_email=f"b2-{role}-{suffix}@example.test",
+            display_name=f"B2 {role}",
+            password_hash=hash_password(PASSWORD),
+            global_role="member",
+            active=True,
+            must_change_password=False,
+        )
+        for role in ("lecturer", "student-a", "student-b", "outsider")
+    ]
+    course = Course(code=f"B2-{suffix[:12]}", title="Synthetic B2 course", active=True)
+    outsider_course = Course(
+        code=f"B2-X-{suffix[:10]}", title="Synthetic outside course", active=True
+    )
+    with SessionFactory.begin() as db:
+        db.add_all([lecturer, student_a, student_b, outsider, course, outsider_course])
+        db.flush()
+        now = datetime.now(UTC)
+        context = ContextVersion(
+            course_id=course.id,
+            version_no=1,
+            state="approved",
+            fields_json={
+                "context_description": {"value": "Context sintetis untuk B2."},
+                "outcomes_status": "not_provided",
+                "learning_outcomes": [],
+            },
+            instruction_sources_json=[],
+            content_hash="c" * 64,
+            approved_by=lecturer.id,
+            approved_at=now,
+            revision=1,
+        )
+        db.add(context)
+        db.flush()
+        course.approved_context_version_id = context.id
+        db.add_all(
+            [
+                Enrollment(course_id=course.id, user_id=lecturer.id, role="lecturer", active=True),
+                Enrollment(course_id=course.id, user_id=student_a.id, role="student", active=True),
+                Enrollment(course_id=course.id, user_id=student_b.id, role="student", active=True),
+                Enrollment(
+                    course_id=outsider_course.id,
+                    user_id=outsider.id,
+                    role="student",
+                    active=True,
+                ),
+            ]
+        )
+    with ExitStack() as stack:
+        clients = {
+            "lecturer": stack.enter_context(TestClient(app)),
+            "student_a": stack.enter_context(TestClient(app)),
+            "student_b": stack.enter_context(TestClient(app)),
+            "outsider": stack.enter_context(TestClient(app)),
+        }
+        tokens = {}
+        for role, user in zip(
+            ("lecturer", "student_a", "student_b", "outsider"),
+            (lecturer, student_a, student_b, outsider),
+            strict=True,
+        ):
+            response = clients[role].post(
+                "/api/v1/auth/login",
+                headers={"Origin": settings.app_origin},
+                json={"email": user.normalized_email, "password": PASSWORD},
+            )
+            assert response.status_code == 200, response.text
+            tokens[role] = response.json()["csrf_token"]
+        yield {
+            "app": app,
+            "clients": clients,
+            "tokens": tokens,
+            "course": course,
+            "context": context,
+            "users": {"lecturer": lecturer, "student_a": student_a, "student_b": student_b},
+            "settings": settings,
+        }
+    with SessionFactory.begin() as db:
+        for user in (lecturer, student_a, student_b, outsider):
+            current = db.get(User, user.id)
+            if current is not None:
+                current.active = False
+        for item in (course, outsider_course):
+            current_course = db.get(Course, item.id)
+            if current_course is not None:
+                current_course.active = False
+
+
+def headers(token: str, key: str | None = None) -> dict[str, str]:
+    return {
+        "Origin": "http://testserver",
+        "X-CSRF-Token": token,
+        "Idempotency-Key": key or str(uuid4()),
+    }
+
+
+def policy_payload() -> dict[str, object]:
+    return {
+        "metric_definition": "Besaran sintetis yang sama dalam konteks yang sama.",
+        "required_context_fields": ["metric", "entity", "definition", "unit"],
+        "number_locale": "id-ID",
+        "canonical_unit": "ratio",
+        "allowed_conversions": [],
+        "comparison_mode": "pairwise",
+        "absolute_tolerance": "0",
+        "relative_tolerance": "0",
+        "rounding": {"mode": "none", "quantum": None},
+        "operand_roles": {"left": "angka kiri", "right": "angka kanan"},
+    }
+
+
+def element_template(
+    *,
+    element_id: str,
+    element_code: str,
+    criterion_id: str,
+    obligation_key: str,
+    target_kind: str,
+    requirement_ids: list[str],
+    derivation_refs: list[dict[str, object]],
+    grounding: dict[str, object],
+    operators: list[str],
+    numeric_policy_id: str | None = None,
+    question: str = "Apakah bukti menjawab kewajiban resmi?",
+) -> dict[str, object]:
+    return {
+        "element_id": element_id,
+        "element_code": element_code,
+        "criterion_id": criterion_id,
+        "requirement_ids": requirement_ids,
+        "obligation_key": obligation_key,
+        "target_kind": target_kind,
+        "decision_question": question,
+        "derivation_refs": derivation_refs,
+        "expected_evidence": "Bukti relevan yang menjawab tuntutan resmi.",
+        "grounding_contract": grounding,
+        "accepted_evidence_types": ["paragraph", "table", "spreadsheet_cell"],
+        "relationships": [],
+        "applicability": {"mode": "always"},
+        "source_hints": ["istilah atau label yang relevan dengan tuntutan"],
+        "operators": operators,
+        "dependencies": [],
+        "coverage_policy": {
+            "positive_strategy": "sufficient_support",
+            "negative_strategy": "exhaustive_compatible_source_units",
+            "inspect_embedded_visuals": True,
+            "unresolved_compatible_unit_blocks_negative": True,
+            "preserve_table_context": True,
+        },
+        "abstention_conditions": ["unreadable_relevant_region"],
+        "numeric_policy_version_id": numeric_policy_id,
+        "human_judgment_boundary": "Keputusan akademik di luar pemeriksaan ini tetap dilakukan dosen.",
+    }
+
+
+def specification_payload(
+    *,
+    instruction_id: str,
+    criterion_id: str,
+    requirement_id: str,
+    obligation_key: str,
+    policy_id: str,
+    instruction_length: int,
+    include_requirement: bool,
+) -> dict[str, object]:
+    numeric = element_template(
+        element_id=str(uuid4()),
+        element_code="EL-NUMERIC-CHECK",
+        criterion_id=criterion_id,
+        obligation_key="numeric.synthetic.comparison",
+        target_kind="numeric",
+        requirement_ids=[],
+        derivation_refs=[
+            {
+                "source_kind": "instruction",
+                "source_id": instruction_id,
+                "span": {"start": 0, "end": instruction_length},
+            }
+        ],
+        grounding={
+            "schema_version": 1,
+            "mode": "comparable_numeric",
+            "absence_support": None,
+        },
+        operators=[
+            "locate_evidence",
+            "expand_context",
+            "inspect_source_coverage",
+            "establish_comparability",
+            "compare_numbers",
+            "request_human_review",
+        ],
+        numeric_policy_id=policy_id,
+        question="Apakah dua observasi yang sepadan melaporkan besaran yang sama?",
+    )
+    elements = [numeric]
+    if include_requirement:
+        elements.insert(
+            0,
+            element_template(
+                element_id=str(uuid4()),
+                element_code="EL-REQ-MISSING-VALUE",
+                criterion_id=criterion_id,
+                obligation_key=obligation_key,
+                target_kind="requirement",
+                requirement_ids=[requirement_id],
+                derivation_refs=[
+                    {"source_kind": "requirement", "source_id": requirement_id, "span": None}
+                ],
+                grounding={"schema_version": 1, "mode": "human_only", "absence_support": None},
+                operators=["locate_evidence", "request_human_review"],
+                question="Apakah bukti menjawab requirement jika kondisi yang disebutkan berlaku?",
+            ),
+        )
+    return {
+        "schema_version": 2,
+        "elements": elements,
+        "operator_registry_version": "operators-v1",
+        "predicate_registry_version": "predicates-v1",
+        "grounding_registry_version": "grounding-v1",
+        "lint_registry_version": "lint-v1",
+        "task_facts": [],
+        "limits": {
+            "draft_max_cost_usd": "0.05",
+            "max_text_calls": 3,
+            "max_vision_calls": 2,
+            "max_input_tokens": 20000,
+            "max_output_tokens": 4000,
+        },
+    }
+
+
+def test_assignment_spec_publish_group_and_student_visibility(b2_scenario):
+    lecturer = b2_scenario["clients"]["lecturer"]
+    csrf = b2_scenario["tokens"]["lecturer"]
+    course = b2_scenario["course"]
+    context = b2_scenario["context"]
+    now = datetime.now(UTC)
+    instruction = "Tuliskan metode 😀 dan jelaskan missing value."
+
+    create_key = str(uuid4())
+    create = lecturer.post(
+        "/api/v1/assignments",
+        headers=headers(csrf, create_key),
+        json={
+            "course_id": str(course.id),
+            "title": "Tugas sintetis B2",
+            "context_version_id": str(context.id),
+        },
+    )
+    assert create.status_code == 201, create.text
+    assignment = create.json()
+    assert (
+        lecturer.post(
+            "/api/v1/assignments",
+            headers=headers(csrf, create_key),
+            json={
+                "course_id": str(course.id),
+                "title": "Tugas sintetis B2",
+                "context_version_id": str(context.id),
+            },
+        ).json()["id"]
+        == assignment["id"]
+    )
+    version = assignment["version"]
+    assert version["criterion_set"] is not None
+    version_id = version["id"]
+    opens_at = (now - timedelta(hours=1)).isoformat()
+    due_at = (now + timedelta(days=7)).isoformat()
+    version_body = {
+        "expected_revision": version["revision"],
+        "instruction_original": instruction,
+        "instruction_summary": "Ringkasan sintetis.",
+        "mode": "group",
+        "opens_at": opens_at,
+        "due_at": due_at,
+        "late_policy": "accept_with_label",
+    }
+    update_key = str(uuid4())
+    update = lecturer.put(
+        f"/api/v1/assignment-versions/{version_id}",
+        headers=headers(csrf, update_key),
+        json=version_body,
+    )
+    assert update.status_code == 200, update.text
+    replay = lecturer.put(
+        f"/api/v1/assignment-versions/{version_id}",
+        headers=headers(csrf, update_key),
+        json=version_body,
+    )
+    assert replay.status_code == 200 and replay.json()["revision"] == update.json()["revision"]
+    generated = lecturer.post(
+        f"/api/v1/assignment-versions/{version_id}/criteria-drafts",
+        headers=headers(csrf),
+        json={"rubric_file_ids": [], "generate_from_instruction": True},
+    )
+    assert generated.status_code == 201, generated.text
+    generation = generated.json()["generation"]
+    assert generation["status"] == "extractive_mock"
+    assert generation["provider_calls"] == 0 and generation["cost_usd"] == "0"
+    assert generated.json()["criteria"] == []
+    assert generation["proposals"][0]["quote"] == instruction
+    assert generation["proposals"][0]["mandatory"] is None
+    assert generation["proposals"][0]["source_span"] == {
+        "start": 0,
+        "end": len(instruction),
+    }
+    criterion_set = update.json()["criterion_set"]
+    phrase = "jelaskan missing value"
+    start = instruction.index(phrase)
+    save_criteria = lecturer.put(
+        f"/api/v1/criterion-set-versions/{criterion_set['id']}",
+        headers=headers(csrf),
+        json={
+            "expected_revision": criterion_set["revision"],
+            "criteria": [
+                {
+                    "code": "C1",
+                    "title": "Penjelasan missing value",
+                    "descriptor": "Menjelaskan penanganan missing value secara manual.",
+                    "display_order": 0,
+                    "outcome_ids": [],
+                    "requirements": [
+                        {
+                            "code": "R1",
+                            "text": phrase,
+                            "mandatory": True,
+                            "obligation_key": "missing_values.explanation",
+                            "normative_source_refs": [
+                                {
+                                    "source_kind": "instruction",
+                                    "source_id": version_id,
+                                    "span": {"start": start, "end": start + len(phrase)},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    assert save_criteria.status_code == 200, save_criteria.text
+    criterion = save_criteria.json()["criteria"][0]
+    requirement = criterion["requirements"][0]
+    assert requirement["normative_source_refs"][0]["quote"] == phrase
+    assert requirement["normative_source_refs"][0]["source_hash"]
+
+    policy = lecturer.post(
+        f"/api/v1/assignments/{assignment['id']}/numeric-policy-drafts",
+        headers=headers(csrf),
+        json={"policy_key": "synthetic-pairwise", "payload": policy_payload()},
+    )
+    assert policy.status_code == 201, policy.text
+    invalid_policy = policy_payload()
+    invalid_policy["relative_tolerance"] = "1.5"
+    assert (
+        lecturer.post(
+            f"/api/v1/assignments/{assignment['id']}/numeric-policy-drafts",
+            headers=headers(csrf),
+            json={"policy_key": "invalid-policy", "payload": invalid_policy},
+        ).status_code
+        == 422
+    )
+    policy = policy.json()
+    approved_policy = lecturer.post(
+        f"/api/v1/numeric-policy-versions/{policy['id']}/approve",
+        headers=headers(csrf),
+        json={"expected_revision": policy["revision"]},
+    )
+    assert approved_policy.status_code == 200, approved_policy.text
+
+    current_version = lecturer.get(f"/api/v1/assignment-versions/{version_id}").json()
+    package_approval = lecturer.post(
+        f"/api/v1/assignment-versions/{version_id}/approve-package",
+        headers=headers(csrf),
+        json={
+            "criterion_set_version_id": criterion_set["id"],
+            "expected_revision": current_version["revision"],
+        },
+    )
+    assert package_approval.status_code == 200, package_approval.text
+    spec_draft = lecturer.post(
+        f"/api/v1/assignment-versions/{version_id}/specification-drafts",
+        headers=headers(csrf),
+        json={"criterion_set_version_id": criterion_set["id"]},
+    )
+    assert spec_draft.status_code == 201, spec_draft.text
+    specification = spec_draft.json()
+    common = {
+        "instruction_id": version_id,
+        "criterion_id": criterion["id"],
+        "requirement_id": requirement["id"],
+        "obligation_key": requirement["obligation_key"],
+        "policy_id": policy["id"],
+        "instruction_length": len(instruction),
+    }
+    invalid = specification_payload(**common, include_requirement=True)
+    invalid["elements"][0]["operators"] = ["run_shell"]
+    invalid_response = lecturer.put(
+        f"/api/v1/specification-versions/{specification['id']}",
+        headers=headers(csrf),
+        json={"expected_revision": specification["revision"], "specification": invalid},
+    )
+    assert invalid_response.status_code == 422
+    assert (
+        lecturer.get(f"/api/v1/specification-versions/{specification['id']}").json()["revision"]
+        == 1
+    )
+
+    incomplete = specification_payload(**common, include_requirement=False)
+    first_report = lecturer.put(
+        f"/api/v1/specification-versions/{specification['id']}",
+        headers=headers(csrf),
+        json={"expected_revision": 1, "specification": incomplete},
+    )
+    assert first_report.status_code == 200, first_report.text
+    assert first_report.json()["effective_status"] == "failed"
+    blocking = lecturer.post(
+        f"/api/v1/spec-lint-reports/{first_report.json()['lint_report_id']}/resolutions",
+        headers=headers(csrf),
+        json={
+            "issue_code": f"unsupported_requirement:{requirement['id']}",
+            "resolution": "acknowledged_faithful",
+            "reason": "Tidak boleh menimpa requirement yang belum didukung.",
+            "expected_spec_revision": 2,
+            "expected_report_revision": 1,
+        },
+    )
+    assert blocking.status_code == 422
+
+    complete = specification_payload(**common, include_requirement=True)
+    second_report = lecturer.put(
+        f"/api/v1/specification-versions/{specification['id']}",
+        headers=headers(csrf),
+        json={"expected_revision": 2, "specification": complete},
+    )
+    assert second_report.status_code == 200, second_report.text
+    assert second_report.json()["effective_status"] == "needs_review"
+    stale_resolution = lecturer.post(
+        f"/api/v1/spec-lint-reports/{first_report.json()['lint_report_id']}/resolutions",
+        headers=headers(csrf),
+        json={
+            "issue_code": "EL-REQ-MISSING-VALUE:condition_fidelity_review",
+            "resolution": "acknowledged_human_boundary",
+            "reason": "Resolution pada report lama.",
+            "expected_spec_revision": 3,
+            "expected_report_revision": 1,
+        },
+    )
+    assert stale_resolution.status_code == 409
+
+    current_report_id = second_report.json()["lint_report_id"]
+    issue_code = "EL-REQ-MISSING-VALUE:condition_fidelity_review"
+    resolved = lecturer.post(
+        f"/api/v1/spec-lint-reports/{current_report_id}/resolutions",
+        headers=headers(csrf),
+        json={
+            "issue_code": issue_code,
+            "resolution": "acknowledged_human_boundary",
+            "reason": "Kondisi sumber harus ditetapkan dan ditinjau dosen.",
+            "expected_spec_revision": 3,
+            "expected_report_revision": 1,
+        },
+    )
+    assert resolved.status_code == 200, resolved.text
+    assert resolved.json()["resolution_revision"] == 2
+    duplicate = lecturer.post(
+        f"/api/v1/spec-lint-reports/{current_report_id}/resolutions",
+        headers=headers(csrf),
+        json={
+            "issue_code": issue_code,
+            "resolution": "acknowledged_human_boundary",
+            "reason": "Tidak boleh menggandakan resolusi.",
+            "expected_spec_revision": 3,
+            "expected_report_revision": 2,
+        },
+    )
+    assert duplicate.status_code == 409
+    approved = lecturer.post(
+        f"/api/v1/specification-versions/{specification['id']}/approve",
+        headers=headers(csrf),
+        json={
+            "expected_revision": 3,
+            "lint_report_id": current_report_id,
+            "expected_report_revision": 2,
+            "fidelity_confirmation": True,
+        },
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["fidelity_confirmation"] is True
+    assert approved.json()["state"] == "approved"
+
+    current_version = lecturer.get(f"/api/v1/assignment-versions/{version_id}").json()
+    published = lecturer.post(
+        f"/api/v1/assignment-versions/{version_id}/publish",
+        headers=headers(csrf),
+        json={"expected_revision": current_version["revision"]},
+    )
+    assert published.status_code == 200, published.text
+
+    group = lecturer.post(
+        f"/api/v1/assignments/{assignment['id']}/groups",
+        headers=headers(csrf),
+        json={
+            "name": "Kelompok sintetis",
+            "member_user_ids": [
+                str(b2_scenario["users"]["student_a"].id),
+                str(b2_scenario["users"]["student_b"].id),
+            ],
+            "active": True,
+        },
+    )
+    assert group.status_code == 201, group.text
+    duplicate_member = lecturer.post(
+        f"/api/v1/assignments/{assignment['id']}/groups",
+        headers=headers(csrf),
+        json={
+            "name": "Kelompok duplikat",
+            "member_user_ids": [str(b2_scenario["users"]["student_a"].id)],
+            "active": True,
+        },
+    )
+    assert duplicate_member.status_code == 409
+    updated_group = lecturer.put(
+        f"/api/v1/groups/{group.json()['id']}",
+        headers=headers(csrf),
+        json={
+            "expected_revision": group.json()["revision"],
+            "name": "Kelompok sintetis diperbarui",
+            "member_user_ids": [
+                str(b2_scenario["users"]["student_a"].id),
+                str(b2_scenario["users"]["student_b"].id),
+            ],
+            "active": True,
+        },
+    )
+    assert updated_group.status_code == 200, updated_group.text
+    assert len(updated_group.json()["members"]) == 2
+
+    public = b2_scenario["clients"]["student_a"].get(f"/api/v1/assignments/{assignment['id']}")
+    assert public.status_code == 200, public.text
+    public_body = public.json()
+    assert public_body["version"]["instruction_original"] == instruction
+    assert (
+        public_body["version"]["instruction_summary_label"] == "Ringkasan, bukan sumber kewajiban"
+    )
+    assert public_body["version"]["criteria"][0]["requirements"][0]["text"] == phrase
+    assert "payload" not in public_body["version"]
+    assert "decision_question" not in public.text
+    assert "numeric_policy_version_id" not in public.text
+    student_groups = b2_scenario["clients"]["student_a"].get(
+        f"/api/v1/assignments/{assignment['id']}/groups"
+    )
+    assert student_groups.status_code == 200
+    assert len(student_groups.json()["items"]) == 1
+    assert len(student_groups.json()["items"][0]["members"]) == 2
+    outsider = b2_scenario["clients"]["outsider"].get(f"/api/v1/assignments/{assignment['id']}")
+    assert outsider.status_code == 404
+
+    new_version = lecturer.post(
+        f"/api/v1/assignments/{assignment['id']}/new-version",
+        headers=headers(csrf),
+        json={"base_version_id": version_id},
+    )
+    assert new_version.status_code == 201, new_version.text
+    assert new_version.json()["state"] == "draft"
+    assert new_version.json()["package_approved_at"] is None
+    assert new_version.json()["criterion_set"]["state"] == "draft"
+    assert new_version.json()["specification"] is None
+
+    history_fixture = json.loads(
+        (Path(__file__).parents[2] / "fixtures/synthetic/b2-schema1-history.json").read_text()
+    )
+    legacy_payload = history_fixture["payload"]
+    legacy_element = legacy_payload["elements"][0]
+    assert "grounding_contract" not in legacy_element
+    assert "derivation_refs" not in legacy_element
+    legacy = SpecificationVersion(
+        assignment_id=UUID(assignment["id"]),
+        version_no=2,
+        schema_version=1,
+        criterion_set_version_id=UUID(new_version.json()["criterion_set"]["id"]),
+        context_version_id=context.id,
+        instruction_hash=new_version.json()["instruction_hash"],
+        payload_json=legacy_payload,
+        content_hash=canonical_hash(legacy_payload),
+        state="draft",
+        revision=1,
+    )
+    with SessionFactory.begin() as db:
+        db.add(legacy)
+        db.flush()
+        legacy_id = str(legacy.id)
+    legacy_read = lecturer.get(f"/api/v1/specification-versions/{legacy_id}")
+    assert legacy_read.status_code == 200
+    assert legacy_read.json()["schema_version"] == 1
+    assert legacy_read.json()["payload"] == legacy_payload
+    assert legacy_read.json()["lint"] is None
+    assert (
+        lecturer.put(
+            f"/api/v1/specification-versions/{legacy_id}",
+            headers=headers(csrf),
+            json={"expected_revision": 1, "specification": {"schema_version": 2}},
+        ).status_code
+        == 409
+    )
+    assert (
+        lecturer.post(
+            f"/api/v1/specification-versions/{legacy_id}/lint",
+            headers=headers(csrf),
+            json={"expected_revision": 1},
+        ).status_code
+        == 409
+    )
+    assert (
+        lecturer.post(
+            f"/api/v1/specification-versions/{legacy_id}/approve",
+            headers=headers(csrf),
+            json={
+                "expected_revision": 1,
+                "lint_report_id": str(uuid4()),
+                "expected_report_revision": 1,
+                "fidelity_confirmation": True,
+            },
+        ).status_code
+        == 409
+    )

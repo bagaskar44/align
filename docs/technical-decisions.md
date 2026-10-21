@@ -69,3 +69,36 @@
 - Baseline context sebelumnya menyimpan max_calls=0 karena adapter belum dipanggil. Job baru memakai cap normatif 3 calls, 2 vision, input/output 20k/4k dan USD0.05; implementasi mock memakai maksimum satu call per assembly dengan usage/paid calls nol. Batas UTF-8 byte 20.000/4.000 konservatif dipakai pada simulasi; payload yang melampaui batas ditahan seluruhnya dan tersedia manual, tanpa silent truncation. Tokenizer live dan accounting finansial tetap pending.
 - `PROVIDER_MODE=off` merupakan pilihan eksplisit untuk jalur manual, dengan health/banner yang sesuai. Refusal, unavailable, schema/membership invalid, cap dan konfigurasi berbeda dari snapshot menghasilkan limitation, tidak mengubah field manual. Live tetap tidak dapat dibangun/dipanggil oleh consumer B1 ini.
 - Bukti: `test_b1_context_provider.py` (schema, refusal, foreign ref/scope, disabled/live, cap), `test_b1_identity_context.py` (failure injection hingga manual approval), browser DOCX nyata dan matrix Docling dengan status mock tervalidasi. Ini menuntaskan sambungan mock B1; tidak menyatakan seluruh kontrak adapter/routing/model/keuangan FR-04/FR-22 lengkap sebelum B5/B6.
+
+## TD-B2-01 — Usulan instruksi hanya berupa excerpt
+
+- Status: accepted sebagai baseline B2 sementara; tidak menutup gate generator.
+- Konteks: kriteria harus dapat disunting tanpa provider, dan model tidak boleh menetapkan kewajiban atau status wajib/opsional.
+- Keputusan: generator mock yang tersedia hanya mengembalikan baris persis dari `instruction_original`, hash dan offset Unicode code point. `mandatory` tetap null; usulan tidak ditulis otomatis ke CriterionSet, tidak disahkan, dan tidak melakukan provider call.
+- Alasan: alur mock dapat diuji tanpa menafsirkan teks akademik atau menciptakan kewajiban tersembunyi. Ini bukan semantic extraction atau adapter model.
+- Dampak: dosen masih dapat mengisi paket manual. Rubrik tetap disimpan privat dengan hash/binding, tetapi belum memakai parser B1 dan belum menghasilkan usulan dari isi rubrik. Integrasi parser/generator rubrik masih pending B2.
+- Bukti: `tests/integration/test_b2_assignment_flow.py`; `services/api/src/align_api/assignments.py`.
+
+## TD-B2-02 — Histori schema 1 tidak dimutasi
+
+- Status: accepted.
+- Konteks: fresh build tidak memiliki deployment lama nyata; B2 tetap harus menjaga kompatibilitas row schema 1.
+- Keputusan: GET mempertahankan payload schema 1 persis. PUT, lint, resolution, approval dan publish yang bukan schema 2 ditolak; pembuatan spec baru selalu schema 2.
+- Alasan: migration tidak mengarang derivation, grounding atau lint historis.
+- Dampak: fixture schema 1 diberi label sintetis/kompatibilitas, bukan contoh data production. Perubahan history memerlukan AssignmentVersion/spec v2 baru.
+- Bukti: `fixtures/synthetic/b2-schema1-history.json`; `tests/integration/test_b2_assignment_flow.py`.
+
+## TD-B2-03 — Roster kelompok mahasiswa
+
+- Status: accepted.
+- Keputusan: mahasiswa hanya dapat menemukan kelompok tempat membership aktifnya sendiri, tetapi response kelompok tersebut memuat roster lengkap yang berhak dilihat menurut master. Dosen dapat melihat semua kelompok course.
+- Alasan: master mengizinkan roster kelompok sendiri; filter anggota pada serializer sebelumnya menyembunyikan rekan setim.
+- Bukti: `tests/integration/test_b2_assignment_flow.py`.
+
+## TD-B2-04 — Bootstrap role database pada volume audit Mac
+
+- Status: keputusan verifikasi lokal.
+- Konteks: volume PostgreSQL audit baru sehat, tetapi Docker init mencoba mengeksekusi bind-mounted `docker/postgres/init/001-roles.sh` dan menerima `Permission denied`.
+- Keputusan: uji lokal menjalankan skrip repository yang sama melalui `bash` di container audit, lalu memakai migration service normal. Volume/data development tidak disentuh.
+- Dampak: ini tidak mengubah file atau permission di repository. Setup bersih Compose perlu memastikan skrip role dapat dijalankan atau menjalankan prosedur Bash yang sudah disediakan `scripts/dev-macos.sh`.
+- Bukti: migration isolated `0001`–`0004` dan B0/B1/B2 integration suite lulus; detail ada di `docs/handover/B2.md`.

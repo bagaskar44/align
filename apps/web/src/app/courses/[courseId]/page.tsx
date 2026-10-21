@@ -2,8 +2,9 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { ContextWorkspace } from "@/components/ContextWorkspace";
+import { AssignmentWorkspace, StudentAssignments } from "@/components/AssignmentWorkspace";
 import { LogoutButton } from "@/components/LogoutButton";
-import { getContextVersions, getCourse, getProfile } from "@/lib/api";
+import { getContextVersions, getCourse, getCourseAssignments, getProfile } from "@/lib/api";
 
 export default async function CourseContextPage({ params }: { params: Promise<{ courseId: string }> }) {
   const { courseId } = await params;
@@ -11,13 +12,17 @@ export default async function CourseContextPage({ params }: { params: Promise<{ 
   if (profileResult.kind === "unauthenticated") redirect("/login");
   if (profileResult.kind === "unavailable") return <PageError />;
   if (profileResult.data.user.must_change_password) redirect("/change-password");
-  const membership = profileResult.data.memberships.find((item) => item.course_id === courseId && item.role === "lecturer");
+  const membership = profileResult.data.memberships.find((item) => item.course_id === courseId);
   if (!membership) {
-    return <main className="centered-page"><section className="auth-card"><Link href="/">← Kembali ke mata kuliah</Link><h1>Ruang dosen</h1><p className="intro-copy">Akun ini tidak memiliki keanggotaan dosen aktif pada mata kuliah tersebut.</p></section></main>;
+    return <main className="centered-page"><section className="auth-card"><Link href="/">← Kembali ke mata kuliah</Link><h1>Ruang mata kuliah</h1><p className="intro-copy">Akun ini tidak memiliki keanggotaan aktif pada mata kuliah tersebut.</p></section></main>;
   }
-  const [courseResult, versionsResult] = await Promise.all([getCourse(courseId), getContextVersions(courseId)]);
-  if (courseResult.kind === "unauthenticated" || versionsResult.kind === "unauthenticated") redirect("/login");
-  if (courseResult.kind === "unavailable" || versionsResult.kind === "unavailable") return <PageError />;
+  const [courseResult, assignmentsResult, versionsResult] = await Promise.all([
+    getCourse(courseId),
+    getCourseAssignments(courseId),
+    membership.role === "lecturer" ? getContextVersions(courseId) : Promise.resolve(null),
+  ]);
+  if (courseResult.kind === "unauthenticated" || assignmentsResult.kind === "unauthenticated" || versionsResult?.kind === "unauthenticated") redirect("/login");
+  if (courseResult.kind === "unavailable" || assignmentsResult.kind === "unavailable" || versionsResult?.kind === "unavailable") return <PageError />;
 
   return (
     <main className="page-shell">
@@ -26,8 +31,12 @@ export default async function CourseContextPage({ params }: { params: Promise<{ 
         <div className="topbar-actions"><Link className="button button-quiet" href="/">Mata kuliah</Link><span className="user-name">{profileResult.data.user.display_name}</span><LogoutButton csrfToken={profileResult.data.csrf_token} /></div>
       </header>
       <div className="content-shell">
-        <section className="page-intro" aria-labelledby="course-title"><p className="eyebrow">KONTEKS KURIKULUM · {courseResult.data.code}</p><h1 id="course-title">{courseResult.data.title}</h1><p className="intro-copy">Kelola versi konteks, sumber normatif, usulan parser, dan keputusan akademik.</p></section>
-        <ContextWorkspace course={courseResult.data} csrfToken={profileResult.data.csrf_token} initialVersions={versionsResult.data.items} initialCursor={versionsResult.data.next_cursor} />
+        <section className="page-intro" aria-labelledby="course-title"><p className="eyebrow">{membership.role === "lecturer" ? "RUANG DOSEN" : "RUANG MAHASISWA"} · {courseResult.data.code}</p><h1 id="course-title">{courseResult.data.title}</h1><p className="intro-copy">{membership.role === "lecturer" ? "Kelola konteks approved, paket tugas, requirements, NumericPolicy, dan CheckSpecification." : "Lihat instruksi dan ketentuan tugas yang sudah diterbitkan."}</p></section>
+        {membership.role === "lecturer" && versionsResult?.kind === "ok" && <>
+          <ContextWorkspace course={courseResult.data} csrfToken={profileResult.data.csrf_token} initialVersions={versionsResult.data.items} initialCursor={versionsResult.data.next_cursor} />
+          <AssignmentWorkspace course={courseResult.data} csrfToken={profileResult.data.csrf_token} approvedContexts={versionsResult.data.items} initialAssignments={assignmentsResult.data.items} />
+        </>}
+        {membership.role === "student" && <StudentAssignments courseId={courseId} csrfToken={profileResult.data.csrf_token} initialAssignments={assignmentsResult.data.items} />}
       </div>
     </main>
   );
