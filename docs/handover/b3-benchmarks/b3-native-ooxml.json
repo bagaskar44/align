@@ -1,0 +1,328 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-21T09:29:01.953805+00:00",
+  "profile_id": "native_ooxml_v1",
+  "profile_sha256": "8bbb8e3601515fe7d370acedc3908887e58b6be7065f81b468154440448c3978",
+  "parser_mode": "actual-isolated-parser-child; mock=false",
+  "hardware": {
+    "platform": "Linux-7.0.14-linuxkit-aarch64-with-glibc2.41",
+    "machine": "aarch64",
+    "processor": "unknown",
+    "cpu_count": 8,
+    "host_or_vm_memory_bytes": 12526637056,
+    "container_memory_limit_bytes": 9663676416,
+    "tesseract": "tesseract 5.5.0"
+  },
+  "packages": {
+    "docling": "not-installed",
+    "docling-core": "2.102.0",
+    "docling-slim": "2.140.0",
+    "python-docx": "1.2.0",
+    "openpyxl": "3.1.5",
+    "pillow": "12.3.0",
+    "pypdf": "6.21.1",
+    "torch": "2.14.1+cpu",
+    "torchvision": "0.29.1+cpu"
+  },
+  "resources": {
+    "schema_version": 1,
+    "profile_key": "native_ooxml_v1",
+    "version_no": 1,
+    "backend": "python-docx+ooxml",
+    "formats": [
+      "docx",
+      "xlsx"
+    ],
+    "package_lock": {
+      "uv_lock_sha256": "eee5c7af8580501b4bcb0fd8b4e47bb1c31fc3c7043b10e55b81db7ab3f59097",
+      "docling-slim": "2.140.0",
+      "python-docx": "1.2.0",
+      "openpyxl": "3.1.5"
+    },
+    "implementation_sha256": "0d6d9806e1e7bfe4c7ef6aae370378f0d18e88b18072d694c7820f53fc8ecc2d",
+    "model_artifacts": [],
+    "ocr": null,
+    "options": {},
+    "options_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "memory_limit_bytes": 2147483648,
+    "soft_timeout_seconds": 120,
+    "hard_timeout_seconds": 150,
+    "initial_page_batch_size": 1,
+    "heavy": false
+  },
+  "fixtures": [
+    {
+      "name": "complex-submission.docx",
+      "relative_path": "complex-submission.docx",
+      "format": "docx",
+      "sha256": "8fe525f17cbf0ec80c185a4a01ac2631b7eea2a6d26da0a51378ccf2501ab1a9",
+      "size_bytes": 37960,
+      "pages": null,
+      "preflight": {
+        "zip_entries": 19,
+        "expanded_bytes": 830969,
+        "nodes": 92,
+        "media": 0,
+        "docx_parts": [
+          "word/document.xml",
+          "word/header1.xml",
+          "word/footer1.xml"
+        ],
+        "docx_media_parts": [],
+        "docx_package_parts": [
+          "[Content_Types].xml",
+          "_rels/.rels",
+          "docProps/core.xml",
+          "docProps/app.xml",
+          "word/document.xml",
+          "word/_rels/document.xml.rels",
+          "word/styles.xml",
+          "word/stylesWithEffects.xml",
+          "word/settings.xml",
+          "word/webSettings.xml",
+          "word/fontTable.xml",
+          "word/theme/theme1.xml",
+          "customXml/item1.xml",
+          "customXml/_rels/item1.xml.rels",
+          "customXml/itemProps1.xml",
+          "word/numbering.xml",
+          "word/header1.xml",
+          "word/footer1.xml",
+          "docProps/thumbnail.jpeg"
+        ],
+        "parser_profile": "native_ooxml_v1",
+        "size_bytes": 37960,
+        "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      },
+      "preflight_ms": 8,
+      "profile_memory_limit_bytes": 2147483648,
+      "runs": {
+        "cold": {
+          "status": "completed",
+          "parse_statuses": [
+            "partially_parsed"
+          ],
+          "failures": [],
+          "tasks": [
+            {
+              "page": null,
+              "wall_ms": 257,
+              "stage_timings_ms": {
+                "docx_ooxml_extraction_inventory": 97.306
+              },
+              "failure_code": null,
+              "process_exit": "0",
+              "peak_rss_bytes": 34529280,
+              "cgroup_oom_kills_before": 0,
+              "cgroup_oom_kills_after": 0,
+              "parse_status": "partially_parsed",
+              "unit_count": 34,
+              "evidence_count": 14
+            }
+          ],
+          "unit_count": 34,
+          "evidence_count": 14,
+          "anchor_checks": {
+            "verified": 33,
+            "invalid": 0,
+            "unanchored_or_unsupported": 0
+          },
+          "table_evidence_count": 10,
+          "spreadsheet_header_context_count": 0,
+          "formula_cache_unverified_count": 0,
+          "stage_names": [],
+          "container_cgroup_baseline_bytes": 116367360,
+          "container_cgroup_peak_observed_bytes": 137056256,
+          "container_cgroup_peak_scope": "whole parser-worker container cgroup; includes the benchmark process and other resident container processes; sampled every 50 ms",
+          "cgroup_oom_kills_before": 0,
+          "cgroup_oom_kills_after": 0
+        },
+        "warm": {
+          "status": "completed",
+          "parse_statuses": [
+            "partially_parsed"
+          ],
+          "failures": [],
+          "tasks": [
+            {
+              "page": null,
+              "wall_ms": 255,
+              "stage_timings_ms": {
+                "docx_ooxml_extraction_inventory": 85.411
+              },
+              "failure_code": null,
+              "process_exit": "0",
+              "peak_rss_bytes": 38641664,
+              "cgroup_oom_kills_before": 0,
+              "cgroup_oom_kills_after": 0,
+              "parse_status": "partially_parsed",
+              "unit_count": 34,
+              "evidence_count": 14
+            }
+          ],
+          "unit_count": 34,
+          "evidence_count": 14,
+          "anchor_checks": {
+            "verified": 33,
+            "invalid": 0,
+            "unanchored_or_unsupported": 0
+          },
+          "table_evidence_count": 10,
+          "spreadsheet_header_context_count": 0,
+          "formula_cache_unverified_count": 0,
+          "stage_names": [],
+          "container_cgroup_baseline_bytes": 116506624,
+          "container_cgroup_peak_observed_bytes": 141123584,
+          "container_cgroup_peak_scope": "whole parser-worker container cgroup; includes the benchmark process and other resident container processes; sampled every 50 ms",
+          "cgroup_oom_kills_before": 0,
+          "cgroup_oom_kills_after": 0
+        }
+      }
+    },
+    {
+      "name": "complex-submission.xlsx",
+      "relative_path": "complex-submission.xlsx",
+      "format": "xlsx",
+      "sha256": "0ce5725c0339e2a3b548d9cc5ba419b13488557779f810a2a90202931802467e",
+      "size_bytes": 7314,
+      "pages": null,
+      "preflight": {
+        "zip_entries": 14,
+        "expanded_bytes": 21717,
+        "sheets": [
+          {
+            "name": "Ringkasan",
+            "state": "visible"
+          },
+          {
+            "name": "Catatan internal",
+            "state": "hidden"
+          }
+        ],
+        "nonempty_cells": 17,
+        "formula_cells": 2,
+        "external_reference_parts": [],
+        "xlsx_package_parts": [
+          "docProps/app.xml",
+          "docProps/core.xml",
+          "xl/theme/theme1.xml",
+          "xl/worksheets/sheet1.xml",
+          "xl/drawings/drawing1.xml",
+          "xl/drawings/_rels/drawing1.xml.rels",
+          "xl/worksheets/_rels/sheet1.xml.rels",
+          "xl/worksheets/sheet2.xml",
+          "xl/charts/chart1.xml",
+          "xl/styles.xml",
+          "_rels/.rels",
+          "xl/workbook.xml",
+          "xl/_rels/workbook.xml.rels",
+          "[Content_Types].xml"
+        ],
+        "parser_profile": "native_ooxml_v1",
+        "size_bytes": 7314,
+        "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      },
+      "preflight_ms": 13,
+      "profile_memory_limit_bytes": 2147483648,
+      "runs": {
+        "cold": {
+          "status": "completed",
+          "parse_statuses": [
+            "partially_parsed"
+          ],
+          "failures": [],
+          "tasks": [
+            {
+              "page": null,
+              "wall_ms": 366,
+              "stage_timings_ms": {
+                "xlsx_ooxml_extraction_inventory": 187.52
+              },
+              "failure_code": null,
+              "process_exit": "0",
+              "peak_rss_bytes": 47792128,
+              "cgroup_oom_kills_before": 0,
+              "cgroup_oom_kills_after": 0,
+              "parse_status": "partially_parsed",
+              "unit_count": 25,
+              "evidence_count": 17
+            }
+          ],
+          "unit_count": 23,
+          "evidence_count": 17,
+          "anchor_checks": {
+            "verified": 22,
+            "invalid": 0,
+            "unanchored_or_unsupported": 0
+          },
+          "table_evidence_count": 0,
+          "spreadsheet_header_context_count": 17,
+          "formula_cache_unverified_count": 2,
+          "stage_names": [
+            "cell_extraction",
+            "formula_cache_pair",
+            "metadata_inventory",
+            "sheet_inventory"
+          ],
+          "container_cgroup_baseline_bytes": 119492608,
+          "container_cgroup_peak_observed_bytes": 145465344,
+          "container_cgroup_peak_scope": "whole parser-worker container cgroup; includes the benchmark process and other resident container processes; sampled every 50 ms",
+          "cgroup_oom_kills_before": 0,
+          "cgroup_oom_kills_after": 0
+        },
+        "warm": {
+          "status": "completed",
+          "parse_statuses": [
+            "partially_parsed"
+          ],
+          "failures": [],
+          "tasks": [
+            {
+              "page": null,
+              "wall_ms": 316,
+              "stage_timings_ms": {
+                "xlsx_ooxml_extraction_inventory": 153.932
+              },
+              "failure_code": null,
+              "process_exit": "0",
+              "peak_rss_bytes": 46809088,
+              "cgroup_oom_kills_before": 0,
+              "cgroup_oom_kills_after": 0,
+              "parse_status": "partially_parsed",
+              "unit_count": 25,
+              "evidence_count": 17
+            }
+          ],
+          "unit_count": 23,
+          "evidence_count": 17,
+          "anchor_checks": {
+            "verified": 22,
+            "invalid": 0,
+            "unanchored_or_unsupported": 0
+          },
+          "table_evidence_count": 0,
+          "spreadsheet_header_context_count": 17,
+          "formula_cache_unverified_count": 2,
+          "stage_names": [
+            "cell_extraction",
+            "formula_cache_pair",
+            "metadata_inventory",
+            "sheet_inventory"
+          ],
+          "container_cgroup_baseline_bytes": 120225792,
+          "container_cgroup_peak_observed_bytes": 145412096,
+          "container_cgroup_peak_scope": "whole parser-worker container cgroup; includes the benchmark process and other resident container processes; sampled every 50 ms",
+          "cgroup_oom_kills_before": 0,
+          "cgroup_oom_kills_after": 0
+        }
+      }
+    }
+  ],
+  "support_limits": [
+    "OCR output is an extracted technical artifact, not verified handwriting recognition.",
+    "Spreadsheet formulas are never executed; cached values remain unverified.",
+    "Charts, drawings and embedded media are inventory items and remain unsupported unless the parser emits verified content.",
+    "A successful sample is not evidence that every allowed 100-page or maximum-size bundle finishes within 600 active seconds.",
+    "Docling 2.140.0 reports render/layout/OCR/table work as a combined conversion call; stage timings do not claim unexposed internal substage measurements."
+  ]
+}

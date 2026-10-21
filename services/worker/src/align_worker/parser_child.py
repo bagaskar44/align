@@ -6,12 +6,14 @@ import os
 import re
 import sys
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 from typing import Any
 
 MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_EVIDENCE_ITEMS = 20_000
+MAX_XLSX_EVIDENCE_ITEMS = 100_000
 _FIELD_PATTERNS = {
     "course_code": re.compile(r"(?im)^\s*(?:kode\s*(?:mata\s*)?kuliah|kode\s*mk|course[_ ]code)\s*[:=\-]\s*(\S[^\r\n]{0,63})\s*$"),
     "course_title": re.compile(r"(?im)^\s*(?:nama\s*(?:mata\s*)?kuliah|judul\s*kuliah|course[_ ]title)\s*[:=\-]\s*(\S[^\r\n]{0,239})\s*$"),
@@ -90,6 +92,7 @@ def _field_candidates(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _parse_docx(path: Path) -> dict[str, Any]:
+    started = time.perf_counter()
     from docx import Document
     from docx.oxml.ns import qn
     from docx.table import Table
@@ -119,8 +122,16 @@ def _parse_docx(path: Path) -> dict[str, Any]:
         evidence.append(_make_evidence(unit, "table", {"rows": rows, "text": "\n".join(" | ".join(row) for row in rows)}))
         for row_index, row in enumerate(table.rows, start=1):
             for cell_index, cell in enumerate(row.cells, start=1):
+                cell_path = f"{table_path}/w:tr[{row_index}]/w:tc[{cell_index}]"
+                cell_anchor = {"format": "docx", "part": part, "structural_path": cell_path,
+                               "item_kind": "cell", "item_index": (row_index - 1) * max(1, len(row.cells)) + cell_index}
+                cell_unit = _make_unit("cell", cell_anchor)
+                units.append(cell_unit)
+                evidence.append(_make_evidence(cell_unit, "table", {"text": cell.text, "row": row_index,
+                    "column": cell_index, "table_path": table_path, "rows": len(table.rows),
+                    "columns": len(row.cells)}))
                 for nested_index, nested in enumerate(cell.tables, start=1):
-                    nested_path = f"{table_path}/w:tr[{row_index}]/w:tc[{cell_index}]/w:tbl[{nested_index}]"
+                    nested_path = f"{cell_path}/w:tbl[{nested_index}]"
                     parse_table(nested, nested_path, nested_index)
 
     for block_index, child in enumerate(document.element.body.iterchildren(), start=1):
@@ -131,8 +142,14 @@ def _parse_docx(path: Path) -> dict[str, Any]:
             unit = _make_unit("paragraph", anchor)
             units.append(unit)
             paragraph = Paragraph(child, document)
-            text = paragraph.text
-            evidence.append(_make_evidence(unit, "paragraph", {"text": text, "style": paragraph.style.name if paragraph.style else None}))
+            text = "".join(child.xpath(".//w:t/text()"))
+            revision_marked = bool(child.xpath(".//w:ins | .//w:del"))
+            revision_limit = [{"code": "revision_marks_present", "message": "Inserted text is included; deleted text is excluded. Revision intent still requires verification."}] if revision_marked else []
+            if revision_marked:
+                unit["parse_status"] = "partially_parsed"
+                unit["limitations"] = revision_limit
+                limitations.extend(revision_limit)
+            evidence.append(_make_evidence(unit, "paragraph", {"text": text, "style": paragraph.style.name if paragraph.style else None}, unit["parse_status"]))
         elif child.tag == qn("w:tbl"):
             table_index += 1
             parse_table(Table(child, document), f"/word/document.xml/w:document/w:body/w:tbl[{table_index}]", table_index)
@@ -155,14 +172,48 @@ def _parse_docx(path: Path) -> dict[str, Any]:
             if name == part:
                 continue
             anchor = {"format": "docx", "part": name, "structural_path": f"/{name}", "item_kind": "media", "item_index": index}
-            reason = {"code": "unsupported_ooxml_part", "message": "This OOXML part is retained as an unsupported source unit."}
-            units.append(_make_unit("container", anchor, "unsupported", [reason]))
-            limitations.append(reason)
+            content_container = _make_unit("container", anchor)
+            units.append(content_container)
+            if name.startswith(("word/header", "word/footer")) or name in {"word/footnotes.xml", "word/endnotes.xml"}:
+                from defusedxml import ElementTree
+
+                with archive.open(name) as xml_stream:
+                    part_root = ElementTree.parse(xml_stream).getroot()
+                paragraphs = part_root.findall(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p")
+                for paragraph_index, paragraph_node in enumerate(paragraphs, start=1):
+                    structural = f"/{name}/w:p[{paragraph_index}]"
+                    paragraph_anchor = {"format": "docx", "part": name, "structural_path": structural,
+                                        "item_kind": "paragraph", "item_index": paragraph_index}
+                    paragraph_unit = _make_unit("paragraph", paragraph_anchor)
+                    units.append(paragraph_unit)
+                    text = "".join(item.text or "" for item in paragraph_node.iter()
+                                   if item.tag == "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t")
+                    evidence.append(_make_evidence(paragraph_unit, "paragraph", {"text": text, "part_role": name.split("/")[-1].split(".")[0]}))
+                if not paragraphs:
+                    content_container["parse_status"] = "partially_parsed"
+                    reason = {"code": "empty_or_unsupported_ooxml_part", "message": "OOXML part terinventaris tetapi tidak memiliki paragraph yang dapat diekstrak."}
+                    content_container["limitations"].append(reason)
+                    limitations.append(reason)
+            else:
+                reason = {"code": "unsupported_ooxml_part", "message": "OOXML part ini disimpan dalam inventory tetapi tidak ditafsirkan."}
+                content_container["parse_status"] = "unsupported"
+                content_container["limitations"] = [reason]
+                limitations.append(reason)
         media_parts = [name for name in names if name.startswith("word/media/") and not name.endswith("/")]
         for index, name in enumerate(media_parts, start=1):
             anchor = {"format": "docx", "part": name, "structural_path": f"/{name}", "item_kind": "media", "item_index": index}
             reason = {"code": "embedded_media_not_interpreted", "message": "Embedded media is inventoried and awaits visual interpretation."}
             units.append(_make_unit("media", anchor, "unsupported", [reason]))
+            limitations.append(reason)
+        handled_parts = set(content_parts) | set(media_parts)
+        for index, name in enumerate(names, start=1):
+            if name in handled_parts:
+                continue
+            anchor = {"format": "docx", "part": name, "structural_path": f"/{name}",
+                      "item_kind": "media", "item_index": index}
+            reason = {"code": "ooxml_package_part_unsupported",
+                      "message": "Bagian package OOXML tercatat tetapi tidak ditafsirkan oleh profile ini."}
+            units.append(_make_unit("unsupported", anchor, "unsupported", [reason]))
             limitations.append(reason)
         textbox_found = False
         revision_found = False
@@ -196,14 +247,150 @@ def _parse_docx(path: Path) -> dict[str, Any]:
         "candidate_fields": _field_candidates(evidence),
         "limitations": limitations,
         "parser": "python-docx+ooxml",
+        "stage_timings_ms": {"docx_ooxml_extraction_inventory": max(0.0, round((time.perf_counter() - started) * 1000, 3))},
+    }
+
+
+def _parse_xlsx(path: Path) -> dict[str, Any]:
+    started = time.perf_counter()
+    from openpyxl import load_workbook
+    from openpyxl.utils import get_column_letter
+
+    root_anchor = {"format": "file", "locator_note": "XLSX package root"}
+    root = _make_unit("root", root_anchor)
+    units: list[dict[str, Any]] = [root]
+    evidence: list[dict[str, Any]] = []
+    limitations: list[dict[str, str]] = []
+    formula_count = 0
+    cache_missing = 0
+    try:
+        formula_book = load_workbook(path, data_only=False, read_only=False, keep_links=False)
+        cached_book = load_workbook(path, data_only=True, read_only=False, keep_links=False)
+    except Exception as exc:
+        raise ValueError("XLSX workbook could not be opened safely") from exc
+    try:
+        if len(formula_book.worksheets) > 25:
+            raise ValueError("spreadsheet sheet limit exceeded")
+        for _sheet_order, sheet in enumerate(formula_book.worksheets, start=1):
+            cached_sheet = cached_book[sheet.title]
+            sheet_anchor = {"format": "xlsx", "sheet_name": sheet.title, "cell_range": "A1"}
+            sheet_unit = _make_unit("container", sheet_anchor)
+            units.append(sheet_unit)
+            hidden = sheet.sheet_state != "visible"
+            if hidden:
+                sheet_unit["limitations"] = [{"code": "hidden_sheet", "message": "Sheet disembunyikan pada workbook asli; isi tetap diinventaris."}]
+                sheet_unit["parse_status"] = "partially_parsed"
+                limitations.extend(sheet_unit["limitations"])
+            merged_by_cell: dict[str, str] = {}
+            for merged in sheet.merged_cells.ranges:
+                merged_text = str(merged)
+                for row in sheet[merged_text]:
+                    for cell in row:
+                        merged_by_cell[cell.coordinate] = merged_text
+            nonempty = 0
+            for row_index, row in enumerate(sheet.iter_rows(), start=1):
+                for col_index, cell in enumerate(row, start=1):
+                    value = cell.value
+                    if value is None:
+                        continue
+                    nonempty += 1
+                    if nonempty > 100_000:
+                        raise ValueError("spreadsheet cell limit exceeded")
+                    formula = value if isinstance(value, str) and value.startswith("=") else None
+                    cached = cached_sheet[cell.coordinate].value if formula is not None else None
+                    if formula is not None:
+                        formula_count += 1
+                        if cached is None:
+                            cache_missing += 1
+                    def stable(item: Any) -> Any:
+                        if item is None or isinstance(item, (str, int, float, bool)):
+                            return item
+                        if hasattr(item, "isoformat"):
+                            return item.isoformat()
+                        return str(item)
+                    header = sheet.cell(1, col_index).value if row_index > 1 else value
+                    row_label = sheet.cell(row_index, 1).value if col_index > 1 else value
+                    content = {
+                        "text": str(value),
+                        "value": stable(value),
+                        "data_type": cell.data_type,
+                        "formula": formula,
+                        "cached_value": stable(cached),
+                        "cache_verified": False if formula is not None else None,
+                        "number_format": cell.number_format,
+                        "row": row_index,
+                        "column": col_index,
+                        "row_label": stable(row_label),
+                        "column_label": stable(header) if header is not None else get_column_letter(col_index),
+                        "merged_range": merged_by_cell.get(cell.coordinate),
+                        "hidden_sheet": hidden,
+                    }
+                    anchor = {"format": "xlsx", "sheet_name": sheet.title, "cell_range": cell.coordinate}
+                    unit = _make_unit("cell", anchor, "partially_parsed" if formula is not None and cached is None else "parsed",
+                                      [{"code": "formula_cache_unverified", "message": "Nilai cache formula tidak diverifikasi; formula tidak dieksekusi."}] if formula is not None else [])
+                    units.append(unit)
+                    evidence.append(_make_evidence(unit, "spreadsheet_cell", content, unit["parse_status"]))
+                    if len(evidence) >= MAX_XLSX_EVIDENCE_ITEMS:
+                        raise ValueError("spreadsheet cell limit exceeded")
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+        visuals = {name for name in names if name.startswith(("xl/charts/", "xl/drawings/", "xl/media/", "xl/embeddings/"))}
+        external_parts = [name for name in names if name.startswith("xl/externalLinks/")]
+        worksheets = {name for name in names if name.startswith("xl/worksheets/") and name.endswith(".xml")}
+        recognized_parts = {
+            "[Content_Types].xml", "_rels/.rels", "docProps/app.xml", "docProps/core.xml",
+            "xl/workbook.xml", "xl/_rels/workbook.xml.rels", "xl/styles.xml",
+            "xl/sharedStrings.xml", "xl/calcChain.xml",
+        } | worksheets
+        unsupported_parts = [name for name in names if name not in recognized_parts]
+        for _index, part in enumerate(unsupported_parts, start=1):
+            sheet_name = formula_book.sheetnames[0] if formula_book.sheetnames else "Sheet1"
+            anchor = {"format": "xlsx", "sheet_name": sheet_name, "cell_range": "A1", "part": part}
+            if part in visuals:
+                reason = {"code": "spreadsheet_visual_unsupported", "message": "Diagram/chart/media workbook tercatat tetapi tidak ditafsirkan."}
+            elif part in external_parts:
+                reason = {"code": "external_references_not_followed", "message": "External workbook references dicatat tanpa diikuti."}
+            else:
+                reason = {"code": "spreadsheet_ooxml_part_unsupported", "message": "Bagian package OOXML spreadsheet tercatat tetapi tidak ditafsirkan."}
+            unit = _make_unit("unsupported", anchor, "unsupported", [reason])
+            units.append(unit)
+            limitations.append(reason)
+        if external_parts:
+            limitation = {"code": "external_references_not_followed", "message": "External workbook references dicatat tanpa diikuti."}
+            limitations.append(limitation)
+        if formula_count:
+            limitations.append({"code": "formula_cache_unverified", "message": f"{cache_missing} dari {formula_count} formula tidak memiliki nilai cache; tidak ada formula yang dieksekusi."})
+    finally:
+        formula_book.close()
+        cached_book.close()
+    if limitations:
+        root["parse_status"] = "partially_parsed"
+        root["limitations"] = limitations
+    return {
+        "format": "xlsx",
+        "parse_status": "partially_parsed" if limitations else "parsed",
+        "units": units,
+        "evidence": evidence,
+        "candidate_fields": [],
+        "limitations": limitations,
+        "parser": "openpyxl-ooxml-v1",
+        "covered_stages": ["metadata_inventory", "sheet_inventory", "cell_extraction", "formula_cache_pair"],
+        "formula_count": formula_count,
+        "external_reference_parts": external_parts,
+        "stage_timings_ms": {"xlsx_ooxml_extraction_inventory": max(0.0, round((time.perf_counter() - started) * 1000, 3))},
     }
 
 
 def _parse_docling(path: Path, suffix: str, page: int | None = None) -> dict[str, Any]:
+    runtime_setup_started = time.perf_counter()
     _verify_docling_resources()
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions, TesseractCliOcrOptions
     from docling.document_converter import DocumentConverter, ImageFormatOption, PdfFormatOption
+    stage_timings: dict[str, float] = {
+        "resource_verification_and_runtime_setup": max(0.0, round((time.perf_counter() - runtime_setup_started) * 1000, 3)),
+    }
+    metadata_started = time.perf_counter()
 
     root_format = "pdf" if suffix == ".pdf" else "image"
     root_anchor = {"format": "file", "locator_note": f"{root_format.upper()} root"}
@@ -262,7 +449,11 @@ def _parse_docling(path: Path, suffix: str, page: int | None = None) -> dict[str
     else:
         format_options[InputFormat.IMAGE] = ImageFormatOption(pipeline_options=pipeline_options)
     converter = DocumentConverter(allowed_formats=allowed, format_options=format_options or None)
+    stage_timings["source_metadata_inventory"] = max(0.0, round((time.perf_counter() - metadata_started) * 1000, 3))
+    pipeline_started = time.perf_counter()
     result = converter.convert(str(path), **({"page_range": (page, page)} if page else {}))
+    stage_timings["docling_pipeline_conversion"] = max(0.0, round((time.perf_counter() - pipeline_started) * 1000, 3))
+    assembly_started = time.perf_counter()
     document = result.document
     if document is None:
         raise ValueError("Docling did not produce a document")
@@ -355,6 +546,7 @@ def _parse_docling(path: Path, suffix: str, page: int | None = None) -> dict[str
     if limitations:
         root["parse_status"] = "partially_parsed"
         root["limitations"] = limitations
+    stage_timings["anchor_and_evidence_assembly"] = max(0.0, round((time.perf_counter() - assembly_started) * 1000, 3))
     return {
         "format": root_format,
         "parse_status": "partially_parsed" if limitations else "parsed",
@@ -366,6 +558,7 @@ def _parse_docling(path: Path, suffix: str, page: int | None = None) -> dict[str
         "transforms": transforms,
         "covered_stages": ["metadata_inventory", "render", "layout", "text", "ocr" if ocr_required else "native_text", "table_extraction", "assembly_page"],
         "ocr_decision": {"rule": "native_text_nonempty_or_full_page_v1", "full_page_ocr": ocr_required},
+        "stage_timings_ms": stage_timings,
     }
 
 
@@ -374,6 +567,8 @@ def parse_file(path: str, filename: str, page: int | None = None) -> dict[str, A
     suffix = Path(filename).suffix.lower()
     if suffix == ".docx":
         return _parse_docx(source)
+    if suffix == ".xlsx":
+        return _parse_xlsx(source)
     if suffix in {".pdf", ".jpg", ".jpeg", ".png"}:
         return _parse_docling(source, suffix, page)
     raise ValueError("unsupported file format")

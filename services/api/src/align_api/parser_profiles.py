@@ -17,6 +17,8 @@ from align_api.models import MethodManifest
 
 
 def profile_payload(settings: Settings, profile_key: str) -> dict[str, Any]:
+    if profile_key not in {settings.parser_profile_native, settings.parser_profile_document}:
+        raise ValueError("parser profile is not active")
     heavy = profile_key == settings.parser_profile_document
     resources = json.loads(Path("config/parser-context-resources.json").read_text())
     implementation_hash = canonical_hash({
@@ -26,9 +28,9 @@ def profile_payload(settings: Settings, profile_key: str) -> dict[str, Any]:
     return {
         "schema_version": 1, "profile_key": profile_key, "version_no": 1,
         "backend": "docling" if heavy else "python-docx+ooxml",
-        "formats": ["pdf", "jpg", "jpeg", "png"] if heavy else ["docx"],
+        "formats": ["pdf", "jpg", "jpeg", "png"] if heavy else ["docx", "xlsx"],
         "package_lock": {"uv_lock_sha256": hashlib.sha256(Path("uv.lock").read_bytes()).hexdigest(),
-                         "docling-slim": "2.140.0", "python-docx": "1.2.0"},
+                         "docling-slim": "2.140.0", "python-docx": "1.2.0", "openpyxl": "3.1.5"},
         "implementation_sha256": implementation_hash,
         "model_artifacts": resources["models"] if heavy else [],
         "ocr": resources["ocr"] if heavy else None,

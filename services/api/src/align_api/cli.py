@@ -372,6 +372,13 @@ def _parser() -> argparse.ArgumentParser:
     smoke.add_argument("--idempotency-key", default=None)
     status = operation_sub.add_parser("status")
     status.add_argument("operation_id")
+
+    parser_command = subparsers.add_parser("parser", help="source parser operations")
+    parser_sub = parser_command.add_subparsers(dest="parser_command", required=True)
+    benchmark = parser_sub.add_parser("benchmark", help="run actual isolated parser fixtures")
+    benchmark.add_argument("--profile", required=True)
+    benchmark.add_argument("--fixtures", required=True, type=Path)
+    benchmark.add_argument("--output", required=True, type=Path)
     return parser
 
 
@@ -391,6 +398,10 @@ def main() -> None:
         enqueue_foundation_smoke(args.idempotency_key or str(uuid4()))
     elif args.command == "operations" and args.operations_command == "status":
         get_operation(args.operation_id)
+    elif args.command == "parser" and args.parser_command == "benchmark":
+        from align_worker.benchmark import run_parser_benchmark
+
+        run_parser_benchmark(args.profile, args.fixtures, args.output)
     else:
         raise SystemExit("unknown command")
 

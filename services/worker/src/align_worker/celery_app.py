@@ -24,6 +24,7 @@ celery_app.conf.update(
         "align.execute_job": {"queue": general_queue},
         "align.parse_context": {"queue": parser_queue},
         "align.parse_rubric": {"queue": parser_queue},
+        "align.parse_submission": {"queue": parser_queue},
         "align.reap_expired_leases": {"queue": general_queue},
     },
     task_acks_late=True,
@@ -42,7 +43,12 @@ celery_app.conf.update(
             "task": "align.reap_expired_leases",
             "schedule": schedule(float(os.environ.get("REAPER_INTERVAL_SECONDS", "60"))),
             "options": {"queue": general_queue},
-        }
+        },
+        "cleanup-expired-submission-draft-files": {
+            "task": "align.cleanup_expired_submission_uploads",
+            "schedule": schedule(3600),
+            "options": {"queue": general_queue},
+        },
     },
     timezone="UTC",
     enable_utc=True,

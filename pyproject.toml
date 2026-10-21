@@ -44,6 +44,6 @@ module = ["align_worker.tasks", "align_worker.celery_app"]
 disallow_untyped_decorators = false
 
 [[tool.mypy.overrides]]
-module = ["defusedxml", "defusedxml.*", "pypdf", "PIL", "PIL.*", "docx", "docx.*", "docling.*"]
+module = ["defusedxml", "defusedxml.*", "pypdf", "PIL", "PIL.*", "docx", "docx.*", "docling.*", "openpyxl", "openpyxl.*"]
 ignore_missing_imports = true
 

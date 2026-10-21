@@ -1,4 +1,4 @@
-# Catatan keputusan teknis B0–B1
+# Catatan keputusan teknis B0–B3
 
 ## TD-B0-01 — Storage lokal untuk development
 
@@ -53,7 +53,7 @@
 - Migration `0003_b1_provenance_guards` menserialkan approval dengan writes anak/provenance, melarang penambahan source link/unit/evidence sesudah approval, memeriksa hash/anchor/manifest evidence, dan mencabut INSERT ContextVersion dari worker. Migration bersifat tambahan dan diterapkan ke development sesudah pengujian isolated serta backup privat; isi/data konteks dan migration lama tidak ditulis ulang.
 - Advisory lock pada key idempotency juga berlaku sebelum row pertama ada. Lock himpunan admin diambil sebelum row user untuk menghindari deadlock demosi bersamaan. API memeriksa revision serta enrollment pada request berikutnya.
 - UI memisahkan form draft baru dari editor, memantau job dengan polling, mempertahankan edit yang belum disimpan, memberi pilihan memuat revisi baru, menyediakan koreksi konflik manual/alasan dan provenance per field. API list memakai cursor; UI dapat memuat versi sebelumnya. Cuplikan bukti dibatasi 500 dan sampel unresolved 50 dengan total/truncation eksplisit; inventory tidak dihapus karena parsing gagal.
-- B1 menyediakan cuplikan/anchor dan unduhan original terotorisasi. Empat viewer lengkap, namespace submission/XLSX dan roster historis tetap B3. B2 belum dimulai.
+- B1 menyediakan cuplikan/anchor dan unduhan original terotorisasi. B3 melengkapi namespace submission/XLSX, roster historis dan empat viewer; AI/review keputusan akademik tetap pada tahap pemiliknya.
 
 ## TD-B1-05 — Lingkungan verifikasi macOS
 
@@ -102,3 +102,35 @@
 - Keputusan: uji lokal menjalankan skrip repository yang sama melalui `bash` di container audit, lalu memakai migration service normal. Volume/data development tidak disentuh.
 - Dampak: ini tidak mengubah file atau permission di repository. Setup bersih Compose perlu memastikan skrip role dapat dijalankan atau menjalankan prosedur Bash yang sudah disediakan `scripts/dev-macos.sh`.
 - Bukti: migration isolated `0001`–`0004` dan B0/B1/B2 integration suite lulus; detail ada di `docs/handover/B2.md`.
+
+## TD-B3-01 — Manifest parser harus cocok antara API dan worker
+
+- Konteks: parser resource manifest mengikat versi dependency, profile, implementasi dan model. API membentuk snapshot saat upload; worker memverifikasi snapshot sebelum extraction.
+- Keputusan: image API dan parser worker yang membentuk/memakai manifest dibangun dari source revision yang sama. Mismatch tetap fail-closed sebagai `parser_resource_unavailable`; tidak ada fallback profil ringan atau penerimaan hasil yang manifest-nya berbeda.
+- Alasan: setiap evidence harus dapat ditelusuri ke implementasi dan artifact yang benar-benar memproses sumber.
+- Bukti: saat timing benchmark ditambahkan, matrix menolak image API lama; setelah image API dan worker dibangun ulang bersama, enam kasus runtime Docling dan parser submission B3 lulus.
+
+## TD-B3-02 — Benchmark mengukur waktu yang dapat diamati
+
+- Keputusan: benchmark menjalankan parser child actual cold/warm, mencatat preflight dan wall time per file/halaman, stage timer child, `VmHWM` child, serta `memory.current` cgroup per 50 ms. Cgroup scope dinyatakan mencakup seluruh container benchmark, bukan satu child.
+- Batas: Docling 2.140.0 mengekspos render/layout/OCR/table sebagai satu pemanggilan converter; report memakai `docling_pipeline_conversion` sebagai satu stage dan tidak membagi timing internal yang tidak tersedia. Stage child tidak dijumlahkan sebagai wall time karena tidak mencakup startup, serialization dan cleanup.
+- Bukti: JSON/Markdown aktual ada di `docs/handover/b3-benchmarks/`; hanya fixture sintetis yang dijalankan, tanpa provider call.
+
+## TD-B3-03 — Poll status aman melewati blok kapasitas sementara
+
+- Konteks: admission dapat memblokir job sementara saat service lain memakai memori; detail error internal tidak boleh ditampilkan ke mahasiswa.
+- Keputusan: status job mengirim boolean `retry_scheduled` hanya untuk blok kapasitas/storage yang dapat dicoba lagi. UI melanjutkan polling pada status itu, berhenti untuk status terminal atau blok non-retryable, dan tidak membuka `last_error_code` ke mahasiswa.
+- Bukti: unit polling dan Playwright B3; retry tetap melalui checkpoint, aggregate time budget dan admission yang sama.
+
+## TD-B3-04 — Viewer PDF hanya merender halaman dan overlay sumber
+
+- Keputusan: PDF.js dikunci pada dependency project; XFA dinonaktifkan dan render page memakai `annotationMode: 0`, sehingga action/annotation layer tidak dijalankan/ditampilkan. Canvas dan overlay anchor tetap disertai label halaman serta unduhan original terotorisasi.
+- Alasan: kontrak PDF.js yang terkunci tidak menyediakan opsi `isEvalSupported` pada tipe parameter aktual; konfigurasi final mengikuti API versi terpasang tanpa membuka script/annotation layer.
+- Bukti: lint/typecheck/build frontend dan Playwright B3 pada PDF multi-halaman sintetis.
+
+## TD-B3-05 — Sisa aggregate budget di bawah satu detik tidak memulai child
+
+- Konteks: setiap unit/retry berbagi cap waktu aktif job 600 detik. Pembulatan sisa `remaining_ms` ke detik bulat sebelumnya dapat menghasilkan sisa positif di bawah 1.000 ms, sementara fallback timeout minimum satu detik masih memulai child tanpa reservation positif.
+- Keputusan: hanya mulai unit bila sisa budget dapat mereservasi setidaknya satu detik; reservation hard dibatasi ke sisa detik penuh dan unit selanjutnya berhenti `processing_limit`.
+- Dampak: kurang dari satu detik yang tidak dapat dipakai dengan aman dibiarkan sebagai headroom; cap tidak diperpanjang agar setiap halaman/retry mendapat timeout baru.
+- Bukti: `test_aggregate_active_budget_never_starts_without_positive_reservation` menguji 0, 999, 1.000, 1.999, 120.000 dan 150.000 ms; 69 unit test lulus.

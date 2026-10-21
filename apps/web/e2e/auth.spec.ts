@@ -180,17 +180,29 @@ test("lecturer parses KK and RPP locally, resolves a sourced conflict, then appr
     const response = await page.request.get(`/api/v1/context-versions/${contextId}`);
     if (!response.ok()) return "unavailable";
     const context = (await response.json()) as {
-      parse_artifacts: Array<{ status: string }>;
+      parse_artifacts: Array<{ status: string; limitations: Array<{ code: string }> }>;
       evidence: Array<{ content: Record<string, unknown> }>;
       conflicts: Array<{ field_path: string }>;
+      source_unit_summary: { by_status: Record<string, number> };
     };
-    return context.parse_artifacts.length === 2 &&
-      context.parse_artifacts.every((artifact) => artifact.status === "parsed") &&
+    const inventoryOnlyPartial = context.parse_artifacts.length === 2 &&
+      context.parse_artifacts.every((artifact) =>
+        artifact.status === "partially_parsed" &&
+        artifact.limitations.length > 0 &&
+        artifact.limitations.every((limitation) => limitation.code === "ooxml_package_part_unsupported"),
+      ) &&
+      (context.source_unit_summary.by_status.unsupported ?? 0) ===
+        context.parse_artifacts.reduce((count, artifact) => count + artifact.limitations.length, 0);
+    return inventoryOnlyPartial &&
       context.evidence.some((item) => JSON.stringify(item.content).includes("Kode Mata Kuliah")) &&
       context.conflicts.some((conflict) => conflict.field_path === "course_code")
-      ? "parsed-conflict-ready"
-      : context.parse_artifacts.map((artifact) => artifact.status).join(",");
-  }, { timeout: 120_000, intervals: [1000, 2000, 5000] }).toBe("parsed-conflict-ready");
+      ? "inventory-complete-conflict-ready"
+      : JSON.stringify({
+        statuses: context.parse_artifacts.map((artifact) => artifact.status),
+        limitations: context.parse_artifacts.map((artifact) => artifact.limitations.map((limitation) => limitation.code)),
+        unsupportedUnits: context.source_unit_summary.by_status.unsupported ?? 0,
+      });
+  }, { timeout: 120_000, intervals: [1000, 2000, 5000] }).toBe("inventory-complete-conflict-ready");
 
   await expect(page.locator(".context-form").getByLabel("Deskripsi konteks", { exact: true })).toHaveValue(unsavedDescription);
   await expect(page.getByRole("button", { name: "Muat revisi terbaru" })).toBeVisible({ timeout: 20_000 });

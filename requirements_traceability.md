@@ -1,7 +1,7 @@
-# Requirements traceability B0–B2
+# Requirements traceability B0–B3
 
 Sumber normatif: `ALIGN_IMPLEMENTATION_SPEC.md` v2 dan alokasi tahap pada `docs/implementation/README.md`.
-Bagian matriks di bawah mencatat baseline B0/B1 per 21 Oktober 2026. Verifikasi lokal mock/synthetic mencakup auth/context, native DOCX dan Docling nyata; hasil, hardware dan batas gate ada di `docs/handover/B1.md`. Overlay berikut mencatat perubahan B2 terhadap baseline tersebut. Gate implementasi B2 lulus pada 21 Oktober 2026; acceptance yang diteruskan ke B3–B8 tetap pada tahap pemiliknya. Test mock/synthetic bukan benchmark atau bukti inference live. Hasil dan batas ada di `docs/handover/B2.md`.
+Bagian matriks di bawah mencatat baseline B0/B1 per 21 Oktober 2026. Verifikasi lokal mock/synthetic mencakup auth/context, native DOCX dan Docling nyata; hasil, hardware dan batas gate ada di `docs/handover/B1.md`. Overlay B2 mencatat pekerjaan assignment/specification dan B2 gate yang lulus pada 21 Oktober 2026. Overlay B3 di bawah mencatat submission/viewer dan parser yang lulus pada data sintetis terisolasi pada 21 Oktober 2026. Acceptance bersama yang gate lengkapnya berada di B4–B8 tetap pending pada tahap pemiliknya. Test mock/synthetic bukan benchmark performa maksimum atau bukti inference live. Hasil dan batas ada di `docs/handover/B2.md` dan `docs/handover/B3.md`.
 
 ## Overlay implementasi B2
 
@@ -21,6 +21,44 @@ Bagian matriks di bawah mencatat baseline B0/B1 per 21 Oktober 2026. Verifikasi 
 | AC-MVP-54 | Lulus B2 | Stale report/resolution dan blocking override ditolak; race dua dosen pada package/spec approval dan publish menghasilkan satu 200 dan satu 409 per tahap. |
 | AC-MVP-65 | Lulus fixture kompatibilitas terbatas | Fixture schema 1 sintetis dapat dibaca tanpa v2 grounding/lint rekaan; update/lint/approve ditolak dan new-version memulai draft. Tidak ada data deployment lama yang diklaim. |
 | AC-MVP-15, AC-MVP-20, AC-MVP-51–52, AC-MVP-63 | Pending tahap pemilik / acceptance bersama | Late submission B3; applicability execution/evidence-role semantics B5; numeric absence B6; robustness/equivalence B7. B2 hanya memvalidasi kontrak statis. |
+
+## Overlay implementasi B3
+
+Overlay ini memperbarui status bukti B3 pada baseline di bawah tanpa mengubah requirement atau acceptance normatif. “Lulus B3” hanya mencakup bagian yang dialokasikan ke B3; gate penuh dengan pemilik B4–B8 tetap pending.
+
+| ID | Status B3 aktual | Bukti / batas |
+|---|---|---|
+| FR-05 | Lulus gate B3 | Finalisasi individu/kelompok, manifest, satu versi/job pada race, replay idempotent, body conflict, roster immutable, late policy, reopen tanpa mengubah final lama dan transactional outbox diuji. `tests/integration/test_b3_submission_flow.py`; `docs/handover/B3.md`. |
+| FR-06 | Lulus gate B3 pada format dan fixture yang dinyatakan | Submission PDF, DOCX, XLSX, PNG, JPG/JPEG memakai parser bersama; hash, inventory, source-unit/evidence, anchors dan viewer teruji. XLSX formula/cache belum verified dan chart/media tetap inventory-only. Tidak mengklaim semua file sulit atau bundle maksimum terbaca penuh. |
+| FR-14 | Plumbing B3 lulus; gate B4 pending | Mahasiswa memperoleh status teknis dan sumber submission miliknya; alur review/release serta released feedback snapshot belum dibuat. |
+| FR-15 | Snapshot B3 lulus; histori review B4 pending | SubmissionVersion/roster dan source namespace bersifat version-bound; reopen mempertahankan final lama dan tidak menggabungkan evidence lintas versi. Histori keputusan/release belum tersedia. |
+| FR-16 | Plumbing job/outbox B3 teruji; gate penuh berlanjut | Outbox tetap pending saat Redis/broker mati; sesudah broker hidup job yang sama mencapai `ready_for_review` dan worker menulis artifact nyata. Pengendalian biaya/financial ledger bukan bagian B3. |
+| FR-17 | Viewer teknis B3 lulus pada alur sintetis; aksesibilitas penuh B7 pending | PDF, DOCX, XLSX dan image dibuka di Playwright; keyboard/mobile/touch/linked-selection dan annotation workflow penuh tidak diklaim selesai. |
+| FR-21 | Lulus gate B3 pada guard dan benchmark yang dinyatakan | Profil native 2 GiB/Docling 8 GiB, node cgroup 9 GiB, one-heavy lease, checkpoint/replay, timeout, child cleanup/fencing, confirmed cgroup OOM attribution sintetis dan actual cold/warm benchmark tercatat. Maximum-size stress belum dilakukan. |
+| FR-08 | Retrieval bundle B3 tersedia; semantic/retrieval gate B5 pending | Source units/evidence diikat ke submission version/file/hash/parser manifest; tidak ada retrieval lintas bundle atau evaluasi semantic support yang diklaim. |
+| INV-02 | Lulus bagian submission B3 | Owner, submission version, source file, source hash dan locator diperiksa API/registry/viewer; runtime anchors pada fixture lulus. |
+| INV-03, INV-14 | Lulus plumbing B3; denominator/semantic gate B5 pending | Unit gagal/unsupported dipertahankan sebagai inventory/limitation; parsing gagal tidak diberi makna akademik negatif. Controlled OOM hanya dipetakan menjadi `parser_memory_limit` setelah counter kernel `oom_kill` naik. Negative semantic decision tetap B5. |
+| INV-09 | Tidak ada grade/dashboard baru | B3 menambah queue teknis submission dan source viewer, bukan nilai atau analitik. |
+| INV-10 | Lulus batas sumber B3 untuk endpoint yang diuji; retrieval bundle gate B5 pending | Source access dibatasi role/course/submission scope; histori lintas version tidak digabung. Retrieval bundle untuk executor belum ada. |
+| INV-11, INV-12 | Lulus bagian B3 | Reopen/manual correction tidak dibatasi AI budget; group submission menyimpan roster snapshot dan tidak menilai individu. |
+| INV-16 | Lulus binding profile B3 pada run yang diuji | Parser manifest mengikat lock/profile/implementasi/options/model; mismatch API-worker fail-closed, tidak berpindah otomatis ke profil light. |
+| AC-MVP-10 | Lulus gate B3 pada corpus sintetis yang teruji | API/parser/runtime menerima PDF, DOCX, XLSX, PNG, `.jpg`, `.jpeg`; keenam kasus Docling runtime aktual lulus pada kode terbaru. Regresi B1–B2 terbaru: 24 integration passed, auth/context Playwright 9 passed, dan assignment B1–B3 Playwright 1 passed. Tidak berarti seluruh varian produksi lulus. `tests/integration/test_b1_parser_runtime.py`; `tests/integration/test_b1_identity_context.py`; `tests/integration/test_b1_parser_guards.py`; `tests/integration/test_b2_assignment_flow.py`; `apps/web/e2e/auth.spec.ts`; `apps/web/e2e/assignments.spec.ts`; `docs/handover/B3.md`. |
+| AC-MVP-11 | Lulus regresi batas B1 yang dijalankan; tidak diklaim seluruh hostile corpus | Preflight B1 tetap menolak kelas hostile yang sudah diuji. B3 integration menjalankan content nyata; maximum OOXML/PDF/image stress belum dijalankan. |
+| AC-MVP-12 | Lulus gate B3 | Dua anggota finalize bersamaan menghasilkan satu versi/job, loser `409`, replay identik memberi receipt yang sama dan body berbeda dengan idempotency key yang sama ditolak. |
+| AC-MVP-13 | Bagian B3 lulus; acceptance gate penuh B5 pending | Run terbaru mematikan broker sebelum finalize, mengamati outbox belum terkirim, lalu setelah Redis pulih job yang sama dilanjutkan worker/parser; `test_b3_submission_flow.py` 1 passed dalam 147.50 detik. Retry semantics gabungan sampai keputusan AI/review bukan B3. `tests/integration/test_b3_submission_flow.py`; `docs/handover/B3.md`. |
+| AC-MVP-14, AC-MVP-15 | Lulus gate B3 | Snapshot roster historis tetap sama setelah membership berubah; late accept/reject mengikuti versi assignment dan reopen mempertahankan final lama. |
+| AC-MVP-16 | Lulus pada anchor/format yang dibuktikan | DOCX nested structure/header/table/media, XLSX hidden/formula/chart inventory, PDF page/bbox, PNG dan EXIF-rotated JPEG diuji. Unsupported artifacts tetap berlabel; bukan klaim bahwa chart atau formula cache telah dipahami. |
+| AC-MVP-18 | Plumbing inventory B3 lulus; semantic completion B5 pending | Diagram/visual unsupported tetap tercatat dan unit lain tetap dapat diproses; keputusan elemen akademik unassessable dikerjakan B5. |
+| AC-MVP-28 | Data teknis B3 lulus; numeric gate B6 pending | Viewer mengungkap formula dan cache belum diverifikasi; formula tidak dieksekusi dan tidak dipakai sebagai operand pasti. |
+| AC-MVP-36 | Bagian immutability B3 lulus; released feedback B4 pending | Reopen membuat draft berikutnya tanpa mengubah version lama/active final; publikasi feedback belum ada. |
+| AC-MVP-46 | Lulus pada runtime/profile/benchmark yang dinyatakan | Exact profile hashes 2/8 GiB, parser/model/OCR versions, actual timings/RSS/cgroup samples, 600-second aggregate reservation guard termasuk batas subsecond, OOM/timeout dan support bounds di benchmark report. Cgroup peak report adalah sampling 50 ms seluruh benchmark container; bukan per-child high-water mark. |
+| AC-MVP-47 | Parser failure attribution B3 lulus dengan injeksi terkendali; negative academic gate B5 pending | Synthetic child memicu cgroup `oom_kill` dan dipetakan `parser_memory_limit`; timeout membunuh process group. Actual Docling pada cap 768 MiB tidak menghasilkan `oom_kill`, jadi tidak diklaim sebagai Docling OOM. |
+| AC-MVP-48 | Lulus pada runtime PDF/image dan checkpoint yang diuji | Enam kasus Docling runtime memeriksa hash/original anchor/checkpoint replay; benchmark native memeriksa DOCX/XLSX anchors. Cross-page relation yang tidak dapat dibuktikan tetap limitation. |
+| AC-MVP-49 | Lulus pada lease/process failure tests yang dinyatakan | Redis one-heavy/expired-lease quarantine dan real process timeout/parent-death regression lulus; run B3 terbaru `ALIGN_B3_FENCE_INTEGRATION=true` 1 passed dalam 13.85 detik dan menolak late result memakai deterministic synthetic child/lease boundary. Multi-host production race tidak diklaim. `tests/integration/test_b1_parser_guards.py`; `tests/integration/test_b3_submission_flow.py`; `docs/handover/B3.md`. |
+| AC-MVP-60 | Viewer/anchor click path B3 lulus pada Playwright; full gate B7 pending | PDF page 2, DOCX header, XLSX hidden/formula dan rotated JPEG overlay terlihat. Keyboard/mobile/touch linked-selection serta workflow observasi/interpretasi/keputusan penuh belum selesai. |
+| AC-MVP-64 | CLI/report B3 lulus untuk benchmark sintetis aktual; eligibility/evaluation B8 pending | JSON/Markdown memisahkan actual parser child, cold/warm, hardware, lock/profile/model hashes, timing/RSS, support/failure limits. Tidak ada live provider, klaim empiris atau stress maksimum. |
+
+Rincian test, fixture IDs, hashes dan limitation ada di [handover B3](docs/handover/B3.md); laporan benchmark actual ada di [`docs/handover/b3-benchmarks/`](docs/handover/b3-benchmarks/).
 
 ## Functional requirements
 

@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
+from botocore.exceptions import BotoCoreError, ClientError
 from celery import shared_task
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.exc import OperationalError
 
+from align_api.config import get_settings
 from align_api.models import (
     AuditEvent,
+    FileAsset,
     Job,
     JobStage,
     Operation,
@@ -21,8 +25,13 @@ from align_api.models import (
     ParserCheckpoint,
     ProcessingTimeReservation,
     ReleaseManifest,
+    Submission,
+    SubmissionVersionFile,
 )
+from align_api.storage import storage_client
 from align_worker.database import SessionFactory
+
+logger = logging.getLogger(__name__)
 
 
 @shared_task(
@@ -117,7 +126,7 @@ def reap_expired_leases() -> dict[str, int]:
             .limit(100)
         ).all()
         for job in jobs:
-            if job.type in {"context_draft", "rubric_draft"}:
+            if job.type in {"context_draft", "rubric_draft", "submission_parse"}:
                 reservations = db.scalars(
                     select(ProcessingTimeReservation)
                     .where(ProcessingTimeReservation.job_id == job.id, ProcessingTimeReservation.state == "held")
@@ -148,13 +157,11 @@ def reap_expired_leases() -> dict[str, int]:
             job.lease_fence += 1
             db.add(
                 OutboxEvent(
-                    event_type=(
-                        "job.parse_context"
-                        if job.type == "context_draft"
-                        else "job.parse_rubric"
-                        if job.type == "rubric_draft"
-                        else "job.execute"
-                    ),
+                    event_type={
+                        "context_draft": "job.parse_context",
+                        "rubric_draft": "job.parse_rubric",
+                        "submission_parse": "job.parse_submission",
+                    }.get(job.type, "job.execute"),
                     subject_id=job.id,
                     payload_json={"job_id": str(job.id)},
                     next_attempt_at=now,
@@ -162,6 +169,97 @@ def reap_expired_leases() -> dict[str, int]:
             )
             recovered_jobs += 1
     return {"operations": recovered_operations, "jobs": recovered_jobs}
+
+
+@shared_task(
+    name="align.cleanup_expired_submission_uploads",
+    max_retries=5,
+    autoretry_for=(OperationalError,),
+    retry_backoff=True,
+    retry_jitter=True,
+)
+def cleanup_expired_submission_uploads(limit: int = 100) -> dict[str, int]:
+    """Quarantine and remove unfinalized submission files after 24 hours."""
+    settings = get_settings()
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(hours=24)
+    with SessionFactory() as db:
+        candidates = db.execute(
+            select(FileAsset.id, FileAsset.submission_id)
+            .where(
+                FileAsset.purpose == "submission",
+                FileAsset.created_at <= cutoff,
+                FileAsset.validation_state.in_(["validated", "quarantined", "rejected"]),
+                ~exists(select(1).where(SubmissionVersionFile.file_asset_id == FileAsset.id)),
+            )
+            .order_by(FileAsset.created_at, FileAsset.id)
+            .limit(max(1, min(limit, 500)))
+        ).all()
+
+    deleted = 0
+    storage_failures = 0
+    for asset_id, submission_id in candidates:
+        object_key = ""
+        with SessionFactory.begin() as db:
+            # Match finalization's submission-before-asset lock order.
+            submission = db.scalar(select(Submission).where(Submission.id == submission_id).with_for_update())
+            asset = db.scalar(select(FileAsset).where(
+                FileAsset.id == asset_id, FileAsset.submission_id == submission_id
+            ).with_for_update())
+            if (submission is None or asset is None or asset.purpose != "submission"
+                or asset.created_at > cutoff or asset.validation_state not in {"validated", "quarantined", "rejected"}
+                or db.scalar(select(SubmissionVersionFile.file_asset_id).where(
+                    SubmissionVersionFile.file_asset_id == asset.id
+                )) is not None):
+                continue
+            if asset.validation_state != "quarantined":
+                asset.validation_state = "quarantined"
+                asset.quarantined_at = now
+            object_key = asset.object_key
+            if not object_key:
+                continue
+
+        try:
+            storage_client(settings).delete_object(Bucket=settings.s3_bucket, Key=object_key)
+        except (BotoCoreError, ClientError) as exc:
+            storage_failures += 1
+            error_code = (
+                exc.response.get("Error", {}).get("Code", type(exc).__name__)
+                if isinstance(exc, ClientError)
+                else type(exc).__name__
+            )
+            logger.warning(
+                "expired submission object deletion failed: %s",
+                error_code,
+                extra={"asset_id": str(asset_id), "storage_error_code": error_code},
+            )
+            continue
+
+        with SessionFactory.begin() as db:
+            submission = db.scalar(select(Submission).where(Submission.id == submission_id).with_for_update())
+            asset = db.scalar(select(FileAsset).where(
+                FileAsset.id == asset_id, FileAsset.submission_id == submission_id
+            ).with_for_update())
+            if (submission is None or asset is None or asset.validation_state != "quarantined"
+                or asset.created_at > cutoff or db.scalar(select(SubmissionVersionFile.file_asset_id).where(
+                    SubmissionVersionFile.file_asset_id == asset.id
+                )) is not None):
+                continue
+            db.delete(asset)
+            submission.draft_revision += 1
+            submission.revision += 1
+            submission.updated_at = now
+            db.add(AuditEvent(
+                worker_id="align-cleanup",
+                action="submission.expired_draft_asset.deleted",
+                object_type="file_asset",
+                object_id=asset_id,
+                old_version_refs_json={"sha256": asset.sha256, "retention_hours": 24},
+                request_id=uuid4(),
+                occurred_at=now,
+            ))
+            deleted += 1
+    return {"deleted": deleted, "storage_failures": storage_failures, "candidates": len(candidates)}
 
 
 @shared_task(
@@ -231,6 +329,10 @@ def execute_job(self: Any, job_id: str) -> dict[str, object]:
         from align_worker.context_parser import execute_rubric_job
 
         return execute_rubric_job(parsed_id, fence, fingerprint)
+    if stage_name == "parse_submission" and job.type == "submission_parse":
+        from align_worker.context_parser import execute_submission_job
+
+        return execute_submission_job(parsed_id, fence, fingerprint)
 
     # Do not let an unavailable B0 capability become a fabricated academic result.
     failure_code = "STAGE_HANDLER_UNAVAILABLE_B0"
@@ -299,5 +401,16 @@ def parse_context(job_id: str) -> dict[str, object]:
     autoretry_for=(OperationalError,), retry_backoff=True, retry_jitter=True,
 )
 def parse_rubric(job_id: str) -> dict[str, object]:
+    return execute_job.run(job_id)  # type: ignore[no-any-return]
+
+
+@shared_task(
+    name="align.parse_submission",
+    soft_time_limit=int(os.environ.get("JOB_MAX_ACTIVE_SECONDS", "600")) + 30,
+    time_limit=int(os.environ.get("JOB_MAX_ACTIVE_SECONDS", "600")) + 60,
+    max_retries=5,
+    autoretry_for=(OperationalError,), retry_backoff=True, retry_jitter=True,
+)
+def parse_submission(job_id: str) -> dict[str, object]:
     return execute_job.run(job_id)  # type: ignore[no-any-return]
 

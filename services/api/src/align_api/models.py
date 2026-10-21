@@ -15,6 +15,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    PrimaryKeyConstraint,
     String,
     UniqueConstraint,
     Uuid,
@@ -460,9 +461,10 @@ class FileAsset(RevisionMixin, Base):
         ),
         CheckConstraint("size_bytes > 0", name="ck_file_assets_positive_size"),
         CheckConstraint(
-            "(purpose = 'context' AND course_id IS NOT NULL AND assignment_id IS NULL AND submission_id IS NULL) OR (purpose = 'rubric' AND assignment_id IS NOT NULL AND course_id IS NOT NULL AND submission_id IS NULL) OR (purpose = 'submission' AND submission_id IS NOT NULL AND course_id IS NOT NULL)",
+            "(purpose = 'context' AND course_id IS NOT NULL AND assignment_id IS NULL AND submission_id IS NULL) OR (purpose = 'rubric' AND assignment_id IS NOT NULL AND course_id IS NOT NULL AND submission_id IS NULL) OR (purpose = 'submission' AND submission_id IS NOT NULL AND assignment_id IS NULL AND course_id IS NOT NULL)",
             name="ck_file_assets_scope",
         ),
+        UniqueConstraint("id", "submission_id", name="uq_file_assets_id_submission"),
         Index("ix_file_assets_course_purpose", "course_id", "purpose", "created_at"),
     )
 
@@ -470,7 +472,9 @@ class FileAsset(RevisionMixin, Base):
     course_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("courses.id", ondelete="CASCADE"), nullable=False
     )
-    submission_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    submission_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("submissions.id", ondelete="RESTRICT", use_alter=True, name="fk_file_assets_submission")
+    )
     assignment_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey(
             "assignments.id", ondelete="CASCADE", use_alter=True, name="fk_file_assets_assignment"
@@ -550,7 +554,9 @@ class ParseArtifact(TimestampMixin, Base):
     file_asset_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("file_assets.id", ondelete="RESTRICT"), nullable=False
     )
-    submission_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    submission_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("submission_versions.id", ondelete="RESTRICT", use_alter=True, name="fk_parse_artifacts_submission_version")
+    )
     context_version_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("context_versions.id", ondelete="RESTRICT")
     )
@@ -686,7 +692,7 @@ class EvidenceItem(TimestampMixin, Base):
             name="ck_evidence_items_one_namespace",
         ),
         CheckConstraint(
-            "type IN ('paragraph','table','diagram','image_text','numeric_observation')",
+            "type IN ('paragraph','table','diagram','image_text','spreadsheet_cell','spreadsheet_range','numeric_observation')",
             name="ck_evidence_items_type",
         ),
     )
@@ -695,7 +701,9 @@ class EvidenceItem(TimestampMixin, Base):
     source_unit_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("source_units.id", ondelete="CASCADE"), nullable=False
     )
-    submission_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    submission_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("submission_versions.id", ondelete="RESTRICT", use_alter=True, name="fk_evidence_items_submission_version")
+    )
     context_version_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("context_versions.id", ondelete="RESTRICT")
     )
@@ -1064,3 +1072,93 @@ class GroupMembership(TimestampMixin, Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class Submission(RevisionMixin, Base):
+    """Mutable upload thread. Final versions and roster snapshots are separate rows."""
+
+    __tablename__ = "submissions"
+    __table_args__ = (
+        CheckConstraint(
+            "(individual_user_id IS NOT NULL)::integer + (group_id IS NOT NULL)::integer = 1",
+            name="ck_submissions_one_owner",
+        ),
+        CheckConstraint("draft_revision >= 1 AND revision >= 1", name="ck_submissions_revision"),
+        ForeignKeyConstraint(
+            ["active_final_version_id", "id"],
+            ["submission_versions.id", "submission_versions.submission_id"],
+            ondelete="RESTRICT", name="fk_submissions_active_final_version",
+        ),
+        Index(
+            "uq_submissions_assignment_individual",
+            "assignment_id", "individual_user_id", unique=True,
+            postgresql_where=text("individual_user_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_submissions_assignment_group",
+            "assignment_id", "group_id", unique=True,
+            postgresql_where=text("group_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    assignment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assignments.id", ondelete="RESTRICT"), nullable=False)
+    individual_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    group_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("groups.id", ondelete="RESTRICT"))
+    active_final_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    draft_assignment_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assignment_versions.id", ondelete="RESTRICT"), nullable=False)
+    draft_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    reopen_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SubmissionVersion(TimestampMixin, Base):
+    __tablename__ = "submission_versions"
+    __table_args__ = (
+        UniqueConstraint("submission_id", "version_no", name="uq_submission_versions_number"),
+        UniqueConstraint("id", "submission_id", name="uq_submission_versions_id_submission"),
+        CheckConstraint("version_no >= 1", name="ck_submission_versions_number"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    submission_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("submissions.id", ondelete="RESTRICT"), nullable=False)
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    assignment_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assignment_versions.id", ondelete="RESTRICT"), nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    finalized_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    finalized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    is_late: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+
+class SubmissionVersionFile(TimestampMixin, Base):
+    __tablename__ = "submission_version_files"
+    __table_args__ = (
+        PrimaryKeyConstraint("submission_version_id", "file_asset_id"),
+        ForeignKeyConstraint(
+            ["submission_version_id", "submission_id"],
+            ["submission_versions.id", "submission_versions.submission_id"],
+            ondelete="RESTRICT", name="fk_submission_version_files_version_scope",
+        ),
+        ForeignKeyConstraint(
+            ["file_asset_id", "submission_id"],
+            ["file_assets.id", "file_assets.submission_id"],
+            ondelete="RESTRICT", name="fk_submission_version_files_asset_scope",
+        ),
+        UniqueConstraint("submission_version_id", "display_order", name="uq_submission_version_file_order"),
+        CheckConstraint("display_order >= 0", name="ck_submission_version_file_order"),
+    )
+
+    submission_version_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    submission_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("submissions.id", ondelete="RESTRICT"), nullable=False)
+    file_asset_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class SubmissionVersionMember(TimestampMixin, Base):
+    __tablename__ = "submission_version_members"
+    __table_args__ = (PrimaryKeyConstraint("submission_version_id", "user_id"),)
+
+    submission_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("submission_versions.id", ondelete="RESTRICT"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    display_name_snapshot: Mapped[str] = mapped_column(String(240), nullable=False)
+    email_snapshot: Mapped[str] = mapped_column(String(320), nullable=False)

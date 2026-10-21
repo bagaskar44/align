@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
 test("lecturer builds and publishes a B2 task from shared rubric parser evidence", async ({ page }) => {
-  test.setTimeout(240_000);
+  test.setTimeout(900_000);
   page.setDefaultTimeout(10_000);
   const password = process.env.ALIGN_SEED_PASSWORD;
   if (!password) throw new Error("ALIGN_SEED_PASSWORD must be loaded from the local .env before the E2E flow.");
@@ -126,4 +126,63 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await expect(studentTask).toContainText("table");
   await expect(studentTask).not.toContainText("fact_rule");
   await expect(studentTask).not.toContainText("grounding_contract");
+
+  const submission = page.getByRole("region", { name: "Kumpulkan tugas" });
+  await submission.getByRole("button", { name: assignmentTitle }).click();
+  const repositoryRoot = resolve(test.info().project.testDir, "../../..");
+  const submissionFixtures = [
+    resolve(repositoryRoot, "tests/fixtures/b1/native-two-pages.pdf"),
+    resolve(repositoryRoot, "fixtures/b3/complex-submission.docx"),
+    resolve(repositoryRoot, "fixtures/b3/complex-submission.xlsx"),
+    resolve(repositoryRoot, "tests/fixtures/b1/rotated.jpeg"),
+    resolve(repositoryRoot, "tests/fixtures/b1/printed.png"),
+  ];
+  await submission.locator('input[type="file"]').setInputFiles(submissionFixtures);
+  await expect(submission.getByRole("status").filter({ hasText: "berhasil diunggah dan divalidasi" })).toBeVisible({ timeout: 60_000 });
+  await submission.getByRole("checkbox", { name: /memeriksa berkas/ }).check();
+  await submission.getByRole("button", { name: "Finalisasi pengumpulan" }).click();
+  await expect(submission.getByText(/Receipt finalisasi v1/)).toBeVisible({ timeout: 30_000 });
+  await expect.poll(async () => {
+    const text = await submission.innerText();
+    return text.match(/Status teknis parser: ([\w]+)/)?.[1] ?? "";
+  }, { timeout: 480_000, intervals: [5_000, 10_000, 15_000] }).toBe("ready_for_review");
+  await expect(submission).toContainText("complex-submission.xlsx");
+
+  await page.getByRole("button", { name: "Keluar" }).click();
+  await page.getByLabel("Email").fill("dosen@align.local");
+  await page.getByLabel("Kata sandi", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Masuk" }).click();
+  await page.getByRole("link", { name: /IF101/ }).click();
+  const queue = page.getByRole("region", { name: "Submission mahasiswa" });
+  await queue.getByLabel("Pilih tugas").selectOption({ label: assignmentTitle });
+  const submissionRow = queue.locator(".submission-list-row").first();
+  await expect(submissionRow).toBeVisible({ timeout: 30_000 });
+  await submissionRow.click();
+
+  await queue.locator(".submission-file-select").filter({ hasText: "native-two-pages.pdf" }).click();
+  const pdfViewer = queue.getByRole("region", { name: /Viewer sumber/ });
+  await expect(pdfViewer.locator(".source-viewer canvas")).toBeVisible({ timeout: 30_000 });
+  await pdfViewer.getByRole("navigation", { name: "Unit sumber" }).getByRole("button", { name: /^page PDF p\.2/ }).click();
+  await expect(pdfViewer).toContainText("Halaman 2 / 2");
+
+  await queue.locator(".submission-file-select").filter({ hasText: "complex-submission.docx" }).click();
+  const docxViewer = queue.getByRole("region", { name: /Viewer sumber/ });
+  const headerUnit = docxViewer.getByRole("navigation", { name: "Unit sumber" }).getByRole("button", { name: /paragraph word\/header/ }).first();
+  await headerUnit.click();
+  await expect(docxViewer.locator(".document-structure-viewer")).toContainText("Header sintetis: B3 parsing source");
+
+  await queue.locator(".submission-file-select").filter({ hasText: "complex-submission.xlsx" }).click();
+  const xlsxViewer = queue.getByRole("region", { name: /Viewer sumber/ });
+  await xlsxViewer.getByRole("tab", { name: /Catatan internal.*tersembunyi/ }).click();
+  await expect(xlsxViewer.getByRole("region", { name: "Grid Catatan internal" })).toBeVisible();
+  await xlsxViewer.getByRole("tab", { name: "Ringkasan" }).click();
+  const formulaCell = xlsxViewer.getByRole("button", { name: /D3: formula =SUM/ });
+  await expect(formulaCell).toBeVisible();
+  await formulaCell.click();
+  await expect(xlsxViewer.locator(".spreadsheet-grid-detail")).toContainText("Nilai cache (belum diverifikasi)");
+
+  await queue.locator(".submission-file-select").filter({ hasText: "rotated.jpeg" }).click();
+  const imageViewer = queue.getByRole("region", { name: /Viewer sumber/ });
+  await expect(imageViewer.locator(".image-source-viewer img")).toBeVisible();
+  await expect(imageViewer.locator(".image-anchor-overlay")).toBeVisible();
 });

@@ -2,7 +2,7 @@
 
 Tanggal pembaruan: 21 Oktober 2026 (Asia/Jakarta). Bahasa implementasi produk dan dokumen: Indonesia.
 
-**Status per 21 Oktober 2026: B0 dan B1 gate lokal mock/synthetic lulus; B2 API/UI masih parsial dan gate B2 pending.** B2 core flow diuji di PostgreSQL/Redis terisolasi (22 passed, 6 parser-runtime B1 opt-in skipped); host 45 passed/28 skipped; frontend lint/typecheck/build lulus. Shared parser rubrik, UI spec terstruktur, semantic-negative dan Playwright B2 belum lengkap. Lihat [traceability](../../requirements_traceability.md), [handover B0](../handover/B0.md), [handover B1](../handover/B1.md), dan [handover B2](../handover/B2.md) untuk bukti dan batas aktual.
+**Status per 21 Oktober 2026: gate B0–B3 lulus pada lingkungan mock/synthetic terisolasi; B4 belum dimulai.** B2 teruji dengan parser rubrik bersama, editor, semantic-negative dan Playwright. B3 meluluskan upload/finalisasi, registry/viewer empat format, parser native/Docling, checkpoint/recovery, komponen pemulihan broker, fencing dan benchmark aktual. Verifikasi B3: 69 unit test, 6 parser runtime, B3 submission integration, failure guards dan benchmark cold/warm; batas synthetic, OCR, rumus/chart dan max-size stress tercatat pada [handover B3](../handover/B3.md). Acceptance penuh AC-MVP-13 tetap gate B5. Lihat [traceability](../../requirements_traceability.md), [handover B0](../handover/B0.md), [handover B1](../handover/B1.md), dan [handover B2](../handover/B2.md) untuk bukti predecessor.
 
 ## 1. Otoritas dan cara menggunakan paket
 

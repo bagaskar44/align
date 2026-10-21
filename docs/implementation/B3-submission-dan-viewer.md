@@ -1,6 +1,6 @@
 # B3 — Submission dan Viewer
 
-**Status implementasi: BELUM DIMULAI. Hasil pengujian: BELUM DIJALANKAN.**
+**Status implementasi: GATE B3 LULUS pada data sintetis terisolasi (21 Oktober 2026).** Empat viewer, parser source-bound, resource profiles, benchmark aktual, komponen pemulihan broker, fencing dan failure injection telah dijalankan. AC-MVP-13 baru lulus untuk komponen outbox/job/parser B3; acceptance penuh tetap gate B5. Batas kemampuan dan bukti rinci ada di [handover B3](../handover/B3.md); hasil ini bukan bukti performa maksimum bundle 100 halaman.
 
 [Indeks dan matriks](README.md) · [Master](../../ALIGN_IMPLEMENTATION_SPEC.md) · [Predecessor: B2](B2-tugas-dan-spesifikasi.md) · [Berikutnya: B4](B4-review-manual-dan-release.md)
 
@@ -104,12 +104,12 @@ Tests memakai sumber file aktual yang dibuka parser, DB/storage/worker integrati
 
 ## 6. Gate dan handover
 
-- [ ] Upload/finalize/version/roster/reopen/late dan transactional outbox benar.
-- [ ] Semua format diterima dan viewer/anchor/provenance dapat ditelusuri; keterbatasan sumber dinyatakan spesifik.
-- [ ] Native/Docling profiles, checkpoint/assembly, hard limit/admission/fencing diuji nyata pada environment dinyatakan; bagian yang belum diuji tetap incomplete.
-- [ ] Benchmark CLI/report nyata tersedia; mock/failure injection tidak dilabel benchmark actual.
-- [ ] Source files/fixtures/tests, OpenAPI/client, traceability dan regression B0–B2 diperbarui.
-- [ ] `docs/handover/B3.md` mencatat format/profile/hardware/results, immutable submission fixtures dan source IDs untuk B4, serta full AI checks yang masih B5.
+- [x] Upload/finalize/version/roster/reopen/late dan transactional outbox benar; race, replay, body conflict dan broker recovery lulus.
+- [x] PDF/DOCX/XLSX/PNG/JPEG termasuk `.jpg` diterima; empat viewer, anchor, hash dan provenance ditelusuri. Batas OCR, formula cache dan visual unsupported tercatat.
+- [x] Native 2 GiB dan Docling 8 GiB diuji dengan cgroup 9 GiB, admission satu-heavy/node, checkpoint, timeout, controlled cgroup OOM attribution pada child sintetis, dan child fencing.
+- [x] CLI benchmark actual cold/warm native dan Docling menghasilkan JSON/Markdown dengan timing preflight, per-file/per-page dan stage yang terukur.
+- [x] Source files/fixtures/tests, OpenAPI/client, traceability dan regresi B0–B2 diperbarui.
+- [x] `docs/handover/B3.md` mencatat hasil, batas, model/dependency hashes dan submission/source IDs sintetis untuk B4; pekerjaan semantik/AI tetap pada tahap pemiliknya.
 
 **BERHENTI setelah B3.** Belum adanya AI substantif tidak menggagalkan B3; belum adanya bukti parser mandatory tidak boleh diberi status lulus.
 

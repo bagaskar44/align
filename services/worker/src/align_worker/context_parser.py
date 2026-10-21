@@ -37,6 +37,8 @@ from align_api.models import (
     ParserCheckpoint,
     ProcessingTimeReservation,
     SourceUnit,
+    SubmissionVersion,
+    SubmissionVersionFile,
 )
 from align_api.parser_profiles import profile_payload
 from align_api.storage import storage_client
@@ -52,12 +54,24 @@ from align_worker.parser_admission import (
 MAX_CHILD_RESULT_BYTES = 64 * 1024 * 1024
 
 
+def _parser_time_limits(
+    remaining_ms: int, soft_limit_seconds: int, hard_limit_seconds: int
+) -> tuple[int, int] | None:
+    if remaining_ms < 1000:
+        return None
+    budget_seconds = remaining_ms // 1000
+    soft_seconds = max(1, min(soft_limit_seconds, budget_seconds))
+    hard_seconds = max(soft_seconds, min(hard_limit_seconds, budget_seconds))
+    return soft_seconds, hard_seconds
+
+
 def _safe_limitation(code: str) -> dict[str, str]:
     messages = {
         "parser_capacity_unavailable": "Kapasitas parser belum cukup; berkas tetap dapat ditinjau manual.",
         "parser_resource_unavailable": "Resource parser atau model lokal belum tersedia; berkas tetap dapat ditinjau manual.",
         "parser_isolation_unavailable": "Isolasi proses parser tidak tersedia pada runtime ini.",
         "parser_timeout": "Parser mencapai batas waktu; unit sumber tetap tercatat.",
+        "parser_memory_limit": "Sistem operasi mengakhiri parser karena batas memori; unit sumber tetap tercatat.",
         "parser_failed": "Parser gagal membaca sebagian atau seluruh isi; sumber asli tetap tersedia.",
         "parser_storage_unavailable": "Penyimpanan sumber sementara tidak tersedia; coba lagi setelah layanan pulih.",
         "processing_limit": "Batas waktu aktif konteks tercapai; unit berikutnya belum diproses.",
@@ -71,7 +85,11 @@ def _safe_limitation(code: str) -> dict[str, str]:
 def _fallback_inventory(asset: FileAsset, failure_code: str) -> list[dict[str, Any]]:
     preflight = asset.preflight_json
     limitation = _safe_limitation(failure_code)
-    root_label = "DOCX package root" if asset.mime.startswith("application/vnd.openxmlformats") else "PDF root" if asset.mime == "application/pdf" else "IMAGE root"
+    root_label = (
+        "XLSX package root" if asset.mime == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        else "DOCX package root" if asset.mime == "application/vnd.openxmlformats"
+        else "PDF root" if asset.mime == "application/pdf" else "IMAGE root"
+    )
     root_anchor = {"format": "file", "locator_note": root_label}
     units: list[dict[str, Any]] = [
         {
@@ -114,45 +132,49 @@ def _fallback_inventory(asset: FileAsset, failure_code: str) -> list[dict[str, A
             }
         )
     elif asset.mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        parts = preflight.get("docx_parts", [])
-        if isinstance(parts, list):
-            for index, part in enumerate(parts, start=1):
-                if not isinstance(part, str):
-                    continue
-                if part == "word/document.xml":
-                    anchor = {"format": "docx", "part": part, "structural_path": "/word/document.xml", "item_kind": "media", "item_index": 0}
-                else:
-                    anchor = {"format": "docx", "part": part, "structural_path": f"/{part}", "item_kind": "media", "item_index": index}
-                units.append(
-                    {
-                        "unit_key": canonical_hash(anchor),
-                        "unit_type": "container",
-                        "anchor": anchor,
-                        "parse_status": "partially_parsed",
-                        "limitations": [limitation],
-                    }
-                )
+        content_parts = set(preflight.get("docx_parts", []))
         media_parts = preflight.get("docx_media_parts", [])
-        if isinstance(media_parts, list):
-            for index, part in enumerate(media_parts, start=1):
+        media_set = set(media_parts) if isinstance(media_parts, list) else set()
+        package_parts = preflight.get("docx_package_parts") or [*content_parts, *media_set]
+        if isinstance(package_parts, list):
+            for index, part in enumerate(package_parts, start=1):
                 if not isinstance(part, str):
                     continue
-                anchor = {
-                    "format": "docx",
-                    "part": part,
-                    "structural_path": f"/{part}",
-                    "item_kind": "media",
-                    "item_index": index,
-                }
-                units.append(
-                    {
-                    "unit_key": canonical_hash(anchor),
-                        "unit_type": "media",
-                        "anchor": anchor,
-                        "parse_status": "partially_parsed",
-                        "limitations": [limitation],
-                    }
-                )
+                kind = "container" if part in content_parts else "media" if part in media_set else "unsupported"
+                anchor = {"format": "docx", "part": part, "structural_path": f"/{part}",
+                          "item_kind": "media", "item_index": 0 if part == "word/document.xml" else index}
+                units.append({"unit_key": canonical_hash(anchor), "unit_type": kind, "anchor": anchor,
+                              "parse_status": "partially_parsed" if kind != "unsupported" else "unsupported",
+                              "limitations": [limitation]})
+    elif asset.mime == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+        sheets = preflight.get("sheets", [])
+        if isinstance(sheets, list):
+            for _index, item in enumerate(sheets, start=1):
+                if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+                    continue
+                anchor = {"format": "xlsx", "sheet_name": item["name"], "cell_range": "A1"}
+                sheet_limitations = [limitation]
+                if item.get("state", "visible") != "visible":
+                    sheet_limitations.append({"code": "hidden_sheet", "message": "Sheet tersembunyi tetap diinventaris."})
+                units.append({"unit_key": canonical_hash(anchor), "unit_type": "container", "anchor": anchor,
+                              "parse_status": "partially_parsed", "limitations": sheet_limitations})
+        package_parts = preflight.get("xlsx_package_parts", [])
+        known_parts = {
+            "[Content_Types].xml", "_rels/.rels", "docProps/app.xml", "docProps/core.xml",
+            "xl/workbook.xml", "xl/_rels/workbook.xml.rels", "xl/styles.xml",
+            "xl/sharedStrings.xml", "xl/calcChain.xml",
+        }
+        sheets = preflight.get("sheets", [])
+        sheet_name = next((item.get("name") for item in sheets if isinstance(item, dict)), "Sheet1")
+        if isinstance(package_parts, list):
+            for part in package_parts:
+                if not isinstance(part, str) or part in known_parts or (
+                    part.startswith("xl/worksheets/") and part.endswith(".xml")
+                ):
+                    continue
+                anchor = {"format": "xlsx", "sheet_name": sheet_name, "cell_range": "A1", "part": part}
+                units.append({"unit_key": canonical_hash(anchor), "unit_type": "unsupported", "anchor": anchor,
+                              "parse_status": "unsupported", "limitations": [limitation]})
     return units
 
 
@@ -198,12 +220,45 @@ def _preexec_limits(memory_bytes: int, cpu_seconds: int) -> Any:
     return apply
 
 
-def _run_child(path: str, filename: str, output_path: str, memory_bytes: int, soft_seconds: int, hard_seconds: int, heartbeat: Callable[[], bool] | None = None, page: int | None = None) -> tuple[dict[str, Any] | None, str | None, str | None]:
+def _cgroup_oom_kills() -> int | None:
+    for path in ("/sys/fs/cgroup/memory.events",):
+        try:
+            values = dict(line.split() for line in Path(path).read_text(encoding="ascii").splitlines() if len(line.split()) == 2)
+            if "oom_kill" in values:
+                return int(values["oom_kill"])
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _child_peak_rss(pid: int) -> int | None:
+    try:
+        for line in Path(f"/proc/{pid}/status").read_text(encoding="ascii").splitlines():
+            if line.startswith("VmHWM:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _run_child(
+    path: str,
+    filename: str,
+    output_path: str,
+    memory_bytes: int,
+    soft_seconds: int,
+    hard_seconds: int,
+    heartbeat: Callable[[], bool] | None = None,
+    page: int | None = None,
+    memory_observer: Callable[[], None] | None = None,
+    poll_interval_seconds: float = 0.25,
+) -> tuple[dict[str, Any] | None, str | None, str | None]:
     if sys.platform == "win32" or os.name != "posix":
         return None, "parser_isolation_unavailable", None
     with tempfile.TemporaryDirectory(prefix="align-parser-") as temp_dir:
         try:
             # Fixed Python module invocation; all untrusted filenames are positional arguments and no shell is used.
+            oom_before = _cgroup_oom_kills()
             process = subprocess.Popen(  # noqa: S603
                 [sys.executable, "-m", "align_worker.parser_child", path, filename, output_path, *([str(page)] if page else [])],
                 stdin=subprocess.DEVNULL,
@@ -219,17 +274,24 @@ def _run_child(path: str, filename: str, output_path: str, memory_bytes: int, so
             return None, "parser_resource_unavailable", None
         deadline = time.monotonic() + max(1, min(soft_seconds, hard_seconds))
         failure: str | None = None
+        peak_rss = 0
+        last_heartbeat = time.monotonic()
         try:
             while process.poll() is None:
+                peak_rss = max(peak_rss, _child_peak_rss(process.pid) or 0)
+                if memory_observer is not None:
+                    memory_observer()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     failure = "parser_timeout"
                     break
-                if heartbeat is not None and not heartbeat():
+                if heartbeat is not None and time.monotonic() - last_heartbeat >= 10 and not heartbeat():
                     failure = "parser_lease_lost"
                     break
+                if heartbeat is not None and time.monotonic() - last_heartbeat >= 10:
+                    last_heartbeat = time.monotonic()
                 try:
-                    process.wait(timeout=min(10, remaining))
+                    process.wait(timeout=min(max(0.01, poll_interval_seconds), remaining))
                 except subprocess.TimeoutExpired:
                     pass
             if failure:
@@ -249,8 +311,12 @@ def _run_child(path: str, filename: str, output_path: str, memory_bytes: int, so
             except ProcessLookupError:
                 pass
             process.wait()
+        peak_rss = max(peak_rss, _child_peak_rss(process.pid) or 0)
         if failure:
             return None, failure, str(process.returncode)
+        oom_after = _cgroup_oom_kills()
+        if process.returncode == -signal.SIGKILL and oom_before is not None and oom_after is not None and oom_after > oom_before:
+            return None, "parser_memory_limit", str(process.returncode)
         if not Path(output_path).is_file():
             return None, "parser_failed", str(process.returncode)
         output = Path(output_path)
@@ -264,6 +330,8 @@ def _run_child(path: str, filename: str, output_path: str, memory_bytes: int, so
             return None, "parser_failed", str(process.returncode)
         if process.returncode != 0 and not payload.get("failure_code"):
             return None, "parser_failed", str(process.returncode)
+        payload["_runtime"] = {"peak_rss_bytes": peak_rss or None, "cgroup_oom_kills_before": oom_before,
+                                "cgroup_oom_kills_after": oom_after}
         return payload, None, str(process.returncode)
 
 
@@ -307,6 +375,7 @@ def _create_or_update_units(db: Any, artifact: ParseArtifact, result_units: list
     page_ids: dict[int, UUID] = {}
     image_id: UUID | None = None
     container_ids: dict[str, UUID] = {}
+    spreadsheet_ids: dict[str, UUID] = {}
     for item, unit_id in normalized_units:
         anchor = item.get("anchor", {})
         if item.get("unit_type") == "page" and anchor.get("format") == "pdf":
@@ -315,6 +384,8 @@ def _create_or_update_units(db: Any, artifact: ParseArtifact, result_units: list
             image_id = unit_id
         elif item.get("unit_type") == "container" and anchor.get("format") == "docx":
             container_ids[str(anchor.get("part", ""))] = unit_id
+        elif item.get("unit_type") == "container" and anchor.get("format") == "xlsx":
+            spreadsheet_ids[str(anchor.get("sheet_name", ""))] = unit_id
     for item, unit_id in normalized_units:
         if item.get("unit_type") == "root":
             continue
@@ -326,6 +397,8 @@ def _create_or_update_units(db: Any, artifact: ParseArtifact, result_units: list
             parent_id = image_id or root_id
         elif anchor.get("format") == "docx" and item.get("unit_type") not in {"container", "root"}:
             parent_id = container_ids.get(str(anchor.get("part", "")), root_id)
+        elif anchor.get("format") == "xlsx" and item.get("unit_type") not in {"container", "root"}:
+            parent_id = spreadsheet_ids.get(str(anchor.get("sheet_name", "")), root_id)
         existing = db.get(SourceUnit, unit_id)
         if existing is not None:
             existing.parent_id = parent_id
@@ -359,7 +432,7 @@ def _insert_evidence(
         anchor = item.get("anchor")
         kind = item.get("type")
         if unit_id is None or not isinstance(content, dict) or not isinstance(anchor, dict) or kind not in {
-            "paragraph", "table", "diagram", "image_text", "numeric_observation"
+            "paragraph", "table", "diagram", "image_text", "numeric_observation", "spreadsheet_cell", "spreadsheet_range"
         }:
             continue
         exists = db.scalar(
@@ -372,8 +445,8 @@ def _insert_evidence(
         if exists is not None:
             continue
         namespace = (
-            {"context_version_id": namespace_id}
-            if namespace_kind == "context"
+            {"context_version_id": namespace_id} if namespace_kind == "context"
+            else {"submission_version_id": namespace_id} if namespace_kind == "submission"
             else {"assignment_version_id": namespace_id}
         )
         db.add(
@@ -616,7 +689,13 @@ def _finish_checkpoint(
         checkpoint.status = "succeeded"
         checkpoint.limitations_json = limitations
         checkpoint.covered_unit_refs_json = [item.get("anchor", {}) for item in result_units if isinstance(item, dict)]
-        serialized = json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        runtime_value = result.get("_runtime")
+        runtime_metrics: dict[str, Any] = runtime_value if isinstance(runtime_value, dict) else {}
+        parser_result = {key: value for key, value in result.items() if key != "_runtime"}
+        serialized = json.dumps(parser_result, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        peak_rss_bytes = runtime_metrics.get("peak_rss_bytes")
+        if isinstance(peak_rss_bytes, int) and peak_rss_bytes > 0:
+            checkpoint.peak_memory_bytes = peak_rss_bytes
         checkpoint.output_refs_json = {
             "result_sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
             "unit_count": len(unit_ids),
@@ -626,6 +705,7 @@ def _finish_checkpoint(
             "covered_stages": result.get("covered_stages", []),
             "ocr_decision": result.get("ocr_decision"),
             "has_tables": any(item.get("type") == "table" for item in result.get("evidence", [])),
+            "runtime": runtime_metrics,
         }
         raw_candidates = result.get("candidate_fields", [])
         if isinstance(raw_candidates, list):
@@ -660,8 +740,8 @@ def _execute_parser_job(
     namespace_kind: str,
 ) -> dict[str, Any]:
     settings = get_settings()
-    expected_job_type = "context_draft" if namespace_kind == "context" else "rubric_draft"
-    stage_name = "parse_context" if namespace_kind == "context" else "parse_rubric"
+    expected_job_type = {"context": "context_draft", "assignment": "rubric_draft", "submission": "submission_parse"}[namespace_kind]
+    stage_name = {"context": "parse_context", "assignment": "parse_rubric", "submission": "parse_submission"}[namespace_kind]
     with SessionFactory() as db:
         job = db.get(Job, job_id)
         if job is None or job.type != expected_job_type:
@@ -673,30 +753,46 @@ def _execute_parser_job(
         parse_ids = job.scope_json.get("parse_artifact_ids", [])
         if not isinstance(source_ids, list) or not isinstance(parse_ids, list) or len(source_ids) != len(parse_ids):
             return {"status": "failed", "reason": "PARSER_SOURCE_SCOPE_INVALID"}
-        query = (
-            select(FileAsset, NormativeFileLink, ParseArtifact)
-            .join(NormativeFileLink, NormativeFileLink.file_asset_id == FileAsset.id)
-            .join(ParseArtifact, ParseArtifact.file_asset_id == FileAsset.id)
-        )
-        if namespace_kind == "context":
-            query = query.where(
-                NormativeFileLink.context_version_id == namespace_id,
-                ParseArtifact.context_version_id == namespace_id,
-                FileAsset.purpose == "context",
+        rows: list[tuple[FileAsset, NormativeFileLink | None, ParseArtifact]]
+        if namespace_kind == "submission":
+            submission_query = (
+                select(FileAsset, ParseArtifact)
+                .join(SubmissionVersionFile, SubmissionVersionFile.file_asset_id == FileAsset.id)
+                .join(ParseArtifact, ParseArtifact.file_asset_id == FileAsset.id)
+                .where(
+                    SubmissionVersionFile.submission_version_id == namespace_id,
+                    ParseArtifact.submission_version_id == namespace_id,
+                    FileAsset.purpose == "submission",
+                )
             )
-        else:
-            query = query.where(
-                NormativeFileLink.assignment_version_id == namespace_id,
-                ParseArtifact.assignment_version_id == namespace_id,
-                NormativeFileLink.source_role == "rubric",
-                FileAsset.purpose == "rubric",
-            )
-        rows = db.execute(
-            query.where(
+            selected = db.execute(submission_query.where(
                 FileAsset.id.in_([UUID(item) for item in source_ids]),
                 ParseArtifact.id.in_([UUID(item) for item in parse_ids]),
-            ).order_by(FileAsset.id)
-        ).all()
+            ).order_by(FileAsset.id)).all()
+            rows = [(asset, None, artifact) for asset, artifact in selected]
+        else:
+            namespace_query = (
+                select(FileAsset, NormativeFileLink, ParseArtifact)
+                .join(NormativeFileLink, NormativeFileLink.file_asset_id == FileAsset.id)
+                .join(ParseArtifact, ParseArtifact.file_asset_id == FileAsset.id)
+            )
+            if namespace_kind == "context":
+                namespace_query = namespace_query.where(
+                    NormativeFileLink.context_version_id == namespace_id,
+                    ParseArtifact.context_version_id == namespace_id,
+                    FileAsset.purpose == "context",
+                )
+            else:
+                namespace_query = namespace_query.where(
+                    NormativeFileLink.assignment_version_id == namespace_id,
+                    ParseArtifact.assignment_version_id == namespace_id,
+                    NormativeFileLink.source_role == "rubric",
+                    FileAsset.purpose == "rubric",
+                )
+            rows = list(db.execute(namespace_query.where(
+                FileAsset.id.in_([UUID(item) for item in source_ids]),
+                ParseArtifact.id.in_([UUID(item) for item in parse_ids]),
+            ).order_by(FileAsset.id)).all())
         if len(rows) != len(source_ids):
             return {"status": "failed", "reason": "PARSER_SOURCE_SCOPE_INVALID"}
         stage = db.scalar(select(JobStage).where(JobStage.job_id == job.id, JobStage.stage_name == stage_name).with_for_update())
@@ -705,9 +801,12 @@ def _execute_parser_job(
         if namespace_kind == "context":
             context_namespace = db.get(ContextVersion, namespace_id)
             namespace_revision = context_namespace.revision if context_namespace is not None else 0
-        else:
+        elif namespace_kind == "assignment":
             assignment_namespace = db.get(AssignmentVersion, namespace_id)
             namespace_revision = assignment_namespace.revision if assignment_namespace is not None else 0
+        else:
+            submission_version = db.get(SubmissionVersion, namespace_id)
+            namespace_revision = submission_version.version_no if submission_version is not None else 0
         request_id = job.id
 
     retryable_failure = False
@@ -720,14 +819,18 @@ def _execute_parser_job(
              for page in (range(1, int(asset.preflight_json["pages"]) + 1) if asset.mime == "application/pdf" else [None])]
     for asset, link, artifact, page in tasks:
         profile = str(asset.preflight_json.get("parser_profile", settings.parser_profile_document))
+        profile_active = profile in {settings.parser_profile_native, settings.parser_profile_document}
         heavy = profile == settings.parser_profile_document
-        parser_module = "docling" if heavy else "docx"
-        missing_dependency = importlib.util.find_spec(parser_module) is None or (
+        parser_module = "docling" if heavy else "openpyxl" if asset.mime.endswith("spreadsheetml.sheet") else "docx"
+        missing_dependency = not profile_active or importlib.util.find_spec(parser_module) is None or (
             heavy and (importlib.util.find_spec("rtree") is None or shutil.which("tesseract") is None)
         )
         with SessionFactory() as manifest_db:
             resource = manifest_db.get(MethodManifest, artifact.parser_resource_manifest_id) if artifact.parser_resource_manifest_id else None
-            resource_matches = resource is not None and resource.kind == "parser_resource" and resource.sha256 == canonical_hash(profile_payload(settings, profile))
+            resource_matches = (
+                profile_active and resource is not None and resource.kind == "parser_resource"
+                and resource.sha256 == canonical_hash(profile_payload(settings, profile))
+            )
         task_key = canonical_hash(
             {
                 f"{namespace_kind}_version_id": str(namespace_id),
@@ -750,13 +853,15 @@ def _execute_parser_job(
                     .with_for_update()
                 )
                 namespace_is_draft = active_context is not None and active_context.state == "draft"
-            else:
+            elif namespace_kind == "assignment":
                 active_assignment = db.scalar(
                     select(AssignmentVersion)
                     .where(AssignmentVersion.id == namespace_id)
                     .with_for_update()
                 )
                 namespace_is_draft = active_assignment is not None and active_assignment.state == "draft"
+            else:
+                namespace_is_draft = db.get(SubmissionVersion, namespace_id) is not None
             if not namespace_is_draft:
                 job.status = "ready_for_review"
                 job.completion_kind = "completed_with_limits"
@@ -775,7 +880,8 @@ def _execute_parser_job(
                     for candidate in replay_candidates:
                         if isinstance(candidate, dict):
                             item = dict(candidate)
-                            item["source_ref"] = _candidate_ref(asset, link.source_role, item)
+                            if namespace_kind == "context" and link is not None:
+                                item["source_ref"] = _candidate_ref(asset, link.source_role, item)
                             all_candidates.append(item)
                 continue
             attempt_no = int(
@@ -797,8 +903,11 @@ def _execute_parser_job(
                 if item.state in {"held", "settled"}
             )
             remaining_ms = limit_seconds * 1000 - used_ms
+            time_limits = _parser_time_limits(
+                remaining_ms, settings.parser_task_soft_seconds, settings.parser_task_hard_seconds
+            )
             failure_code: str | None
-            if remaining_ms <= 0:
+            if time_limits is None:
                 failure_code = "processing_limit"
                 lease = None
             elif missing_dependency or not resource_matches:
@@ -807,13 +916,12 @@ def _execute_parser_job(
             else:
                 lease, admission_reason = acquire_parser_lease(settings, profile)
                 failure_code = None if lease is not None else admission_reason
-            soft_seconds = max(1, min(settings.parser_task_soft_seconds, remaining_ms // 1000 if remaining_ms > 0 else 1))
-            hard_seconds = max(soft_seconds, min(settings.parser_task_hard_seconds, remaining_ms // 1000 if remaining_ms > 0 else soft_seconds))
+            soft_seconds, hard_seconds = time_limits or (1, 1)
             reservation = ProcessingTimeReservation(
                 job_id=job_id,
                 task_key=task_key,
                 attempt_no=attempt_no,
-                reserved_active_ms=max(0, min(hard_seconds, remaining_ms // 1000 if remaining_ms > 0 else 0) * 1000),
+                reserved_active_ms=hard_seconds * 1000 if time_limits is not None else 0,
                 state="held",
                 started_at=datetime.now(UTC),
             )
@@ -915,21 +1023,24 @@ def _execute_parser_job(
                                 "attempts": attempt_no,
                             }
                         )
-                elif result is not None and not result.get("failure_code"):
+                elif namespace_kind == "context" and result is not None and not result.get("failure_code"):
                     candidate_items = result.get("candidate_fields", [])
                     if isinstance(candidate_items, list):
                         for candidate in candidate_items:
                             if isinstance(candidate, dict):
                                 item = dict(candidate)
-                                item["source_ref"] = _candidate_ref(asset, link.source_role, item)
+                                if link is not None:
+                                    item["source_ref"] = _candidate_ref(asset, link.source_role, item)
                                 all_candidates.append(item)
                 db.add(
                     AuditEvent(
                         worker_id="align-parser",
                         action=(
                             ("context.file.parsed" if artifact_row.status not in {"blocked", "failed", "unsupported"} else "context.file.parse_limited")
-                            if namespace_kind == "context"
-                            else ("assignment.rubric.parsed" if artifact_row.status not in {"blocked", "failed", "unsupported"} else "assignment.rubric.parse_limited")
+                            if namespace_kind == "context" else
+                            ("assignment.rubric.parsed" if artifact_row.status not in {"blocked", "failed", "unsupported"} else "assignment.rubric.parse_limited")
+                            if namespace_kind == "assignment" else
+                            ("submission.file.parsed" if artifact_row.status not in {"blocked", "failed", "unsupported"} else "submission.file.parse_limited")
                         ),
                         object_type="file_asset",
                         object_id=asset.id,
@@ -1011,7 +1122,7 @@ def _execute_parser_job(
             stage.output_refs_json = {"evidence_count": evidence_total, "limitations": terminal_limits, "provider": provider_outcome}
             db.add(
                 OutboxEvent(
-                    event_type="job.parse_context" if namespace_kind == "context" else "job.parse_rubric",
+                    event_type={"context": "job.parse_context", "assignment": "job.parse_rubric", "submission": "job.parse_submission"}[namespace_kind],
                     subject_id=job.id,
                     payload_json={"job_id": str(job.id)},
                     next_attempt_at=datetime.now(UTC) + timedelta(seconds=60),
@@ -1045,3 +1156,7 @@ def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint:
 
 def execute_rubric_job(job_id: UUID, expected_fence: int, expected_fingerprint: str) -> dict[str, Any]:
     return _execute_parser_job(job_id, expected_fence, expected_fingerprint, "assignment")
+
+
+def execute_submission_job(job_id: UUID, expected_fence: int, expected_fingerprint: str) -> dict[str, Any]:
+    return _execute_parser_job(job_id, expected_fence, expected_fingerprint, "submission")

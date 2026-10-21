@@ -3,6 +3,8 @@ import { redirect } from "next/navigation";
 
 import { ContextWorkspace } from "@/components/ContextWorkspace";
 import { AssignmentWorkspace, StudentAssignments } from "@/components/AssignmentWorkspace";
+import { SubmissionWorkspace } from "@/components/SubmissionWorkspace";
+import { SubmissionQueue } from "@/components/SubmissionQueue";
 import { LogoutButton } from "@/components/LogoutButton";
 import { getContextVersions, getCourse, getCourseAssignments, getProfile } from "@/lib/api";
 
@@ -35,8 +37,12 @@ export default async function CourseContextPage({ params }: { params: Promise<{ 
         {membership.role === "lecturer" && versionsResult?.kind === "ok" && <>
           <ContextWorkspace course={courseResult.data} csrfToken={profileResult.data.csrf_token} initialVersions={versionsResult.data.items} initialCursor={versionsResult.data.next_cursor} />
           <AssignmentWorkspace course={courseResult.data} csrfToken={profileResult.data.csrf_token} approvedContexts={versionsResult.data.items} initialAssignments={assignmentsResult.data.items} />
+          <SubmissionQueue assignments={assignmentsResult.data.items} />
         </>}
-        {membership.role === "student" && <StudentAssignments courseId={courseId} csrfToken={profileResult.data.csrf_token} initialAssignments={assignmentsResult.data.items} />}
+        {membership.role === "student" && <>
+          <StudentAssignments courseId={courseId} csrfToken={profileResult.data.csrf_token} initialAssignments={assignmentsResult.data.items} />
+          <SubmissionWorkspace assignments={assignmentsResult.data.items} csrfToken={profileResult.data.csrf_token} />
+        </>}
       </div>
     </main>
   );

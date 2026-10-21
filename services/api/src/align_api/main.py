@@ -21,6 +21,7 @@ from align_api.courses import router as courses_router
 from align_api.db import engine
 from align_api.errors import install_error_handlers
 from align_api.request_limits import RequestBodyLimit
+from align_api.submissions import router as submissions_router
 
 settings = get_settings()
 logging.basicConfig(level=settings.app_log_level)
@@ -62,6 +63,7 @@ def create_app() -> FastAPI:
     router.include_router(admin_router)
     router.include_router(contexts_router)
     router.include_router(assignments_router)
+    router.include_router(submissions_router)
     app.include_router(router)
 
     @app.get("/health/live", tags=["health"])

@@ -15,7 +15,7 @@ class RequestBodyLimit:
             await self.app(scope, receive, send)
             return
         path = scope['path']
-        if path.endswith('/context-files'):
+        if path.endswith('/context-files') or (path.startswith('/api/v1/submissions/') and path.endswith('/files')):
             limit = self.upload_bytes + 64 * 1024  # one file plus multipart metadata
         elif path in {'/api/v1/auth/login', '/api/v1/me/password'}:
             limit = 8192
