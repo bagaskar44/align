@@ -204,9 +204,10 @@ def _scenario():
             validation_state="validated", preflight_json={"parser_profile": "native_pdf_v1", "pages": 2})
         db.add(asset)
         db.flush()
+        source_manifest_files = [{"file_asset_id": str(asset.id), "sha256": digest}]
         source = SubmissionVersion(submission_id=submission.id, version_no=1,
-            assignment_version_id=version.id, manifest_hash=canonical_hash([str(asset.id)]),
-            manifest_json={"files": [{"file_asset_id": str(asset.id), "sha256": digest}]},
+            assignment_version_id=version.id, manifest_hash=canonical_hash(source_manifest_files),
+            manifest_json={"files": source_manifest_files},
             finalized_by=student.id, finalized_at=now, is_late=False)
         db.add(source)
         db.flush()
@@ -443,7 +444,11 @@ def test_provider_off_manual_review_annotation_feedback_release_and_withdrawal(_
     assert exported.status_code == 200 and exported.headers["cache-control"] == "private, no-store"
     assert "prompt" not in exported.text.lower() and "cached_value" not in exported.text
     original_snapshot = exported.json()
-    assert original_snapshot["confirmed_findings"][0]["evidence"][0]["annotation"]["kind"] == "evidence_binding"
+    assert any(
+        item["annotation"]["kind"] == "evidence_binding"
+        for item in original_snapshot["confirmed_findings"][0]["evidence"]
+        if item["annotation"] is not None
+    )
     annotation_removed_after_publish = clients["lecturer"].post(
         f"/api/v1/reviews/{review_id}/annotations/{annotation_id}/revisions",
         headers=_headers(csrf["lecturer"]), json={"kind": "evidence_binding", "operation": "remove",
@@ -451,7 +456,11 @@ def test_provider_off_manual_review_annotation_feedback_release_and_withdrawal(_
     assert annotation_removed_after_publish.status_code == 200, annotation_removed_after_publish.text
     historical_export = clients["student"].get(f"/api/v1/publications/{publication_id}/export?format=json")
     assert historical_export.status_code == 200
-    assert historical_export.json()["confirmed_findings"][0]["evidence"][0]["annotation"]["kind"] == "evidence_binding"
+    assert any(
+        item["annotation"]["kind"] == "evidence_binding"
+        for item in historical_export.json()["confirmed_findings"][0]["evidence"]
+        if item["annotation"] is not None
+    )
     assert historical_export.json() == original_snapshot
     markdown = clients["student"].get(f"/api/v1/publications/{publication_id}/export?format=md")
     assert markdown.status_code == 200 and "Klaim belum didukung" in markdown.text

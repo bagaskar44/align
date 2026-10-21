@@ -1,6 +1,6 @@
 # B5 — AI Executor
 
-**Status implementasi: BELUM DIMULAI. Hasil pengujian: BELUM DIJALANKAN.**
+**Status implementasi: gate software B5 teruji pada mock/synthetic dan fake provider non-network.** Embedding executor, semantic verification, exhaustive absence scan, drafting B1/B2, analysis recovery, dan feedback UI sudah memiliki jalur implementasi serta verifikasi; batas bukti provider nyata dan hasil empiris dicatat terpisah di handover.
 
 [Indeks dan matriks](README.md) · [Master](../../ALIGN_IMPLEMENTATION_SPEC.md) · [Predecessor: B4](B4-review-manual-dan-release.md) · [Berikutnya: B6](B6-numeric-dan-biaya.md)
 
@@ -112,12 +112,14 @@ Deterministic software tests memakai actual source fixtures dan mock provider. S
 
 ## 6. Gate dan handover
 
-- [ ] Executor/DAG/retrieval/coverage dan all-element persistence bekerja dalam cap.
-- [ ] Typed grounding, mechanical+semantic verification, category/dedup dan human-only boundary benar.
-- [ ] Baseline routing/batch1 aktif, per-entry validator dan decision logs tersedia; candidate optimization nonaktif.
-- [ ] Configurable real adapter dan explicit mock tersedia; live readiness/status jujur, paid prerequisite tidak dilewati.
-- [ ] B1/B2 drafting dan B4 model feedback/review consumer terhubung tanpa human-history overwrite.
-- [ ] Semua gate AC B5, regresi manual/provider-off, traceability dan `docs/handover/B5.md` memuat actual commands/results/manifest hashes/remaining numeric-financial scope.
+- [x] Executor menghubungkan embedding chunk/query ke adapter, validasi scope/dimensi/manifest/usage dan token caps; mock lexical-hash tetap dilabeli synthetic. Fake provider unit test bukan provider nyata.
+- [x] Semantic verdict dipisahkan dari mechanical grounding; absence hanya exhaustive setelah semua compatible source segments berhasil dinilai. Uji synthetic membuktikan scan lengkap dan insufficient menutup gate; empty retrieval tidak pernah menjadi bukti absence.
+- [x] Drafting B1/B2 menggunakan provider adapter bersama dengan validasi source references dan approval dosen. Mock B1/B2 tetap abstain dan Playwright memeriksa abstention berlabel.
+- [x] Analysis process crash, outbox broker-down/retry, recovery/replay, dan Playwright feedback diuji; B4 human history tetap sama.
+- [x] Mypy source CI gate lulus pada 44 files; 21 temuan baseline dan 2 temuan test helper B5 yang membentuk laporan 23 temuan telah dibereskan. Detail baseline ada di handover.
+- [ ] Provider nyata dan mutu semantic/retrieval empiris belum dibuktikan. Live call tetap diblokir sebelum network oleh paid-call guard sampai reservation/tariff/settlement/reconciliation lengkap; tidak ada klaim precision/recall atau real semantic truth.
+
+Bukti command, count, skipped tests dan limitation aktual ada di `docs/handover/B5.md`. Software verification tidak mengubah status pending untuk bukti empiris/provider nyata.
 
 **BERHENTI setelah B5; jangan mulai B6 otomatis.** Mock gate correctness bukan hasil efektivitas penelitian atau bukti batch/routing optimization validated.
 

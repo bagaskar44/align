@@ -13,6 +13,7 @@ from redis.exceptions import RedisError
 from sqlalchemy import text
 
 from align_api.admin import router as admin_router
+from align_api.analyses import router as analyses_router
 from align_api.assignments import router as assignments_router
 from align_api.auth import change_password, login, logout, me
 from align_api.config import get_settings
@@ -66,6 +67,7 @@ def create_app() -> FastAPI:
     router.include_router(assignments_router)
     router.include_router(submissions_router)
     router.include_router(reviews_router)
+    router.include_router(analyses_router)
     app.include_router(router)
 
     @app.get("/health/live", tags=["health"])

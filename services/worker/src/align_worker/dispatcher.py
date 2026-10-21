@@ -35,7 +35,10 @@ def dispatch_once(limit: int = 50) -> int:
                 event.attempt_count += 1
                 delay = min(300, 2 ** min(event.attempt_count, 8))
                 event.next_attempt_at = now + timedelta(seconds=delay)
-                logger.warning("unsupported_outbox_event", extra={"event_id": str(event.id), "event_type": event.event_type})
+                logger.warning(
+                    "unsupported_outbox_event",
+                    extra={"event_id": str(event.id), "event_type": event.event_type},
+                )
                 continue
             subject_id = event.payload_json.get(argument_key)
             if not isinstance(subject_id, str):
@@ -64,6 +67,7 @@ def _task_for_event(event_type: str) -> tuple[str | None, str, str]:
         "job.parse_context": ("align.parse_context", "job_id", parser_queue),
         "job.parse_rubric": ("align.parse_rubric", "job_id", parser_queue),
         "job.parse_submission": ("align.parse_submission", "job_id", parser_queue),
+        "job.analysis_run": ("align.analysis_run", "analysis_run_id", general_queue),
     }
     return mapping.get(event_type, (None, "", general_queue))
 

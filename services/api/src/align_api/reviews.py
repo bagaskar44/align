@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
@@ -18,15 +20,19 @@ from align_api.auth import (
     require_password_change_completed,
     require_verified_active_identity,
 )
+from align_api.config import get_settings
 from align_api.db import get_db
 from align_api.idempotency import canonical_hash, replay_or_lock, store_response
 from align_api.models import (
     AnalysisRun,
+    AnalysisRunStage,
     Assignment,
     AssignmentVersion,
     AuditEvent,
     CheckElement,
     Course,
+    CoverageInspection,
+    CoverageRecord,
     Criterion,
     CriterionSetVersion,
     ElementCheck,
@@ -41,13 +47,20 @@ from align_api.models import (
     FindingElementLink,
     FindingEvidenceLink,
     FindingRequirementLink,
+    GroundingEvaluation,
+    Job,
+    JobStage,
     ManualEvidence,
+    MethodManifest,
     NumericCheck,
     NumericObservation,
     NumericPolicyVersion,
     OutboxEvent,
+    ParseArtifact,
+    ProviderCallRecord,
     Publication,
     PublicationEvent,
+    ReleaseManifest,
     Requirement,
     ReviewAnnotation,
     ReviewAnnotationRevision,
@@ -59,16 +72,26 @@ from align_api.models import (
     ReviewFindingDecision,
     ReviewFindingTarget,
     ReviewVersion,
+    RoutingDecision,
     SourceUnit,
     SpecificationVersion,
     Submission,
     SubmissionVersion,
     SubmissionVersionFile,
     SubmissionVersionMember,
+    SupportBinding,
     User,
 )
 from align_api.submissions import _verify_source_anchor
 from align_domain.assignment_contracts import REQUIRED_ROLES
+from align_domain.executor import FeedbackDraftPayload
+from align_domain.providers import (
+    FEEDBACK_DRAFT_JSON_SCHEMA,
+    MockProvider,
+    OpenAIResponsesProvider,
+    PaidCallBlocked,
+    ProviderContext,
+)
 from align_domain.review_numeric import NumericPolicyError, compare_numeric_policy
 
 router = APIRouter(tags=["reviews", "feedback", "publications"])
@@ -359,7 +382,7 @@ def _targets(db: DbSession, review: ReviewVersion, primary_criterion: UUID,
         raise _err("primary criterion is outside this approved specification")
     if not (elements or requirements or criteria):
         raise _err("finding needs an approved criterion, element, or requirement target")
-    return elements, requirements, criteria
+    return list(elements), list(requirements), list(criteria)
 
 
 def _target_value(db: DbSession, row: ReviewFindingTarget) -> dict[str, str]:
@@ -452,6 +475,8 @@ def _coverage(db: DbSession, source: SubmissionVersion, value: dict[str, Any] | 
     if value is None:
         return None
     file_ids, note = value.get("source_file_ids"), value.get("inspection_note")
+    if not isinstance(file_ids, list):
+        raise _err("coverage attestation has invalid final source IDs")
     try:
         ids = [UUID(str(item)) for item in file_ids]
     except (ValueError, TypeError) as exc:
@@ -479,7 +504,8 @@ def _numeric_check(db: DbSession, review: ReviewVersion, assignment: Assignment,
     operands = payload.get("operands")
     if not isinstance(operands, list) or not operands or len(operands) > 20:
         raise _err("numeric operands are required")
-    checked = []
+    checked: list[dict[str, Any]] = []
+    observations: list[NumericObservation] = []
     for operand in operands:
         if not isinstance(operand, dict):
             raise _err("numeric operand is invalid")
@@ -507,14 +533,13 @@ def _numeric_check(db: DbSession, review: ReviewVersion, assignment: Assignment,
             literal=literal, context_json=context, source_quality=quality,
             verification_ref_json={"actor_confirmed": quality == "lecturer_confirmed"})
         db.add(observation)
-        checked[-1]["_observation"] = observation
+        observations.append(observation)
     try:
         result = compare_numeric_policy(policy.payload_json, checked)
     except NumericPolicyError as exc:
         raise _err(f"numeric comparison is not verified: {exc}") from exc
-    for operand, snapshot in zip(checked, result["operands_snapshot"], strict=False):
-        observation = operand.get("_observation")
-        if observation is not None and isinstance(snapshot, dict):
+    for observation, snapshot in zip(observations, result["operands_snapshot"], strict=False):
+        if isinstance(snapshot, dict):
             observation.canonical_decimal_text = snapshot.get("normalized_decimal")
     check = NumericCheck(review_version_id=review.id, numeric_policy_version_id=policy.id,
         comparability_status=result["comparability_status"], operation=result["operation"],
@@ -529,17 +554,12 @@ def _numeric_check(db: DbSession, review: ReviewVersion, assignment: Assignment,
 def _set_targets(db: DbSession, finding: ReviewFinding, elements: list[CheckElement],
                  requirements: list[Requirement], criteria: list[Criterion]) -> None:
     db.query(ReviewFindingTarget).filter(ReviewFindingTarget.review_finding_id == finding.id).delete(synchronize_session=False)
-    values = []
-    for row in elements:
-        db.add(ReviewFindingTarget(review_finding_id=finding.id, check_element_id=row.id))
-        values.append({"kind": "element", "id": str(row.id)})
-    for row in requirements:
-        db.add(ReviewFindingTarget(review_finding_id=finding.id, requirement_id=row.id))
-        values.append({"kind": "requirement", "id": str(row.id)})
-    for row in criteria:
-        db.add(ReviewFindingTarget(review_finding_id=finding.id, criterion_id=row.id))
-        values.append({"kind": "criterion", "id": str(row.id)})
-    finding.targets_json = values
+    for element_row in elements:
+        db.add(ReviewFindingTarget(review_finding_id=finding.id, check_element_id=element_row.id))
+    for requirement_row in requirements:
+        db.add(ReviewFindingTarget(review_finding_id=finding.id, requirement_id=requirement_row.id))
+    for criterion_row in criteria:
+        db.add(ReviewFindingTarget(review_finding_id=finding.id, criterion_id=criterion_row.id))
 
 
 def _decision_event(db: DbSession, finding: ReviewFinding, evidence_ids: list[UUID], identity: Identity) -> None:
@@ -626,14 +646,14 @@ def _apply_decision(db: DbSession, review: ReviewVersion, source: SubmissionVers
     db.flush()
     for item in evidence:
         # Manual evidence remains tied to the exact annotation revision that created it.
-        manual = db.scalar(select(ManualEvidence).where(ManualEvidence.evidence_item_id == item.id))
-        active = db.get(ReviewAnnotationRevision, manual.annotation_revision_id) if manual else None
+        manual_row = db.scalar(select(ManualEvidence).where(ManualEvidence.evidence_item_id == item.id))
+        active = db.get(ReviewAnnotationRevision, manual_row.annotation_revision_id) if manual_row else None
         if active is not None:
             annotation = db.get(ReviewAnnotation, active.annotation_id)
             if (not annotation or annotation.review_version_id != review.id
                 or annotation.current_revision_id != active.id or active.operation != "upsert"):
                 active = None
-        if active is None and not manual:
+        if active is None and manual_row is None:
             target_elements = [row.id for row in elements]
             candidates = db.scalars(select(ReviewAnnotationRevision).join(ReviewAnnotation,
                 ReviewAnnotation.current_revision_id == ReviewAnnotationRevision.id)
@@ -677,7 +697,8 @@ def _review_json(db: DbSession, review: ReviewVersion) -> dict[str, Any]:
         value = _finding_json(db, review, finding)
         for target in db.scalars(select(ReviewFindingTarget).where(ReviewFindingTarget.review_finding_id == finding.id,
             ReviewFindingTarget.check_element_id.is_not(None))).all():
-            by_element.setdefault(target.check_element_id, []).append(value)
+            if target.check_element_id is not None:
+                by_element.setdefault(target.check_element_id, []).append(value)
     result_elements = []
     for element in elements:
         criterion = db.get(Criterion, element.criterion_id)
@@ -686,6 +707,57 @@ def _review_json(db: DbSession, review: ReviewVersion) -> dict[str, Any]:
             ElementRequirementLink.check_element_id == element.id)).all()
         decision, check = decisions.get(element.id), checks.get(element.id)
         ev = [link.evidence_item_id for link in _active_decision_evidence(db, decision.id)] if decision else []
+        analysis = None
+        if check:
+            coverage = db.scalar(select(CoverageRecord).where(
+                CoverageRecord.analysis_run_id == run.id,
+                CoverageRecord.check_element_id == element.id)) if run else None
+            grounding = db.scalar(select(GroundingEvaluation).where(
+                GroundingEvaluation.element_check_id == check.id))
+            bindings = db.scalars(select(SupportBinding).where(
+                SupportBinding.element_check_id == check.id).order_by(
+                SupportBinding.relationship_code, SupportBinding.role,
+                SupportBinding.evidence_item_id)).all()
+            inspections = db.scalars(select(CoverageInspection).where(
+                CoverageInspection.coverage_record_id == coverage.id).order_by(
+                CoverageInspection.source_unit_id, CoverageInspection.evidence_item_id)).all() if coverage else []
+            analysis = {
+                "applicability_status": check.applicability_status,
+                "source_coverage_status": check.source_coverage_status,
+                "evidence_relationship": check.evidence_relationship,
+                "check_status": check.check_status,
+                "observations": check.observations_json,
+                "interpretation": check.interpretation,
+                "reason_codes": check.reason_codes_json,
+                "support_bindings": [{
+                    "relationship_code": row.relationship_code, "role": row.role,
+                    "observation_codes": row.observation_codes_json,
+                    "evidence_item_id": str(row.evidence_item_id), "quotes": row.quote_spans_json,
+                } for row in bindings],
+                "grounding": {
+                    "mechanical_status": grounding.mechanical_status,
+                    "semantic_status": grounding.semantic_status,
+                    "evaluation": grounding.evaluation_json,
+                    "limitations": grounding.limitation_codes_json,
+                } if grounding else None,
+                "coverage": {
+                    "retrieval_status": coverage.retrieval_status,
+                    "compatible_count": coverage.compatible_count,
+                    "inspected_count": coverage.inspected_count,
+                    "unresolved_count": coverage.unresolved_count,
+                    "sufficient_for_positive": coverage.sufficient_for_positive,
+                    "exhaustive_for_negative": coverage.exhaustive_for_negative,
+                    "inventory": coverage.inventory_json,
+                    "retrieval": coverage.retrieval_json,
+                    "limitations": coverage.limitations_json,
+                    "inspections": [{
+                        "source_unit_id": str(row.source_unit_id),
+                        "evidence_item_id": str(row.evidence_item_id) if row.evidence_item_id else None,
+                        "state": row.state, "method": row.method,
+                        "reason_code": row.reason_code, "detail": row.detail_json,
+                    } for row in inspections],
+                } if coverage else None,
+            }
         result_elements.append({"id": str(element.element_id), "check_element_id": str(element.id),
             "code": element.element_code,
             "criterion": {"id": str(criterion.id), "code": criterion.code, "title": criterion.title} if criterion else None,
@@ -695,10 +767,7 @@ def _review_json(db: DbSession, review: ReviewVersion) -> dict[str, Any]:
             "decision": {"review_status": decision.review_status, "resolution": decision.resolution,
                 "applicability_override": decision.applicability_override, "reason": decision.reason,
                 "evidence_ids": [str(x) for x in ev]} if decision else {"review_status": "pending", "resolution": None},
-            "analysis": {"applicability_status": check.applicability_status,
-                "source_coverage_status": check.source_coverage_status, "evidence_relationship": check.evidence_relationship,
-                "check_status": check.check_status, "observations": check.observations_json,
-                "interpretation": check.interpretation, "reason_codes": check.reason_codes_json} if check else None,
+            "analysis": analysis,
             "findings": by_element.get(element.id, [])})
     annotation_rows = db.scalars(select(ReviewAnnotation).where(ReviewAnnotation.review_version_id == review.id)
                                   .order_by(ReviewAnnotation.created_at, ReviewAnnotation.id)).all()
@@ -716,9 +785,23 @@ def _review_json(db: DbSession, review: ReviewVersion) -> dict[str, Any]:
         SubmissionVersionFile.submission_version_id == sv.id).order_by(SubmissionVersionFile.display_order)).all()
     return {"id": str(review.id), "submission_version_id": str(sv.id), "submission_version": sv.version_no,
         "assignment_version_id": str(av.id), "assignment_version": av.version_no,
-        "analysis_run": {"id": str(run.id), "status": run.status, "provider_mode": run.provider_mode,
-            "data_origin": run.data_origin,
-            "label": "SIMULASI SINTETIS · bukan hasil executor" if run.provider_mode == "mock" or run.data_origin == "synthetic" else "analysis run",
+        "analysis_run": {"id": str(run.id), "status": run.status,
+            "completion_kind": run.completion_kind, "config_fingerprint": run.config_fingerprint,
+            "provider_mode": run.provider_mode, "data_origin": run.data_origin,
+            "label": "SIMULASI SINTETIS • data sintetis" if run.provider_mode == "mock" or run.data_origin == "synthetic" else "analysis run",
+            "manifest_snapshot": run.manifest_snapshot_json, "usage": run.usage_snapshot_json,
+            "stages": [{"stage": row.stage_name, "status": row.status,
+                "output_refs": row.output_refs_json, "limitations": row.limitation_codes_json}
+                for row in db.scalars(select(AnalysisRunStage).where(
+                    AnalysisRunStage.analysis_run_id == run.id).order_by(
+                    AnalysisRunStage.created_at, AnalysisRunStage.id)).all()] if run else [],
+            "routing_decisions": [{"check_element_id": str(row.check_element_id) if row.check_element_id else None,
+                "task": row.task, "action": row.action, "selected_role": row.selected_role,
+                "reason_code": row.reason_code, "features": row.feature_snapshot_json,
+                "guards": row.guard_snapshot_json, "outcome": row.outcome}
+                for row in db.scalars(select(RoutingDecision).where(
+                    RoutingDecision.analysis_run_id == run.id).order_by(
+                    RoutingDecision.created_at, RoutingDecision.id)).all()] if run else [],
             "limitations": run.limitations_json} if run else None,
         "state": review.state, "revision": review.revision, "content_hash": review.content_hash,
         "lecturer_notes": review.lecturer_notes, "limitations": review.limitations_json,
@@ -805,7 +888,7 @@ def create_review(submission_version_id: UUID, body: CreateReview, request: Requ
     if body.analysis_run_id:
         if not run or run.submission_version_id != sv.id or run.specification_version_id != spec.id or run.status in {"queued", "running"}:
             raise _err("analysis run must be terminal and match this source/specification", 409)
-        candidates = db.scalars(select(FindingCandidate).where(FindingCandidate.analysis_run_id == run.id)).all()
+        candidates = list(db.scalars(select(FindingCandidate).where(FindingCandidate.analysis_run_id == run.id)).all())
     elements = db.scalars(select(CheckElement).where(CheckElement.specification_version_id == spec.id)).all()
     if not elements:
         raise _err("approved specification contains no review elements", 409)
@@ -1072,8 +1155,8 @@ def _complete_errors(db: DbSession, review: ReviewVersion) -> list[str]:
             errors.append(f"defer_limitation_required:{finding.id}")
         if finding.action in {"accept", "edit"}:
             target = db.scalar(select(func.count()).select_from(ReviewFindingTarget).where(ReviewFindingTarget.review_finding_id == finding.id)) or 0
-            evidence = _active_links(db, review, finding.id)
-            if not target or (not evidence and not finding.coverage_attestation_json) or not finding.claim.strip():
+            active_finding_links = _active_links(db, review, finding.id)
+            if not target or (not active_finding_links and not finding.coverage_attestation_json) or not finding.claim.strip():
                 errors.append(f"confirmed_finding_support_incomplete:{finding.id}")
             if finding.primary_category == "numerical_inconsistency":
                 check = db.get(NumericCheck, finding.numeric_check_id) if finding.numeric_check_id else None
@@ -1122,6 +1205,8 @@ def complete_review(review_id: UUID, body: RevisionBody, request: Request,
 
 def _asset_for_review(db: DbSession, review: ReviewVersion, file_id: UUID, digest: str) -> tuple[SubmissionVersion, FileAsset]:
     sv = db.get(SubmissionVersion, review.submission_version_id)
+    if sv is None:
+        raise _hidden()
     link = db.get(SubmissionVersionFile, (sv.id, file_id)) if sv else None
     asset = db.get(FileAsset, file_id) if link else None
     if not asset or asset.validation_state != "validated" or asset.quarantined_at or asset.sha256 != digest:
@@ -1129,8 +1214,7 @@ def _asset_for_review(db: DbSession, review: ReviewVersion, file_id: UUID, diges
     return sv, asset
 
 
-def _manual_artifact(db: DbSession, sv: SubmissionVersion, asset: FileAsset):
-    from align_api.models import ParseArtifact
+def _manual_artifact(db: DbSession, sv: SubmissionVersion, asset: FileAsset) -> ParseArtifact:
     # Serialize first-artifact creation/order without locking the immutable source row, which the API role cannot update.
     lock_key = int.from_bytes(hashlib.sha256(sv.id.bytes).digest()[:8], "big") & ((1 << 63) - 1)
     db.execute(select(func.pg_advisory_xact_lock(lock_key)))
@@ -1202,7 +1286,8 @@ def _annotation_targets(db: DbSession, review: ReviewVersion, element_ids: list[
         if not any(
             isinstance(item, dict)
             and item.get("relationship_code") == relationship
-            and role in REQUIRED_ROLES.get(item.get("predicate"), set())
+            and isinstance(item.get("predicate"), str)
+            and role in REQUIRED_ROLES.get(item["predicate"], set())
             for element in elements
             for item in element.payload_json.get("relationships", [])
         ):
@@ -1471,14 +1556,12 @@ def source_links(review_id: UUID, identity: Annotated[Identity, Depends(require_
 
 
 def _confirmed_findings(db: DbSession, review: ReviewVersion) -> list[ReviewFinding]:
-    return db.scalars(select(ReviewFinding).where(ReviewFinding.review_version_id == review.id,
-        ReviewFinding.action.in_(["accept", "edit"])).order_by(ReviewFinding.id)).all()
+    return list(db.scalars(select(ReviewFinding).where(ReviewFinding.review_version_id == review.id,
+        ReviewFinding.action.in_(["accept", "edit"])).order_by(ReviewFinding.id)).all())
 
 
 def _feedback_parts(db: DbSession, review: ReviewVersion, body: FeedbackBody | FeedbackUpdateBody
                     ) -> tuple[str, list[dict[str, Any]], list[str], dict[str, str]]:
-    if isinstance(body, FeedbackBody) and body.mode == "model":
-        raise _err("provider feedback generation is B5; use manual or template mode", 409)
     findings = _confirmed_findings(db, review)
     by_id = {row.id: row for row in findings}
     included_source = body.included_review_finding_ids
@@ -1540,8 +1623,8 @@ def _feedback_parts(db: DbSession, review: ReviewVersion, body: FeedbackBody | F
                 finding_id = UUID(str(raw_id))
             except ValueError as exc:
                 raise _err("feedback finding ID is invalid") from exc
-            finding = by_id.get(finding_id)
-            if finding is None or str(finding.primary_criterion_id) != criterion_id or str(finding_id) not in included_text:
+            included_finding = by_id.get(finding_id)
+            if included_finding is None or str(included_finding.primary_criterion_id) != criterion_id or str(finding_id) not in included_text:
                 raise _err("feedback block must refer to an included finding and its criterion")
             active_evidence = {str(row.evidence_item_id) for row in _active_links(db, review, finding_id)}
             if any(str(item) not in active_evidence for item in evidence_ids):
@@ -1569,6 +1652,271 @@ def _feedback_parts(db: DbSession, review: ReviewVersion, body: FeedbackBody | F
     return text, blocks, included_text, exclusions
 
 
+def _generate_model_feedback(
+    db: DbSession,
+    review: ReviewVersion,
+    draft: FeedbackDraft,
+    job: Job,
+    included: list[str],
+    exclusions: dict[str, str],
+) -> tuple[str | None, list[dict[str, Any]] | None, str | None]:
+    """Generate one scoped draft; unavailable, over-budget, and invalid outputs abstain."""
+    if not included:
+        return None, None, "no_confirmed_findings"
+    if review.analysis_run_id is None:
+        return None, None, "analysis_run_required"
+    run = db.get(AnalysisRun, review.analysis_run_id)
+    release = (
+        db.get(ReleaseManifest, run.release_manifest_id)
+        if run and run.release_manifest_id
+        else None
+    )
+    if run is None or release is None or release.state not in {"active", "verified", "retired"}:
+        return None, None, "release_snapshot_unavailable"
+    model_manifest = db.get(MethodManifest, release.model_manifest_id)
+    if model_manifest is None or model_manifest.kind != "model":
+        return None, None, "model_manifest_unavailable"
+    provider_mode = str(release.manifest_payload.get("provider_mode", "off"))
+    if provider_mode not in {"mock", "live", "off"}:
+        return None, None, "provider_disabled"
+    if model_manifest.content_json.get("provider_mode") != provider_mode:
+        return None, None, "provider_manifest_mismatch"
+
+    findings = {row.id: row for row in _confirmed_findings(db, review)}
+    selected_rows = [findings[UUID(raw_id)] for raw_id in included]
+    provider_findings: list[dict[str, Any]] = []
+    for finding in selected_rows:
+        criterion = db.get(Criterion, finding.primary_criterion_id)
+        if criterion is None:
+            return None, None, "official_criterion_unavailable"
+        evidence_rows: list[dict[str, Any]] = []
+        evidence_ids: list[str] = []
+        for link in _active_links(db, review, finding.id):
+            item = db.get(EvidenceItem, link.evidence_item_id)
+            if item is None:
+                continue
+            content = (
+                item.content_original_json if isinstance(item.content_original_json, dict) else {}
+            )
+            evidence_ids.append(str(item.id))
+            evidence_rows.append(
+                {
+                    "evidence_id": str(item.id),
+                    "anchor": item.anchor_json,
+                    "text": str(content.get("text", ""))[:3000],
+                }
+            )
+        provider_findings.append(
+            {
+                "review_finding_id": str(finding.id),
+                "criterion_id": str(finding.primary_criterion_id),
+                "criterion_title": criterion.title,
+                "criterion_descriptor": criterion.descriptor,
+                "claim": finding.claim,
+                "evidence_ids": evidence_ids,
+                "evidence": evidence_rows,
+            }
+        )
+    payload: dict[str, Any] = {
+        "task_type": "confirmed_feedback_draft",
+        "schema_version": 1,
+        "json_schema": FEEDBACK_DRAFT_JSON_SCHEMA,
+        "official_fields": {
+            "review_content_hash": review.content_hash,
+            "lecturer_notes": review.lecturer_notes,
+            "limitations": list(review.limitations_json),
+        },
+        "confirmed_findings": provider_findings,
+    }
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    input_tokens = (len(serialized.encode("utf-8")) + 3) // 4
+    if input_tokens > 12_000:
+        return None, None, "feedback_input_budget_exceeded"
+
+    settings = get_settings()
+    budget = min(Decimal("0.03"), settings.feedback_budget_usd)
+    call_id = uuid4()
+    context = ProviderContext(
+        call_id=call_id,
+        job_id=job.id,
+        manifest_id=model_manifest.id,
+        policy_id=release.routing_policy_manifest_id,
+        scope_ids=[review.id],
+        max_input_tokens=12_000,
+        max_output_tokens=3_000,
+    )
+    provider: Any | None = None
+    if provider_mode == "mock":
+        provider = MockProvider()
+    elif provider_mode == "live" and settings.openai_api_key is not None:
+        provider = OpenAIResponsesProvider(
+            settings.openai_api_key.get_secret_value(),
+            {
+                "efficient": settings.model_efficient or "",
+                "complex": settings.model_complex or "",
+                "draft_feedback": settings.model_efficient or "",
+            },
+        )
+    route = RoutingDecision(
+        analysis_run_id=run.id,
+        check_element_id=None,
+        task="draft_feedback",
+        action="call" if provider is not None else "abstain",
+        selected_role="efficient" if provider is not None else None,
+        reason_code="confirmed_feedback_draft",
+        feature_snapshot_json={
+            "confirmed_findings": len(included),
+            "new_retrieval": False,
+            "rejected_candidates_included": False,
+        },
+        guard_snapshot_json={
+            "review_complete": review.state == "complete",
+            "selected_confirmed_findings_only": True,
+            "source_scope_verified": True,
+            "paid_call_guard": "blocked_before_network",
+        },
+        remaining_limits_json={
+            "calls": 2,
+            "input_tokens": max(0, 12_000 - input_tokens),
+            "output_tokens": 3_000,
+            "budget_usd": str(budget),
+        },
+        policy_manifest_id=release.routing_policy_manifest_id,
+        outcome="running" if provider is not None else "provider_configuration_unavailable",
+        job_id=job.id,
+        batching_manifest_id=release.batching_policy_manifest_id,
+        timing_refs_json={"baseline_batch_size": 1},
+    )
+    db.add(route)
+    db.flush()
+
+    status = "provider_configuration_unavailable"
+    result = None
+    failure_code: str | None = None
+    output_text: str | None = None
+    output_blocks: list[dict[str, Any]] | None = None
+    try:
+        if provider is None:
+            failure_code = status
+        else:
+            result = provider.draft_feedback(context, payload)
+            if (
+                result.call_id != context.call_id
+                or result.job_id != context.job_id
+                or result.manifest_id != context.manifest_id
+                or result.policy_id != context.policy_id
+                or result.scope_ids != context.scope_ids
+            ):
+                status, failure_code = "provider_scope_invalid", "provider_scope_invalid"
+            elif result.status not in {"mocked", "completed"}:
+                status, failure_code = str(result.status)[:32], str(result.status)[:80]
+            elif (
+                int(result.usage.get("input_tokens", input_tokens)) > 12_000
+                or int(result.usage.get("output_tokens", 0)) > 3_000
+            ):
+                status, failure_code = "provider_usage_over_limit", "provider_usage_over_limit"
+            else:
+                typed = FeedbackDraftPayload.model_validate_json(
+                    json.dumps(result.payload, ensure_ascii=False)
+                )
+                returned_ids = [item.review_finding_id for item in typed.blocks]
+                if len(returned_ids) != len(set(returned_ids)) or set(returned_ids) != {
+                    UUID(raw_id) for raw_id in included
+                }:
+                    raise ValueError("feedback_finding_set_invalid")
+                output_blocks = []
+                for block in typed.blocks:
+                    finding = findings[block.review_finding_id]
+                    allowed_evidence = {
+                        row.evidence_item_id for row in _active_links(db, review, finding.id)
+                    }
+                    if (
+                        block.criterion_id != finding.primary_criterion_id
+                        or not set(block.evidence_ids) <= allowed_evidence
+                    ):
+                        raise ValueError("feedback_grounding_invalid")
+                    output_blocks.append(
+                        {
+                            "criterion_id": str(block.criterion_id),
+                            "review_finding_ids": [str(block.review_finding_id)],
+                            "evidence_ids": [str(item) for item in block.evidence_ids],
+                            "message": block.message,
+                            "next_action": block.next_action,
+                            "limitation": block.limitation,
+                        }
+                    )
+                output_text = "\n\n".join(
+                    f"{block['message']}\n\nTindakan berikutnya: {block['next_action']}"
+                    for block in output_blocks
+                )
+                if review.limitations_json:
+                    output_text += "\n\nBatas pemeriksaan: " + " ".join(review.limitations_json)
+                _feedback_parts(
+                    db,
+                    review,
+                    FeedbackBody(
+                        mode="manual",
+                        body_markdown=output_text,
+                        blocks=output_blocks,
+                        included_review_finding_ids=[UUID(raw_id) for raw_id in included],
+                        exclusion_reasons=exclusions,
+                        expected_revision=review.revision,
+                    ),
+                )
+                status = "completed"
+    except PaidCallBlocked:
+        status, failure_code = (
+            "paid_call_guard_blocked_before_network",
+            "paid_call_guard_blocked_before_network",
+        )
+    except Exception:
+        status, failure_code = "provider_response_invalid", "provider_response_invalid"
+
+    usage = {
+        "input_tokens": max(0, int(result.usage.get("input_tokens", input_tokens)))
+        if result
+        else input_tokens,
+        "output_tokens": max(0, int(result.usage.get("output_tokens", 0))) if result else 0,
+    }
+    db.add(
+        ProviderCallRecord(
+            analysis_run_id=run.id,
+            routing_decision_id=route.id,
+            logical_call_id=call_id,
+            attempt_no=1,
+            task="draft_feedback",
+            provider_mode=provider_mode,
+            status=status,
+            request_manifest_json={
+                "payload_sha256": canonical_hash(payload),
+                "input_token_estimate": input_tokens,
+            },
+            response_manifest_json={
+                "payload_sha256": canonical_hash(result.payload) if result else None,
+                "simulated": bool(result and result.simulated),
+                "fixture_id": result.fixture_id if result else None,
+            },
+            usage_json=usage,
+            cost_usd=Decimal("0") if result and result.simulated else None,
+        )
+    )
+    job.status = "ready_for_review"
+    job.stage = "draft_feedback"
+    job.lease_until = None
+    job.completion_kind = (
+        "feedback_draft_completed" if status == "completed" else "fallback_template"
+    )
+    job.last_error_code = failure_code
+    route.outcome = "completed" if status == "completed" else (failure_code or status)
+    return (
+        (output_text, output_blocks, None)
+        if status == "completed"
+        else (None, None, failure_code or status)
+    )
+
+
+
+
 def _feedback_hash(mode: str, source_hash: str, body: str, blocks: list[dict[str, Any]],
                    included: list[str], exclusions: dict[str, str]) -> str:
     return canonical_hash({"generation_mode": mode, "source_review_hash": source_hash,
@@ -1582,6 +1930,9 @@ def _feedback_json(draft: FeedbackDraft, review: ReviewVersion) -> dict[str, Any
         "body_markdown": draft.body_markdown, "blocks": draft.blocks_json,
         "included_review_finding_ids": draft.included_review_finding_ids_json,
         "exclusion_reasons": draft.exclusion_reasons_json, "content_hash": draft.content_hash,
+        "generation_status": draft.generation_status,
+        "generation_failure_code": draft.generation_failure_code,
+        "generation_job_id": str(draft.generation_job_id) if draft.generation_job_id else None,
         "state": draft.state, "revision": draft.revision,
         "approved_by": str(draft.approved_by) if draft.approved_by else None,
         "approved_at": draft.approved_at.isoformat() if draft.approved_at else None,
@@ -1592,10 +1943,13 @@ def _feedback_json(draft: FeedbackDraft, review: ReviewVersion) -> dict[str, Any
 def create_feedback_draft(review_id: UUID, body: FeedbackBody, request: Request,
                           identity: Annotated[Identity, Depends(require_verified_active_identity)],
                           db: Annotated[DbSession, Depends(get_db)],
-                          idem: Annotated[str, Header(alias="Idempotency-Key")]) -> dict[str, Any]:
+                          idem: Annotated[str, Header(alias="Idempotency-Key")],
+                          response: Response) -> dict[str, Any]:
     route = f"/reviews/{review_id}/feedback-drafts"
     replay = replay_or_lock(db, identity.user.id, "POST", route, idem, body.model_dump(mode="json"))
     if replay is not None:
+        if replay.get("generation_job_id"):
+            response.status_code = 202
         return replay
     review = _review(db, review_id, True)
     _access(db, review, identity)
@@ -1603,18 +1957,92 @@ def create_feedback_draft(review_id: UUID, body: FeedbackBody, request: Request,
         raise _err("review revision is stale", 409)
     if review.state != "complete" or _complete_errors(db, review):
         raise _err("review must be complete before preparing feedback", 409)
-    text, blocks, included, exclusions = _feedback_parts(db, review, body)
+    if body.mode == "model":
+        if body.body_markdown is not None or body.blocks:
+            raise _err("model feedback accepts selected confirmed findings only")
+        fallback_body = FeedbackBody(mode="template", body_markdown=None, blocks=[],
+            included_review_finding_ids=body.included_review_finding_ids,
+            exclusion_reasons=body.exclusion_reasons, expected_revision=body.expected_revision)
+        fallback_text, fallback_blocks, included, exclusions = _feedback_parts(db, review, fallback_body)
+        text, blocks = fallback_text, fallback_blocks
+        mode, generation_status = "model", "queued"
+    else:
+        text, blocks, included, exclusions = _feedback_parts(db, review, body)
+        mode, generation_status = body.mode, "not_requested"
     seq = (db.scalar(select(func.max(FeedbackDraft.sequence_no)).where(
         FeedbackDraft.review_version_id == review.id)) or 0) + 1
-    mode = body.mode
     draft = FeedbackDraft(review_version_id=review.id, sequence_no=seq,
         generation_mode=mode, source_review_hash=review.content_hash, blocks_json=blocks,
         body_markdown=text, included_review_finding_ids_json=included,
         exclusion_reasons_json=exclusions,
         content_hash=_feedback_hash(mode, review.content_hash, text, blocks, included, exclusions),
-        state="draft", revision=1)
+        state="draft", revision=1, generation_status=generation_status)
     db.add(draft)
     db.flush()
+    if body.mode == "model":
+        run = db.get(AnalysisRun, review.analysis_run_id) if review.analysis_run_id else None
+        release = db.get(ReleaseManifest, run.release_manifest_id) if run and run.release_manifest_id else None
+        model_manifest = db.get(MethodManifest, release.model_manifest_id) if release else None
+        if included and run and release and model_manifest and model_manifest.kind == "model":
+            settings = get_settings()
+            limits = {
+                "max_calls": 2,
+                "max_active_seconds": 60,
+                "max_text_input_tokens": 12_000,
+                "max_text_output_tokens": 3_000,
+                "budget_usd": str(min(Decimal("0.03"), settings.feedback_budget_usd)),
+            }
+            fingerprint = canonical_hash({
+                "draft_id": str(draft.id),
+                "release_hash": release.config_hash,
+                "review_hash": review.content_hash,
+                "included": included,
+                "exclusions": exclusions,
+                "limits": limits,
+            })
+            job = Job(
+                type="feedback_draft",
+                subject_id=draft.id,
+                scope_json={
+                    "review_version_id": str(review.id),
+                    "analysis_run_id": str(run.id),
+                    "release_manifest_id": str(release.id),
+                    "model_manifest_id": str(model_manifest.id),
+                },
+                input_fingerprint=fingerprint,
+                status="queued",
+                stage="draft_feedback",
+                lease_fence=0,
+                job_limits_json=limits,
+            )
+            db.add(job)
+            db.flush()
+            stage_hash = hashlib.sha256(f"{fingerprint}:draft_feedback".encode("ascii")).hexdigest()
+            db.add(JobStage(
+                job_id=job.id,
+                stage_name="draft_feedback",
+                input_hash=stage_hash,
+                status="queued",
+                output_refs_json={},
+                attempt_count=0,
+            ))
+            draft.generation_job_id = job.id
+            draft.model_manifest_id = model_manifest.id
+            db.add(OutboxEvent(
+                event_type="job.execute",
+                subject_id=job.id,
+                payload_json={"job_id": str(job.id)},
+                next_attempt_at=datetime.now(UTC),
+            ))
+            response.status_code = 202
+        else:
+            mode, text, blocks = "template", fallback_text, fallback_blocks
+            draft.generation_mode = mode
+            draft.generation_status = "fallback"
+            draft.generation_failure_code = "model_scope_unavailable" if included else "no_confirmed_findings"
+            draft.body_markdown = text
+            draft.blocks_json = blocks
+            draft.content_hash = _feedback_hash(mode, review.content_hash, text, blocks, included, exclusions)
     for block in blocks:
         for evidence_id in block.get("evidence_ids", []):
             db.add(EvidenceLink(evidence_item_id=UUID(str(evidence_id)), feedback_draft_id=draft.id))
@@ -1652,6 +2080,8 @@ def update_feedback_draft(draft_id: UUID, body: FeedbackUpdateBody, request: Req
     _access(db, review, identity)
     if draft.state == "approved":
         raise _err("approved feedback is immutable; create a new draft", 409)
+    if draft.generation_status in {"queued", "running"}:
+        raise _err("feedback generation must finish before editing the draft", 409)
     if body.expected_revision != draft.revision:
         raise _err("feedback draft revision is stale", 409)
     if review.state != "complete" or review.content_hash != draft.source_review_hash:
@@ -1690,6 +2120,8 @@ def approve_feedback_draft(draft_id: UUID, body: FeedbackApproveBody, request: R
     _access(db, review, identity)
     if draft.state != "draft" or draft.revision != body.expected_revision:
         raise _err("feedback draft revision is stale or already approved", 409)
+    if draft.generation_status in {"queued", "running"}:
+        raise _err("feedback generation must finish before approval", 409)
     if review.state != "complete" or review.revision != body.expected_review_revision or review.content_hash != draft.source_review_hash:
         raise _err("feedback approval is stale against the review", 409)
     expected_hash = _feedback_hash(draft.generation_mode, draft.source_review_hash,
@@ -1716,6 +2148,8 @@ def _pub_events(db: DbSession, publication_id: UUID) -> tuple[PublicationEvent |
 def _publication_snapshot(db: DbSession, review: ReviewVersion, source: SubmissionVersion,
                           submission: Submission, assignment: Assignment, av: AssignmentVersion,
                           draft: FeedbackDraft, identity: Identity) -> dict[str, Any]:
+    if draft.approved_by is None or draft.approved_at is None:
+        raise _err("feedback approval metadata is missing", 409)
     ids = [UUID(item) for item in draft.included_review_finding_ids_json]
     findings = db.scalars(select(ReviewFinding).where(ReviewFinding.review_version_id == review.id,
         ReviewFinding.id.in_(ids), ReviewFinding.action.in_(["accept", "edit"])).order_by(ReviewFinding.id)).all() if ids else []
@@ -1726,9 +2160,10 @@ def _publication_snapshot(db: DbSession, review: ReviewVersion, source: Submissi
         rev = db.get(ReviewAnnotationRevision, annotation.current_revision_id) if annotation.current_revision_id else None
         if rev and rev.operation == "upsert" and (rev.corrected_evidence_id or rev.original_evidence_id):
             evidence_id = rev.corrected_evidence_id or rev.original_evidence_id
-            ann_by_evidence[evidence_id] = {"annotation_id": str(annotation.id), "revision_id": str(rev.id),
-                "revision_no": rev.revision_no, "kind": annotation.kind, "anchor": rev.anchor_json,
-                "transcription": rev.transcription, "source_sha256": rev.source_sha256}
+            if evidence_id is not None:
+                ann_by_evidence[evidence_id] = {"annotation_id": str(annotation.id), "revision_id": str(rev.id),
+                    "revision_no": rev.revision_no, "kind": annotation.kind, "anchor": rev.anchor_json,
+                    "transcription": rev.transcription, "source_sha256": rev.source_sha256}
     packed = []
     for finding in findings:
         criterion = db.get(Criterion, finding.primary_criterion_id)
@@ -1781,10 +2216,11 @@ def publish_review(review_id: UUID, body: PublishBody, request: Request,
         return replay
     review = _review(db, review_id, True)
     source, submission, assignment, av = _access(db, review, identity)
-    submission = db.scalar(select(Submission).where(Submission.id == submission.id)
+    locked_submission = db.scalar(select(Submission).where(Submission.id == submission.id)
         .with_for_update().execution_options(populate_existing=True))
-    if submission is None:
+    if locked_submission is None:
         raise _hidden()
+    submission = locked_submission
     draft = db.scalar(select(FeedbackDraft).where(FeedbackDraft.id == body.feedback_draft_id,
         FeedbackDraft.review_version_id == review.id).with_for_update())
     if not draft:
@@ -1965,16 +2401,25 @@ def list_publications(submission_id: UUID, identity: Annotated[Identity, Depends
         if not rows:
             raise _hidden()
         _student_access(db, identity, rows[0])
-        return {"items": [{"publication_id": str(row.id), "sequence_no": row.sequence_no,
-            "submission_version": db.get(SubmissionVersion, row.submission_version_id).version_no,
-            "status": _student_snapshot(db, row)["status"], "published_at": row.published_at.isoformat()}
-            for row in rows]}
+        items = []
+        for row in rows:
+            source_version = db.get(SubmissionVersion, row.submission_version_id)
+            if source_version is None:
+                raise _hidden()
+            items.append({"publication_id": str(row.id), "sequence_no": row.sequence_no,
+                "submission_version": source_version.version_no,
+                "status": _student_snapshot(db, row)["status"], "published_at": row.published_at.isoformat()})
+        return {"items": items}
     rows = db.scalars(select(Publication).where(Publication.submission_id == submission.id)
                       .order_by(Publication.sequence_no.desc())).all()
-    return {"items": [{"publication_id": str(row.id), "sequence_no": row.sequence_no,
-        "submission_version_id": str(row.submission_version_id), "snapshot_hash": row.snapshot_hash,
-        "status": _pub_events(db, row.id)[1].event if _pub_events(db, row.id)[1] else "unknown",
-        "published_at": row.published_at.isoformat()} for row in rows]}
+    items = []
+    for row in rows:
+        _released, latest = _pub_events(db, row.id)
+        items.append({"publication_id": str(row.id), "sequence_no": row.sequence_no,
+            "submission_version_id": str(row.submission_version_id), "snapshot_hash": row.snapshot_hash,
+            "status": latest.event if latest else "unknown",
+            "published_at": row.published_at.isoformat()})
+    return {"items": items}
 
 
 @router.get("/publications/{publication_id}")
@@ -1989,7 +2434,8 @@ def get_publication(publication_id: UUID, identity: Annotated[Identity, Depends(
     except HTTPException:
         _student_access(db, identity, publication)
         return _student_snapshot(db, publication)
-    return {"publication_id": str(publication.id), "status": _pub_events(db, publication.id)[1].event,
+    _released, latest = _pub_events(db, publication.id)
+    return {"publication_id": str(publication.id), "status": latest.event if latest else "unknown",
         "snapshot_hash": publication.snapshot_hash, "snapshot": publication.snapshot_json,
         "published_at": publication.published_at.isoformat()}
 

@@ -1,8 +1,20 @@
 {
   "schema_version": 1,
-  "manifest_id": "retrieval-baseline-v1",
-  "mode": "synthetic_fixture_only",
-  "semantic_index_available": false,
-  "embedding_dimensions": 1536
+  "manifest_id": "retrieval-baseline-v2",
+  "mode": "scoped_hybrid_bm25_pgvector_exact",
+  "tokenizer_manifest": "unicode-wordpunct-nfkc-v1",
+  "chunk_tokens": 600,
+  "overlap_tokens": 80,
+  "bm25": "unicode-lowercase-no-stemming",
+  "vector_search": "exact-cosine-after-owner-course-assignment-version-filters",
+  "embedding_dimensions": 1536,
+  "mock_embedding": "synthetic-hash-embedding-1536-v1",
+  "mock_embedding_semantic_quality": "untrained-synthetic",
+  "fusion": { "method": "reciprocal_rank_fusion", "k": 60 },
+  "per_channel_top_k": 20,
+  "initial_chunks_max": 6,
+  "max_reformulations": 2,
+  "semantic_index_available": true,
+  "status": "mock_gate_only_real_embedding_calls_require_paid_guard"
 }
 

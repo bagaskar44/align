@@ -40,7 +40,12 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   const rubric = resolve(test.info().project.testDir, "fixtures", "kk_context.docx");
   await workspace.locator('input[type="file"][accept*=".docx"]').setInputFiles(rubric);
   await expect(workspace.getByRole("status").filter({ hasText: "File rubrik tersimpan privat" })).toBeVisible();
+  await workspace.getByLabel("Usulkan kutipan instruksi persis (mock, tanpa menafsirkan kewajiban)").check();
   await workspace.getByRole("button", { name: "Siapkan editor draft" }).click();
+  const draftingPanel = workspace.getByRole("region", { name: "Bantuan drafting provider" });
+  await expect(draftingPanel.getByText("mock_abstention")).toBeVisible({ timeout: 60_000 });
+  await expect(draftingPanel.getByText("SIMULASI • data sintetis")).toBeVisible();
+  await expect(draftingPanel.getByText("tidak ada usulan semantik dari provider mock.")).toBeVisible();
   await expect(workspace.getByRole("heading", { name: "Hasil parser rubrik · ready_for_review" })).toBeVisible({ timeout: 180_000 });
   const rubricExcerpt = workspace.locator(".rubric-evidence pre").first();
   await expect(rubricExcerpt).toContainText("Kode Mata Kuliah");
@@ -81,6 +86,7 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
 
   const specSection = workspace.locator('section[aria-labelledby="spec-title"]');
   await specSection.getByRole("button", { name: "Buat spec draft" }).click();
+  await expect(draftingPanel.getByText("mock_abstention")).toBeVisible({ timeout: 60_000 });
   await expect(specSection.getByLabel("Editor CheckSpecification terstruktur")).toBeVisible();
   const specElement = specSection.locator("fieldset.spec-element").first();
   await specElement.getByLabel("Pertanyaan keputusan positif").fill("Apakah uraian mahasiswa menjelaskan konsep yang ditetapkan dosen?");
@@ -189,9 +195,13 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
 
   const reviewWorkspace = queue.getByRole("region", { name: "Pemeriksaan dan publikasi" });
   await expect(reviewWorkspace.getByRole("heading", { name: "Pemeriksaan dan publikasi" })).toBeVisible();
+  await reviewWorkspace.getByRole("button", { name: "Jalankan analisis" }).click();
+  await expect(reviewWorkspace.getByRole("status").filter({ hasText: /Run (partial|completed)/ })).toBeVisible({ timeout: 240_000 });
+  await expect(reviewWorkspace).toContainText("provider mock · data synthetic");
   await queue.locator(".submission-file-select").filter({ hasText: "native-two-pages.pdf" }).click();
   const originalViewer = queue.locator(".submission-detail-card > .submission-viewer-panel");
   await originalViewer.getByRole("navigation", { name: "Unit sumber" }).getByRole("button", { name: /page PDF p\.1/ }).click();
+  await expect(originalViewer.locator(".source-unit-content")).toContainText("PDF p.1");
   await originalViewer.getByRole("button", { name: "Gunakan lokasi ini sebagai evidence manual" }).click();
   await expect(reviewWorkspace).toContainText("Lokasi sumber terpilih: PDF hlm. 1");
   await reviewWorkspace.getByRole("button", { name: "Simpan evidence manual" }).click();
@@ -216,8 +226,19 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
     await saveDecision.click();
     await expect(reviewWorkspace.getByRole("status").filter({ hasText: "Keputusan elemen disimpan" })).toBeVisible();
   }
+  const manualFinding = reviewWorkspace.locator(".b4-action-card").filter({ hasText: "Kategori resmi" });
+  await expect(manualFinding).toBeVisible();
+  await manualFinding.getByLabel("Kategori resmi").selectOption("missing_requirement");
+  await manualFinding.getByLabel("Pernyataan temuan").fill("Dosen menilai jawaban belum menjelaskan konsep yang diminta.");
+  await manualFinding.locator("fieldset.b4-select-list").first().getByRole("checkbox").first().check();
+  await manualFinding.getByRole("button", { name: "Simpan temuan manual" }).click();
+  await expect(reviewWorkspace.getByRole("status").filter({ hasText: "Temuan manual dosen ditambahkan" })).toBeVisible();
   await reviewWorkspace.getByRole("button", { name: "Selesaikan pemeriksaan" }).click();
   await expect(reviewWorkspace.getByText(/Pemeriksaan lengkap dan hash review dibekukan/)).toBeVisible();
+  await reviewWorkspace.getByRole("button", { name: "Buat draft dengan provider" }).click();
+  await expect(reviewWorkspace.getByText(/Draft model · draft/)).toBeVisible({ timeout: 120_000 });
+  await expect(reviewWorkspace.getByText("SIMULASI • data sintetis")).toBeVisible();
+  await expect(reviewWorkspace.getByText(/SIMULASI • data sintetis: Dosen menilai jawaban/)).toBeVisible();
   await reviewWorkspace.getByRole("button", { name: "Buat feedback template" }).click();
   await expect(reviewWorkspace.getByText(/Draft template · draft/)).toBeVisible();
   await reviewWorkspace.getByRole("button", { name: "Setujui feedback" }).click();

@@ -1085,7 +1085,7 @@ def _execute_parser_job(
             proposals, provider_outcome = propose_context_fields(job_id, namespace_id, job.scope_json, all_candidates)
         if proposals:
             _merge_field_candidates(db, namespace_id, proposals, request_id)
-        if provider_outcome["status"] != "mocked":
+        if provider_outcome["status"] not in {"mocked", "completed"}:
             terminal_limits.append({"code": provider_outcome["status"],
                                    "message": "Usulan model tidak tersedia atau tidak sah; konteks dapat dilengkapi manual."})
         # Reflect every page's outcome, including failures before the last page.

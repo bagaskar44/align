@@ -118,6 +118,29 @@ services:
     stop_grace_period: 30s
     networks: [private]
 
+  test-parser-worker:
+    profiles: [test]
+    build:
+      context: .
+      dockerfile: docker/parser-worker.Dockerfile
+    env_file: .env.worker
+    environment:
+      REDIS_QUEUE_PREFIX: align-test
+      ALIGN_WORKER_QUEUE: align-test.parser
+      PARSER_NODE_ID: align-b5-test-node
+    command: ["sh", "-lc", "uv run --no-sync --package align-worker celery -A align_worker.celery_app:celery_app worker --loglevel=INFO --concurrency=1 --queues=$${ALIGN_WORKER_QUEUE}"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: "no"
+    mem_limit: 9g
+    cpus: 2.0
+    pids_limit: 128
+    stop_grace_period: 30s
+    networks: [private]
+
   outbox-dispatcher:
     build:
       context: .
@@ -130,6 +153,23 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    networks: [private]
+
+  test-outbox-dispatcher:
+    profiles: [test]
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    env_file: .env.worker
+    environment:
+      REDIS_QUEUE_PREFIX: align-test
+    command: ["uv", "run", "--no-sync", "--package", "align-worker", "python", "-m", "align_worker.dispatcher"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: "no"
     networks: [private]
 
   scheduler:
@@ -160,12 +200,22 @@ services:
     env_file: .env.tests
     environment:
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_QUEUE_PREFIX: align-test
     command: ["uv", "run", "--no-sync", "pytest", "tests/integration"]
     depends_on:
       migrate:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      object-storage:
+        condition: service_started
+      test-outbox-dispatcher:
+        condition: service_started
+      test-parser-worker:
+        condition: service_started
     networks: [private]
 
   web:

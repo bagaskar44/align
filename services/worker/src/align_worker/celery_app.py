@@ -25,6 +25,7 @@ celery_app.conf.update(
         "align.parse_context": {"queue": parser_queue},
         "align.parse_rubric": {"queue": parser_queue},
         "align.parse_submission": {"queue": parser_queue},
+        "align.analysis_run": {"queue": general_queue},
         "align.reap_expired_leases": {"queue": general_queue},
     },
     task_acks_late=True,
@@ -53,4 +54,3 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
 )
-

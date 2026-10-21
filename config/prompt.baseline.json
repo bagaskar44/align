@@ -1,7 +1,11 @@
 {
   "schema_version": 1,
-  "manifest_id": "prompt-baseline-v1",
-  "templates": [],
-  "academic_generation_available": false
+  "manifest_id": "prompt-baseline-v2",
+  "templates": [
+    { "task": "interpret_evidence", "schema": "ObservationBundle-v1", "source_as_untrusted_data": true },
+    { "task": "verify_claim", "schema": "SemanticVerdict-v1", "separate_from_mechanical_grounding": true },
+    { "task": "draft_feedback", "schema": "FeedbackDraft-v1", "confirmed_findings_only": true }
+  ],
+  "academic_generation_available": "adapter_configured_but_paid_guard_blocks_live; mock_abstains"
 }
 

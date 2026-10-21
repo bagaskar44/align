@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "version_label": "align-b0-synthetic-baseline-v1",
+  "schema_version": 2,
+  "version_label": "align-b5-synthetic-baseline-v2",
   "provider_mode": "mock",
   "data_mode": "synthetic",
   "manifests": {
@@ -14,13 +14,25 @@
   },
   "grounding_registry_version": "grounding-registry-v1",
   "lint_registry_version": "lint-registry-v1",
-  "capabilities_available": ["manual_auth", "mock_provider_schema"],
-  "capabilities_unavailable": ["native_parser", "document_parser", "ocr", "live_provider", "paid_calls"],
+  "capabilities_available": [
+    "manual_auth", "mock_provider_schema", "b5_executor", "deterministic_applicability_dag",
+    "scoped_hybrid_retrieval", "typed_grounding", "semantic_batch1_validator",
+    "real_adapter_configurable", "review_analysis_integration"
+  ],
+  "capabilities_unavailable": [
+    "paid_calls", "live_semantic_verification", "efficient_semantic_route",
+    "batch3", "batch5", "empirical_quality"
+  ],
   "activation_checks": {
     "mock_schema_contract": true,
     "paid_calls_fail_closed": true,
     "baseline_batch_size": 1,
-    "empirical_verification": false
+    "empirical_verification": false,
+    "deterministic_executor": true,
+    "source_scope_isolation": true,
+    "quote_is_not_semantic_support": true,
+    "empty_top_k_is_not_absence": true,
+    "human_history_immutable": true
   }
 }
 

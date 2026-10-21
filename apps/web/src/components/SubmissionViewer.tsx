@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PdfSourceViewer } from "./PdfSourceViewer";
 
 type Unit = { id: string; unit_type: string; anchor: Record<string, unknown>; parse_status: string; limitations: Array<Record<string, unknown>> };
@@ -25,6 +25,8 @@ export function SubmissionFileViewer({ fileId, initialSourceUnitId, onManualAnch
   const [cursor, setCursor] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [zoom, setZoom] = useState(1);
+  const [selectionPending, setSelectionPending] = useState(false);
+  const sourceRequest = useRef(0);
 
   useEffect(() => {
     let live = true;
@@ -32,23 +34,46 @@ export function SubmissionFileViewer({ fileId, initialSourceUnitId, onManualAnch
       .then(async (result) => {
         if (!live) return;
         setSources(result); setCursor(result.next_cursor); setError("");
-        if (initialSourceUnitId) setSelected(await requestJson<Rendered>(`/api/v1/source-units/${initialSourceUnitId}/render`));
-        else if (result.items[0]) setSelected(await requestJson<Rendered>(`/api/v1/source-units/${result.items[0].id}/render`));
+        const initialId = initialSourceUnitId ?? result.items[0]?.id;
+        if (initialId) {
+          const requestId = ++sourceRequest.current;
+          setSelectionPending(true);
+          try {
+            const rendered = await requestJson<Rendered>(`/api/v1/source-units/${initialId}/render`);
+            if (live && requestId === sourceRequest.current) setSelected(rendered);
+          } finally {
+            if (live && requestId === sourceRequest.current) setSelectionPending(false);
+          }
+        }
       })
       .catch((cause: unknown) => { if (live) setError(cause instanceof Error ? cause.message : "Sumber tidak dapat dibuka."); });
     return () => { live = false; };
   }, [fileId, initialSourceUnitId]);
 
   async function selectUnit(unit: Unit) {
-    setError("");
-    try { setSelected(await requestJson<Rendered>(`/api/v1/source-units/${unit.id}/render`)); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Anchor tidak tersedia."); }
+    const requestId = ++sourceRequest.current;
+    setSelectionPending(true); setError("");
+    try {
+      const rendered = await requestJson<Rendered>(`/api/v1/source-units/${unit.id}/render`);
+      if (requestId === sourceRequest.current) setSelected(rendered);
+    } catch (cause) {
+      if (requestId === sourceRequest.current) setError(cause instanceof Error ? cause.message : "Anchor tidak tersedia.");
+    } finally {
+      if (requestId === sourceRequest.current) setSelectionPending(false);
+    }
   }
 
   async function selectSourceById(id: string) {
-    setError("");
-    try { setSelected(await requestJson<Rendered>(`/api/v1/source-units/${id}/render`)); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Anchor tidak tersedia."); }
+    const requestId = ++sourceRequest.current;
+    setSelectionPending(true); setError("");
+    try {
+      const rendered = await requestJson<Rendered>(`/api/v1/source-units/${id}/render`);
+      if (requestId === sourceRequest.current) setSelected(rendered);
+    } catch (cause) {
+      if (requestId === sourceRequest.current) setError(cause instanceof Error ? cause.message : "Anchor tidak tersedia.");
+    } finally {
+      if (requestId === sourceRequest.current) setSelectionPending(false);
+    }
   }
 
   async function loadMore() {
@@ -95,7 +120,8 @@ export function SubmissionFileViewer({ fileId, initialSourceUnitId, onManualAnch
             </>}
           </div>
         </div>
-        {selected && onManualAnchor && <button type="button" className="button button-quiet" onClick={() => onManualAnchor({
+        {selectionPending && <p role="status" className="help-text">Memuat anchor unit yang dipilih…</p>}
+        {selected && onManualAnchor && <button type="button" className="button button-quiet" disabled={selectionPending} onClick={() => onManualAnchor({
           file_id: selected.file.id, source_sha256: selected.file.sha256, anchor: selected.source_unit.anchor,
           original_evidence_id: selected.evidence[0]?.id ?? null, source_unit_id: selected.source_unit.id,
         })}>Gunakan lokasi ini sebagai evidence manual</button>}

@@ -21,6 +21,19 @@ type ReviewElement = {
   decision_question: string;
   payload: Record<string, unknown>;
   decision: { review_status: "pending" | "reviewed"; resolution: string | null; reason?: string | null; evidence_ids?: string[] };
+  analysis?: null | {
+    applicability_status: string; source_coverage_status: string; evidence_relationship: string;
+    check_status: string | null; observations: Array<Record<string, unknown>>;
+    interpretation: string | null; reason_codes: string[];
+    support_bindings: Array<{ relationship_code: string | null; role: string;
+      observation_codes: string[]; evidence_item_id: string; quotes: Array<Record<string, unknown>> }>;
+    grounding?: null | { mechanical_status: string; semantic_status: string;
+      evaluation: Record<string, unknown>; limitations: string[] };
+    coverage?: null | { retrieval_status: string; compatible_count: number; inspected_count: number;
+      unresolved_count: number; sufficient_for_positive: boolean; exhaustive_for_negative: boolean;
+      inventory: Record<string, unknown>; retrieval: Record<string, unknown>;
+      limitations: Array<Record<string, unknown>>; inspections: Array<Record<string, unknown>> };
+  };
 };
 type Relationship = { relationship_code: string; predicate: string };
 type Finding = {
@@ -57,7 +70,10 @@ type Review = {
   content_hash: string;
   lecturer_notes: string;
   limitations: string[];
-  analysis_run: null | { label: string; provider_mode: string; data_origin: string; limitations: unknown[] };
+  analysis_run: null | { id: string; status: string; completion_kind: string | null; label: string;
+    provider_mode: string; data_origin: string; limitations: unknown[]; usage?: Record<string, unknown>;
+    routing_decisions: Array<{ check_element_id: string | null; task: string; action: string;
+      reason_code: string; outcome: string }> };
   source_files: SourceFile[];
   elements: ReviewElement[];
   findings: Finding[];
@@ -78,7 +94,10 @@ type Evidence = {
 };
 type Feedback = {
   id: string;
-  generation_mode: "template" | "manual";
+  generation_mode: "model" | "template" | "manual";
+  generation_status: "not_requested" | "queued" | "running" | "completed" | "fallback";
+  generation_failure_code: string | null;
+  generation_job_id: string | null;
   source_review_hash: string;
   body_markdown: string;
   blocks: Array<Record<string, unknown>>;
@@ -89,6 +108,8 @@ type Feedback = {
   stale: boolean;
 };
 type ResponseError = { detail?: string | { message?: string; pending?: string[] }; error?: { message?: string } };
+type RuntimeRelease = { id: string; version_label: string; state: string; provider_mode: string; data_mode: string; paid_calls: string };
+type AnalysisRunStatus = { id: string; status: string; completion_kind: string | null; limitations: unknown[] };
 
 async function request<T>(path: string, csrfToken: string, method = "GET", body?: unknown): Promise<T> {
   const headers = new Headers({ "X-CSRF-Token": csrfToken });
@@ -119,6 +140,10 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
   const [numericPolicies, setNumericPolicies] = useState<NumericPolicy[]>([]);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [publicationId, setPublicationId] = useState("");
+  const [runtimeReleases, setRuntimeReleases] = useState<RuntimeRelease[]>([]);
+  const [releaseManifestId, setReleaseManifestId] = useState("");
+  const [analysisStatus, setAnalysisStatus] = useState("");
+  const [releaseError, setReleaseError] = useState("");
   const [selectedElementId, setSelectedElementId] = useState("");
   const [selectedEvidenceId, setSelectedEvidenceId] = useState("");
   const [selectedFindingId, setSelectedFindingId] = useState("");
@@ -161,6 +186,23 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
   const confirmedFindings = useMemo(() => review?.findings.filter((item) => ["accept", "edit"].includes(item.action)) ?? [], [review]);
   const feedbackStale = Boolean(feedback && review && (feedback.stale || feedback.source_review_hash !== review.content_hash || review.state !== "complete"));
   const selectedFeedbackFindingIds = includedFindingIds;
+
+  useEffect(() => {
+    if (!activeVersionId) return;
+    let active = true;
+    void request<{ releases: RuntimeRelease[] }>("/runtime/releases", csrfToken)
+      .then((result) => {
+        if (!active) return;
+        setRuntimeReleases(result.releases);
+        setReleaseManifestId((current) => result.releases.some((item) => item.id === current)
+          ? current : result.releases[0]?.id ?? "");
+        setReleaseError(result.releases.length ? "" : "Belum ada release terverifikasi untuk analysis.");
+      })
+      .catch((cause) => {
+        if (active) setReleaseError(cause instanceof Error ? cause.message : "Release runtime tidak dapat dimuat.");
+      });
+    return () => { active = false; };
+  }, [activeVersionId, csrfToken]);
 
   useEffect(() => {
     if (!activeVersionId) return;
@@ -218,6 +260,37 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
       if (reload) setRefreshKey((value) => value + 1);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Perubahan review gagal disimpan.");
+    } finally { setBusy(false); }
+  }
+
+  async function runAnalysis() {
+    if (!activeVersionId || !releaseManifestId) return;
+    setBusy(true); setError(""); setNotice(""); setAnalysisStatus("Mengantrekan analisis versi sumber ini…");
+    try {
+      const created = await request<{ analysis_run_id: string; status: string; label: string }>(
+        `/submission-versions/${activeVersionId}/analysis-runs`, csrfToken, "POST",
+        { release_manifest_id: releaseManifestId },
+      );
+      setAnalysisStatus(`${created.label} · status ${created.status}`);
+      let terminal: AnalysisRunStatus | null = null;
+      for (let attempt = 0; attempt < 180; attempt += 1) {
+        const run = await request<AnalysisRunStatus>(`/analysis-runs/${created.analysis_run_id}`, csrfToken);
+        if (!["queued", "running"].includes(run.status)) { terminal = run; break; }
+        setAnalysisStatus(`Analisis berjalan · ${run.status}`);
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+      }
+      if (!terminal) {
+        setAnalysisStatus(`Run ${created.analysis_run_id} masih berjalan. Buka ulang setelah worker selesai.`);
+        return;
+      }
+      const newReview = await request<Review>(`/submission-versions/${activeVersionId}/reviews`, csrfToken, "POST",
+        { analysis_run_id: created.analysis_run_id });
+      setAnalysisStatus(`Run ${terminal.status} · ${terminal.completion_kind ?? "manual review required"}. Workspace review baru dibuat; review lama tetap tersimpan.`);
+      setReview(newReview);
+      setRefreshKey((value) => value + 1);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Analysis run gagal dibuat.");
+      setAnalysisStatus("");
     } finally { setBusy(false); }
   }
 
@@ -338,7 +411,7 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
     setAnnotationTranscription("");
   }
 
-  async function createFeedback(mode: "template" | "manual") {
+  async function createFeedback(mode: "model" | "template" | "manual") {
     if (!review) return;
     const blocks = mode === "manual" ? confirmedFindings.filter((finding) => includedFindingIds.includes(finding.id)).map((finding) => ({
       criterion_id: finding.criterion_id,
@@ -353,13 +426,21 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
       const created = await request<Feedback>(`/reviews/${review.id}/feedback-drafts`, csrfToken, "POST", {
         mode,
         body_markdown: mode === "manual" ? manualFeedback : null,
-        blocks,
+        blocks: mode === "manual" ? blocks : [],
         included_review_finding_ids: included,
         exclusion_reasons: exclusionReasons,
         expected_revision: review.revision,
       });
       setFeedback(created);
-    }, mode === "template" ? "Draft feedback template dibuat." : "Draft feedback manual dibuat.", false);
+      if (mode === "model" && created.generation_status === "queued") {
+        let latest = created;
+        for (let attempt = 0; attempt < 90 && ["queued", "running"].includes(latest.generation_status); attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 1000));
+          latest = await request<Feedback>(`/feedback-drafts/${created.id}`, csrfToken);
+          setFeedback(latest);
+        }
+      }
+    }, mode === "model" ? "Draft feedback diproses dengan batas B5." : mode === "template" ? "Draft feedback template dibuat." : "Draft feedback manual dibuat.", false);
   }
 
   async function approveFeedback() {
@@ -418,6 +499,18 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
     </header>
     <p className="help-text">Inventory final: {review?.source_files.map((item) => item.name).join(" · ") ?? "memuat…"}. Tanpa analysis run, semua elemen tetap harus ditelaah dosen.</p>
     {review?.analysis_run && <p className="notice notice-muted">{review.analysis_run.label} · provider {review.analysis_run.provider_mode} · data {review.analysis_run.data_origin}</p>}
+    <div className="b4-action-card" aria-label="Analysis run B5">
+      <h4>Bantuan analisis</h4>
+      <p className="help-text">Run menggunakan versi submission final dan specification approved. Run baru membuat workspace review terpisah; histori review dosen tetap tersimpan.</p>
+      <label className="field-label">Release runtime<select value={releaseManifestId} onChange={(event) => setReleaseManifestId(event.target.value)} disabled={busy || !runtimeReleases.length}>
+        {runtimeReleases.map((item) => <option key={item.id} value={item.id}>{item.version_label} · {item.state} · {item.provider_mode}</option>)}
+      </select></label>
+      <button className="button button-primary" type="button" disabled={busy || !releaseManifestId} onClick={() => void runAnalysis()}>
+        {busy ? "Analisis berjalan…" : "Jalankan analisis"}
+      </button>
+      <small>{releaseError || (releaseManifestId ? "Paid call tetap diblokir sebelum network sampai guard biaya lengkap." : "")}</small>
+      {analysisStatus && <p className="notice notice-muted" role="status">{analysisStatus}</p>}
+    </div>
     {error && <p className="form-error" role="alert">{error}</p>}
     {notice && <p className="form-success" role="status">{notice}</p>}
     {!review && !error && <p className="help-text" role="status">Membuat workspace review manual…</p>}
@@ -440,6 +533,25 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
           {selectedElement && <div className="b4-action-card">
             <h5>{selectedElement.code}: keputusan dosen</h5>
             <p>{selectedElement.decision_question}</p>
+            {selectedElement.analysis && <section aria-label="Hasil teknis analysis run">
+              <h6>Hasil executor · keputusan tetap milik dosen</h6>
+              <p>Applicability: {selectedElement.analysis.applicability_status} · coverage: {selectedElement.analysis.source_coverage_status} · hubungan bukti: {selectedElement.analysis.evidence_relationship} · status: {selectedElement.analysis.check_status ?? "not applicable"}</p>
+              {selectedElement.analysis.interpretation && <p>{selectedElement.analysis.interpretation}</p>}
+              {selectedElement.analysis.reason_codes.length > 0 && <p>Batas: {selectedElement.analysis.reason_codes.join(", ")}</p>}
+              {selectedElement.analysis.observations.length > 0 && <ul>{selectedElement.analysis.observations.map((item, index) => <li key={index}>{String(item.text ?? item.code ?? "Observation")}</li>)}</ul>}
+              {selectedElement.analysis.support_bindings.length > 0 && <details>
+                <summary>Bindings bukti bertipe: {selectedElement.analysis.support_bindings.length}</summary>
+                <pre>{JSON.stringify(selectedElement.analysis.support_bindings, null, 2)}</pre>
+              </details>}
+              {review.analysis_run?.routing_decisions.filter((item) => item.check_element_id === selectedElement.check_element_id).map((item, index) =>
+                <small key={`${item.task}-${index}`}>Routing {item.task}: {item.action} · {item.reason_code} · {item.outcome}</small>)}
+              {selectedElement.analysis.grounding && <p>Grounding: mechanical {selectedElement.analysis.grounding.mechanical_status} · semantic {selectedElement.analysis.grounding.semantic_status}</p>}
+              {selectedElement.analysis.coverage && <details>
+                <summary>Coverage {selectedElement.analysis.coverage.retrieval_status}: {selectedElement.analysis.coverage.inspected_count}/{selectedElement.analysis.coverage.compatible_count} unit diperiksa; {selectedElement.analysis.coverage.unresolved_count} belum terselesaikan</summary>
+                <p>Exhaustive untuk absence: {selectedElement.analysis.coverage.exhaustive_for_negative ? "ya" : "tidak"}. Kesimpulan positif dari kutipan saja tidak diterima.</p>
+                <pre>{JSON.stringify(selectedElement.analysis.coverage.inventory, null, 2)}</pre>
+              </details>}
+            </section>}
             <ul>{selectedElement.requirements.map((item) => <li key={item.id}>{item.code} · {item.text}{item.mandatory ? " · wajib" : ""}</li>)}</ul>
             <label className="field-label">Resolusi
               <select value={resolution} onChange={(event) => setResolution(event.target.value)}>
@@ -590,7 +702,7 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
         </div>
         <div className="b4-feedback-card">
           <h5>Feedback mahasiswa</h5>
-          <p className="help-text">Feedback hanya memakai confirmed findings yang dipilih. Template netral dipakai saat tidak ada temuan confirmed. Tidak ada provider AI di alur B4.</p>
+          <p className="help-text">Feedback hanya memakai confirmed findings dan bukti aktif yang dipilih, catatan dosen, serta batas pemeriksaan. Draft model tetap perlu ditinjau; saat provider tidak tersedia, sistem menyiapkan template.</p>
           <fieldset className="b4-select-list"><legend>Temuan yang disertakan</legend>
             {confirmedFindings.map((finding) => {
               const included = includedFindingIds.includes(finding.id);
@@ -607,14 +719,18 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
           <label className="field-label">Teks feedback manual<textarea maxLength={20000} value={manualFeedback} onChange={(event) => setManualFeedback(event.target.value)} placeholder="Gunakan Markdown ringan tanpa link eksternal, HTML, atau jawaban ideal." /></label>
           <div className="button-row">
             <button type="button" className="button button-quiet" disabled={busy || review.state !== "complete" || confirmedFindings.some((item) => !includedFindingIds.includes(item.id) && !exclusionReasons[item.id]?.trim())} onClick={() => void createFeedback("template")}>Buat feedback template</button>
+            {review.analysis_run && review.analysis_run.provider_mode !== "off" && <button type="button" className="button button-quiet" disabled={busy || review.state !== "complete" || !includedFindingIds.length || confirmedFindings.some((item) => !includedFindingIds.includes(item.id) && !exclusionReasons[item.id]?.trim())} onClick={() => void createFeedback("model")}>Buat draft dengan provider</button>}
             <button type="button" className="button button-quiet" disabled={busy || review.state !== "complete" || !manualFeedback.trim() || !includedFindingIds.length || confirmedFindings.some((item) => !includedFindingIds.includes(item.id) && !exclusionReasons[item.id]?.trim())} onClick={() => void createFeedback("manual")}>Buat feedback manual</button>
           </div>
           {feedback && <article className="b4-feedback-preview" aria-label="Draft feedback">
             <strong>Draft {feedback.generation_mode} · {feedback.state} · revisi {feedback.revision}{feedbackStale ? " · stale" : ""}</strong>
+            {["queued", "running"].includes(feedback.generation_status) && <small role="status">Draft masih diproses worker B5.</small>}
+            {feedback.generation_status === "fallback" && <small role="status">Provider gagal atau diblokir; draft ini memakai template. Kode: {feedback.generation_failure_code ?? "unknown"}.</small>}
+            {feedback.generation_mode === "model" && review.analysis_run?.provider_mode === "mock" && <small>SIMULASI • data sintetis · wajib ditinjau dosen</small>}
             <pre>{feedback.body_markdown}</pre>
             <div className="button-row">
               {feedback.state === "draft" && feedback.generation_mode === "manual" && <button type="button" className="button button-quiet" disabled={busy || feedbackStale} onClick={() => void updateFeedbackDraft()}>Simpan revisi draft</button>}
-              <button type="button" className="button button-quiet" disabled={busy || feedback.state !== "draft" || feedbackStale} onClick={() => void approveFeedback()}>Setujui feedback</button>
+              <button type="button" className="button button-quiet" disabled={busy || feedback.state !== "draft" || ["queued", "running"].includes(feedback.generation_status) || feedbackStale} onClick={() => void approveFeedback()}>Setujui feedback</button>
               <button type="button" className="button button-primary" disabled={busy || feedback.state !== "approved" || feedbackStale || !activeVersion || Boolean(publicationId)} onClick={() => void publish()}>Terbitkan hasil</button>
               {publicationId && <button type="button" className="button button-quiet" onClick={() => void withdraw()}>Tarik publikasi</button>}
             </div>

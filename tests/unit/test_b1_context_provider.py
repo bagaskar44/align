@@ -1,14 +1,20 @@
 from __future__ import annotations
 
-from uuid import uuid4
+from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
 
-from align_domain.providers import MockProvider
+from align_domain.providers import (
+    MockProvider,
+    OpenAIResponsesProvider,
+    ProviderContext,
+    ProviderResult,
+)
 from align_worker.context_provider import propose_context_fields
 
 
-def inputs():
+def inputs() -> tuple[UUID, UUID, dict[str, Any], list[dict[str, Any]]]:
     job, context = uuid4(), uuid4()
     scope = {"context_provider": {"mode": "mock", "data_mode": "synthetic",
                                   "manifest_id": str(uuid4()), "policy_id": str(uuid4())}}
@@ -18,7 +24,7 @@ def inputs():
     return job, context, scope, candidates
 
 
-def test_mock_context_output_is_closed_source_bound_and_explicitly_simulated():
+def test_mock_context_output_is_closed_source_bound_and_explicitly_simulated() -> None:
     job, context, scope, candidates = inputs()
     proposed, outcome = propose_context_fields(job, context, scope, candidates)
     assert proposed == candidates
@@ -28,9 +34,9 @@ def test_mock_context_output_is_closed_source_bound_and_explicitly_simulated():
 
 
 @pytest.mark.parametrize("failure", ["refused", "schema", "foreign_anchor", "foreign_scope", "unavailable"])
-def test_invalid_refused_unavailable_provider_never_produces_context_fields(failure):
+def test_invalid_refused_unavailable_provider_never_produces_context_fields(failure: str) -> None:
     class BrokenProvider(MockProvider):
-        def extract_fields(self, call, payload):
+        def extract_fields(self, call: ProviderContext, payload: dict[str, object]) -> ProviderResult:
             if failure == "unavailable":
                 raise TimeoutError("synthetic provider failure")
             result = super().extract_fields(call, payload)
@@ -47,18 +53,27 @@ def test_invalid_refused_unavailable_provider_never_produces_context_fields(fail
     assert proposed == [] and outcome["status"] == "model_response_invalid"
 
 
-@pytest.mark.parametrize("mode", ["off", "live"])
-def test_disabled_and_live_modes_never_construct_a_provider(mode):
+def test_off_mode_never_constructs_a_provider() -> None:
     class NeverCalled(MockProvider):
-        def extract_fields(self, call, payload):
-            pytest.fail("disabled/live provider must not be invoked")
+        def extract_fields(self, call: ProviderContext, payload: dict[str, object]) -> ProviderResult:
+            pytest.fail("disabled provider must not be invoked")
     job, context, scope, candidates = inputs()
-    scope["context_provider"]["mode"] = mode
+    scope["context_provider"]["mode"] = "off"
     proposed, outcome = propose_context_fields(job, context, scope, candidates, NeverCalled())
     assert proposed == [] and outcome["status"] == "provider_disabled"
 
 
-def test_context_output_cap_retains_manual_fallback_without_silent_truncation():
+def test_live_context_adapter_is_configured_but_financial_guard_stops_before_network() -> None:
+    job, context, scope, candidates = inputs()
+    scope["context_provider"]["mode"] = "live"
+    adapter = OpenAIResponsesProvider("test-only-not-a-secret", {"extract_fields": "test-model"})
+    proposed, outcome = propose_context_fields(job, context, scope, candidates, adapter)
+    assert proposed == []
+    assert outcome["status"] == "paid_call_guard_incomplete"
+    assert outcome["paid_calls"] == 0
+
+
+def test_context_output_cap_retains_manual_fallback_without_silent_truncation() -> None:
     job, context, scope, candidates = inputs()
     candidates[0]["value"] = "x" * 4000
     proposed, outcome = propose_context_fields(job, context, scope, candidates)

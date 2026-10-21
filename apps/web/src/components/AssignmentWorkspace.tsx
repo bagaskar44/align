@@ -112,6 +112,21 @@ type CriteriaProposal = {
   mandatory: null;
   status: "needs_lecturer_decision";
 };
+type ProviderDraftJob = {
+  id: string;
+  type: "criteria_draft" | "specification_draft";
+  status: string;
+  stage: string | null;
+  generation: {
+    status?: string;
+    provider_mode?: string;
+    simulated?: boolean;
+    label?: string | null;
+    suggestions?: Array<{ title: string; description: string; source_refs: Array<{ source_kind: string; quote: string }> }>;
+    limitations?: string[];
+  };
+  limitation_code?: string | null;
+};
 type IssueEnvelope = { error?: { message?: string; field_errors?: Array<{ field: string }> } };
 type PublicPreview = {
   title: string;
@@ -282,6 +297,8 @@ export function AssignmentWorkspace({
   const [criteriaJson, setCriteriaJson] = useState("[]");
   const [generateExtractiveProposals, setGenerateExtractiveProposals] = useState(false);
   const [criteriaProposals, setCriteriaProposals] = useState<CriteriaProposal[]>([]);
+  const [providerDraftJobId, setProviderDraftJobId] = useState<string | null>(null);
+  const [providerDraftJob, setProviderDraftJob] = useState<ProviderDraftJob | null>(null);
   const [specJson, setSpecJson] = useState("");
   const [rubricFiles, setRubricFiles] = useState<UploadedRubric[]>([]);
   const [rubricParse, setRubricParse] = useState<RubricParse | null>(null);
@@ -363,6 +380,31 @@ export function AssignmentWorkspace({
     };
   }, [version?.id, editable, csrfToken, rubricParse?.status]);
 
+  useEffect(() => {
+    if (!providerDraftJobId) return;
+    let active = true;
+    let timer: number | undefined;
+    async function refreshDraftJob() {
+      try {
+        const result = await apiRequest<ProviderDraftJob>(
+          `/assignment-draft-jobs/${providerDraftJobId}`, csrfToken, { method: "GET" },
+        );
+        if (!active) return;
+        setProviderDraftJob(result);
+        if (["queued", "running"].includes(result.status)) {
+          timer = window.setTimeout(() => void refreshDraftJob(), 1200);
+        }
+      } catch {
+        if (active) setProviderDraftJob(null);
+      }
+    }
+    void refreshDraftJob();
+    return () => {
+      active = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [providerDraftJobId, csrfToken]);
+
   const refreshAssignments = useCallback(async () => {
     const response = await apiRequest<{ items: AssignmentSummary[] }>(
       `/courses/${course.id}/assignments`, csrfToken, { method: "GET" },
@@ -374,6 +416,8 @@ export function AssignmentWorkspace({
     setError("");
     setMessage("");
     setRubricParse(null);
+    setProviderDraftJobId(null);
+    setProviderDraftJob(null);
     setPublishPreview(null);
     const loaded = await apiRequest<AssignmentDetail>(
       `/assignments/${assignmentId}`, csrfToken, { method: "GET" },
@@ -462,12 +506,14 @@ export function AssignmentWorkspace({
       revision: number;
       criteria: Array<Record<string, unknown>>;
       rubric_sources: RubricSource[];
-      generation: { proposals: CriteriaProposal[]; status: string };
+      generation: { proposals: CriteriaProposal[]; status: string; provider_draft_job_id?: string | null };
     }>(
       `/assignment-versions/${version.id}/criteria-drafts`, csrfToken,
       { method: "POST", idempotency: true, body: { rubric_file_ids: selectedRubricIds, generate_from_instruction: generateExtractiveProposals } },
     );
     setCriteriaProposals(response.generation.proposals);
+    setProviderDraftJobId(response.generation.provider_draft_job_id ?? null);
+    setProviderDraftJob(null);
     const parsedRubrics = await apiRequest<RubricParse>(
       `/assignment-versions/${version.id}/rubric-parse`, csrfToken, { method: "GET" },
     );
@@ -530,9 +576,11 @@ export function AssignmentWorkspace({
 
   const createSpec = () => execute(async () => {
     if (!version || !criterionSet) return;
-    const created = await apiRequest<Specification>(`/assignment-versions/${version.id}/specification-drafts`, csrfToken, {
+    const created = await apiRequest<Specification & { provider_draft_job_id?: string | null }>(`/assignment-versions/${version.id}/specification-drafts`, csrfToken, {
       method: "POST", idempotency: true, body: { criterion_set_version_id: criterionSet.id },
     });
+    setProviderDraftJobId(created.provider_draft_job_id ?? null);
+    setProviderDraftJob(null);
     const template = requiredSpecTemplate(criterionSet.criteria);
     setSpecJson(JSON.stringify(template, null, 2));
     setDetail((current) => current?.version ? {
@@ -642,6 +690,16 @@ export function AssignmentWorkspace({
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}
       {message && <p className="form-success" role="status">{message}</p>}
+      {providerDraftJobId && <div className="lint-panel" role="region" aria-live="polite" aria-label="Bantuan drafting provider">
+        <h3>Bantuan drafting · {providerDraftJob?.type === "criteria_draft" ? "criteria" : "specification"}</h3>
+        {!providerDraftJob && <p role="status">Menunggu status worker…</p>}
+        {providerDraftJob && ["queued", "running"].includes(providerDraftJob.status) && <p role="status">Draft diproses worker B5 · {providerDraftJob.status}.</p>}
+        {providerDraftJob?.generation.label && <p className="notice">{providerDraftJob.generation.label} · semua usulan tetap memerlukan keputusan dosen.</p>}
+        {providerDraftJob?.generation.status && <p>Status hasil: <strong>{providerDraftJob.generation.status}</strong> · job {providerDraftJob.status}.</p>}
+        {providerDraftJob?.generation.suggestions?.map((item, index) => <article className="rubric-evidence" key={`${item.title}-${index}`}><h4>{item.title}</h4><p>{item.description}</p>{item.source_refs.map((ref, refIndex) => <blockquote key={`${ref.source_kind}-${refIndex}`}><small>{ref.source_kind} · sumber terikat</small><p>{ref.quote}</p></blockquote>)}<small>Belum disahkan · perlu keputusan dosen</small></article>)}
+        {providerDraftJob?.generation.limitations?.map((item, index) => <p className="help-text" key={`${item}-${index}`}>{item}</p>)}
+        {providerDraftJob && ["blocked", "failed"].includes(providerDraftJob.status) && <p className="notice">Worker tidak menghasilkan usulan; editor manual tetap tersedia. Kode: {providerDraftJob.limitation_code ?? "manual_fallback"}.</p>}
+      </div>}
       {!hasApprovedContext && <p className="notice">Sahkan ContextVersion terlebih dahulu. Tugas hanya dapat mengikat konteks yang sudah approved.</p>}
       <div className="assignment-start-grid">
         <label className="field"><span>Judul tugas</span><input value={newTitle} maxLength={240} onChange={(event) => setNewTitle(event.target.value)} /></label>

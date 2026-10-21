@@ -1,6 +1,6 @@
 # ALIGN
 
-ALIGN is a course-scoped workspace for reviewing student work with traceable evidence and instructor-controlled feedback. This repository implements the B0 foundation and B1 identity/course-context workflows in mock/synthetic mode. Academic assignment, submission, review, and analysis flows remain future stages.
+ALIGN is a course-scoped workspace for reviewing student work with traceable evidence and instructor-controlled feedback. B0–B5 software paths are verified with labeled mock/synthetic fixtures, including executor embedding plumbing, semantic and absence gates, B1/B2 drafting, recovery and feedback UI. Real-provider calls and empirical semantic quality remain unverified; see [`docs/handover/B5.md`](docs/handover/B5.md) for evidence and limits. B6 and later stages remain future work.
 
 ## Local development
 

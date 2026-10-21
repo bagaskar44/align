@@ -1,12 +1,14 @@
 {
   "schema_version": 1,
-  "policy_id": "batching-baseline-v1",
+  "policy_id": "batching-baseline-v2",
   "baseline_elements": 1,
   "maximum_elements": 1,
   "candidate_profiles": [
     { "elements": 3, "active": false, "requires_validation": true },
     { "elements": 5, "active": false, "requires_validation": true }
   ],
-  "status": "baseline_not_empirically_verified"
+  "per_entry_validation": "enabled_for_software_gate_only",
+  "live_batch_optimization": false,
+  "status": "batch1_baseline_not_empirically_verified"
 }
 

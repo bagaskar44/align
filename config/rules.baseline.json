@@ -1,8 +1,13 @@
 {
   "schema_version": 1,
-  "manifest_id": "rules-baseline-v1",
+  "manifest_id": "rules-baseline-v2",
   "contract_schemas_available": true,
+  "deterministic_applicability_and_dag": true,
+  "typed_operator_registry": "operators-v1-no-eval-sql-shell-model-tools",
+  "semantic_verification": "provider_verdict_required",
+  "absence_requires_exhaustive_compatible_coverage": true,
+  "quote_match_alone_supports": false,
   "academic_execution_available": false,
-  "status": "manual_and_contract_smoke_only"
+  "status": "deterministic_checks_available_semantic_mock_abstains"
 }
 

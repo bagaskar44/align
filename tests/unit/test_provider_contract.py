@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -8,6 +10,7 @@ from pydantic import ValidationError
 from align_domain.contracts import JobContract, JobLimits, JobScope, JobStage, JobState
 from align_domain.providers import (
     MockProvider,
+    OpenAIResponsesProvider,
     PaidCallBlocked,
     ProviderContext,
     assert_live_call_guard,
@@ -50,6 +53,40 @@ def test_embedding_fixture_has_exactly_1536_dimensions() -> None:
     assert len(vector) == 1536
 
 
+def test_live_embedding_adapter_validates_and_orders_every_vector(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = OpenAIResponsesProvider("test-only-not-a-secret", {"embedding": "test-model"})
+    call = context()
+    first, second = [1.0] * 1536, [2.0] * 1536
+
+    def fake_post(_context: ProviderContext, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        assert path == "embeddings"
+        assert body["input"] == ["satu", "dua"]
+        return {
+            "data": [
+                {"index": 1, "embedding": second},
+                {"index": 0, "embedding": first},
+            ],
+            "usage": {"prompt_tokens": 2},
+        }
+
+    monkeypatch.setattr(provider, "_post", fake_post)
+    result = provider.embed(call, {"model": "test-model", "input": ["satu", "dua"]})
+    assert result.status == "completed" and result.simulated is False
+    assert result.payload["embeddings"] == [first, second]
+    assert result.payload["dimensions"] == 1536
+
+
+def test_live_embedding_adapter_rejects_missing_or_nonfinite_vectors(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = OpenAIResponsesProvider("test-only-not-a-secret", {"embedding": "test-model"})
+    monkeypatch.setattr(
+        provider,
+        "_post",
+        lambda *_args: {"data": [{"index": 0, "embedding": [float("nan")] * 1536}]},
+    )
+    with pytest.raises(RuntimeError, match="provider_embedding_dimension_invalid"):
+        provider.embed(context(), {"input": "satu"})
+
+
 def test_live_provider_guard_fails_before_any_network_adapter_exists() -> None:
     with pytest.raises(PaidCallBlocked, match="PAID_CALL_GUARD_INCOMPLETE"):
         assert_live_call_guard(context())
@@ -69,7 +106,7 @@ def test_job_contract_rejects_extra_fields_and_invalid_fingerprints() -> None:
             max_active_seconds=600,
             max_text_input_tokens=40_000,
             max_text_output_tokens=8_000,
-            budget_usd="0.20",
+            budget_usd=Decimal("0.20"),
         ),
     }
     assert JobContract.model_validate(payload).stage == JobStage.VALIDATE_MANIFEST

@@ -17,6 +17,7 @@ from sqlalchemy import (
     Numeric,
     PrimaryKeyConstraint,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
     func,
@@ -473,7 +474,9 @@ class FileAsset(RevisionMixin, Base):
         ForeignKey("courses.id", ondelete="CASCADE"), nullable=False
     )
     submission_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("submissions.id", ondelete="RESTRICT", use_alter=True, name="fk_file_assets_submission")
+        ForeignKey(
+            "submissions.id", ondelete="RESTRICT", use_alter=True, name="fk_file_assets_submission"
+        )
     )
     assignment_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey(
@@ -555,7 +558,12 @@ class ParseArtifact(TimestampMixin, Base):
         ForeignKey("file_assets.id", ondelete="RESTRICT"), nullable=False
     )
     submission_version_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("submission_versions.id", ondelete="RESTRICT", use_alter=True, name="fk_parse_artifacts_submission_version")
+        ForeignKey(
+            "submission_versions.id",
+            ondelete="RESTRICT",
+            use_alter=True,
+            name="fk_parse_artifacts_submission_version",
+        )
     )
     context_version_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("context_versions.id", ondelete="RESTRICT")
@@ -702,7 +710,12 @@ class EvidenceItem(TimestampMixin, Base):
         ForeignKey("source_units.id", ondelete="CASCADE"), nullable=False
     )
     submission_version_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("submission_versions.id", ondelete="RESTRICT", use_alter=True, name="fk_evidence_items_submission_version")
+        ForeignKey(
+            "submission_versions.id",
+            ondelete="RESTRICT",
+            use_alter=True,
+            name="fk_evidence_items_submission_version",
+        )
     )
     context_version_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("context_versions.id", ondelete="RESTRICT")
@@ -1087,32 +1100,45 @@ class Submission(RevisionMixin, Base):
         ForeignKeyConstraint(
             ["active_final_version_id", "id"],
             ["submission_versions.id", "submission_versions.submission_id"],
-            ondelete="RESTRICT", name="fk_submissions_active_final_version",
+            ondelete="RESTRICT",
+            name="fk_submissions_active_final_version",
         ),
         ForeignKeyConstraint(
             ["latest_published_id", "id"],
             ["publications.id", "publications.submission_id"],
-            ondelete="RESTRICT", name="fk_submissions_latest_publication", use_alter=True,
+            ondelete="RESTRICT",
+            name="fk_submissions_latest_publication",
+            use_alter=True,
         ),
         Index(
             "uq_submissions_assignment_individual",
-            "assignment_id", "individual_user_id", unique=True,
+            "assignment_id",
+            "individual_user_id",
+            unique=True,
             postgresql_where=text("individual_user_id IS NOT NULL"),
         ),
         Index(
             "uq_submissions_assignment_group",
-            "assignment_id", "group_id", unique=True,
+            "assignment_id",
+            "group_id",
+            unique=True,
             postgresql_where=text("group_id IS NOT NULL"),
         ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    assignment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assignments.id", ondelete="RESTRICT"), nullable=False)
-    individual_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    assignment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assignments.id", ondelete="RESTRICT"), nullable=False
+    )
+    individual_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT")
+    )
     group_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("groups.id", ondelete="RESTRICT"))
     active_final_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     latest_published_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
-    draft_assignment_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assignment_versions.id", ondelete="RESTRICT"), nullable=False)
+    draft_assignment_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assignment_versions.id", ondelete="RESTRICT"), nullable=False
+    )
     draft_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     reopen_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -1126,12 +1152,18 @@ class SubmissionVersion(TimestampMixin, Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    submission_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("submissions.id", ondelete="RESTRICT"), nullable=False)
+    submission_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("submissions.id", ondelete="RESTRICT"), nullable=False
+    )
     version_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    assignment_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assignment_versions.id", ondelete="RESTRICT"), nullable=False)
+    assignment_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assignment_versions.id", ondelete="RESTRICT"), nullable=False
+    )
     manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    finalized_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    finalized_by: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
     finalized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     is_late: Mapped[bool] = mapped_column(Boolean, nullable=False)
 
@@ -1143,19 +1175,25 @@ class SubmissionVersionFile(TimestampMixin, Base):
         ForeignKeyConstraint(
             ["submission_version_id", "submission_id"],
             ["submission_versions.id", "submission_versions.submission_id"],
-            ondelete="RESTRICT", name="fk_submission_version_files_version_scope",
+            ondelete="RESTRICT",
+            name="fk_submission_version_files_version_scope",
         ),
         ForeignKeyConstraint(
             ["file_asset_id", "submission_id"],
             ["file_assets.id", "file_assets.submission_id"],
-            ondelete="RESTRICT", name="fk_submission_version_files_asset_scope",
+            ondelete="RESTRICT",
+            name="fk_submission_version_files_asset_scope",
         ),
-        UniqueConstraint("submission_version_id", "display_order", name="uq_submission_version_file_order"),
+        UniqueConstraint(
+            "submission_version_id", "display_order", name="uq_submission_version_file_order"
+        ),
         CheckConstraint("display_order >= 0", name="ck_submission_version_file_order"),
     )
 
     submission_version_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
-    submission_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("submissions.id", ondelete="RESTRICT"), nullable=False)
+    submission_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("submissions.id", ondelete="RESTRICT"), nullable=False
+    )
     file_asset_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     display_order: Mapped[int] = mapped_column(Integer, nullable=False)
 
@@ -1164,8 +1202,12 @@ class SubmissionVersionMember(TimestampMixin, Base):
     __tablename__ = "submission_version_members"
     __table_args__ = (PrimaryKeyConstraint("submission_version_id", "user_id"),)
 
-    submission_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("submission_versions.id", ondelete="RESTRICT"), nullable=False)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    submission_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("submission_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
     display_name_snapshot: Mapped[str] = mapped_column(String(240), nullable=False)
     email_snapshot: Mapped[str] = mapped_column(String(320), nullable=False)
 
@@ -1175,127 +1217,555 @@ class AnalysisRun(TimestampMixin, Base):
 
     __tablename__ = "analysis_runs"
     __table_args__ = (
-        UniqueConstraint("submission_version_id", "config_fingerprint", name="uq_analysis_run_fingerprint"),
-        CheckConstraint("status IN ('queued','running','partial','completed','failed','blocked')", name="ck_analysis_runs_status"),
-        CheckConstraint("provider_mode IN ('off','mock','live')", name="ck_analysis_runs_provider_mode"),
-        CheckConstraint("data_origin IN ('synthetic','production')", name="ck_analysis_runs_data_origin"),
+        UniqueConstraint(
+            "submission_version_id", "config_fingerprint", name="uq_analysis_run_fingerprint"
+        ),
+        CheckConstraint(
+            "status IN ('queued','running','partial','completed','failed','blocked')",
+            name="ck_analysis_runs_status",
+        ),
+        CheckConstraint(
+            "provider_mode IN ('off','mock','live')", name="ck_analysis_runs_provider_mode"
+        ),
+        CheckConstraint(
+            "data_origin IN ('synthetic','production')", name="ck_analysis_runs_data_origin"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    submission_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("submission_versions.id", ondelete="RESTRICT"), nullable=False)
-    specification_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("specification_versions.id", ondelete="RESTRICT"), nullable=False)
-    release_manifest_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("release_manifests.id", ondelete="RESTRICT"))
+    submission_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("submission_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    specification_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("specification_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    release_manifest_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("release_manifests.id", ondelete="RESTRICT")
+    )
     config_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     provider_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="off")
     data_origin: Mapped[str] = mapped_column(String(16), nullable=False, default="synthetic")
-    limitations_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    limitations_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("jobs.id", ondelete="RESTRICT"))
+    manifest_snapshot_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    stage_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    usage_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    completion_kind: Mapped[str | None] = mapped_column(String(32))
+
+
+class AnalysisRunStage(TimestampMixin, Base):
+    __tablename__ = "analysis_run_stages"
+    __table_args__ = (
+        UniqueConstraint(
+            "analysis_run_id", "stage_name", "input_hash", name="uq_analysis_run_stages_fingerprint"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    analysis_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    stage_name: Mapped[str] = mapped_column(String(40), nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
+    output_refs_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    limitation_codes_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RetrievalChunk(TimestampMixin, Base):
+    __tablename__ = "retrieval_chunks"
+    __table_args__ = (
+        UniqueConstraint(
+            "submission_version_id",
+            "evidence_item_id",
+            "chunk_no",
+            "chunk_hash",
+            name="uq_retrieval_chunks_scope_evidence_chunk",
+        ),
+        UniqueConstraint("id", "submission_version_id", name="uq_retrieval_chunks_scope_id"),
+        Index(
+            "ix_retrieval_chunks_scope_order",
+            "submission_version_id",
+            "course_id",
+            "assignment_id",
+            "source_order",
+            "evidence_item_id",
+            "chunk_no",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    submission_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("submission_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    submission_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("submissions.id", ondelete="RESTRICT"), nullable=False
+    )
+    course_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("courses.id", ondelete="RESTRICT"), nullable=False
+    )
+    assignment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assignments.id", ondelete="RESTRICT"), nullable=False
+    )
+    evidence_item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("evidence_items.id", ondelete="RESTRICT"), nullable=False
+    )
+    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    chunk_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    tokenizer_manifest: Mapped[str] = mapped_column(String(80), nullable=False)
+    token_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    token_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
+    chunk_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    anchor_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    source_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    parent_chunk_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("retrieval_chunks.id", ondelete="RESTRICT")
+    )
+    structural_metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    retrieval_manifest_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("method_manifests.id", ondelete="RESTRICT")
+    )
+
+
+class ChunkEvidenceLink(TimestampMixin, Base):
+    __tablename__ = "chunk_evidence_links"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["chunk_id", "submission_version_id"],
+            ["retrieval_chunks.id", "retrieval_chunks.submission_version_id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    chunk_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("retrieval_chunks.id", ondelete="CASCADE"), primary_key=True
+    )
+    evidence_item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("evidence_items.id", ondelete="RESTRICT"), primary_key=True
+    )
+    submission_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("submission_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    relation: Mapped[str] = mapped_column(String(24), nullable=False, default="source")
+
+
+class CoverageRecord(TimestampMixin, Base):
+    __tablename__ = "coverage_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "analysis_run_id", "check_element_id", name="uq_coverage_records_run_element"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    element_check_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("element_checks.id", ondelete="CASCADE"), unique=True
+    )
+    analysis_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    check_element_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("check_elements.id", ondelete="RESTRICT"), nullable=False
+    )
+    retrieval_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    compatible_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    inspected_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    unresolved_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    sufficient_for_positive: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    exhaustive_for_negative: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    inventory_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    retrieval_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    limitations_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+
+
+class CoverageInspection(TimestampMixin, Base):
+    __tablename__ = "coverage_inspections"
+    __table_args__ = (UniqueConstraint("coverage_record_id", "source_unit_id", name="uq_coverage_inspections_unit"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    coverage_record_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("coverage_records.id", ondelete="CASCADE"), nullable=False
+    )
+    source_unit_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("source_units.id", ondelete="RESTRICT"), nullable=False
+    )
+    evidence_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("evidence_items.id", ondelete="RESTRICT")
+    )
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    method: Mapped[str] = mapped_column(String(40), nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(100))
+    detail_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    inspection_status: Mapped[str | None] = mapped_column(String(24))
+    observation_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    rule_or_call_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+
+
+class GroundingEvaluation(TimestampMixin, Base):
+    __tablename__ = "grounding_evaluations"
+    __table_args__ = (
+        UniqueConstraint("element_check_id", name="uq_grounding_evaluation_element_check"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    analysis_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    element_check_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("element_checks.id", ondelete="CASCADE"), nullable=False
+    )
+    mechanical_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    semantic_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    evaluation_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    limitation_codes_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    contract_schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False, default="anchored_content")
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="not_run")
+    decision_basis: Mapped[str | None] = mapped_column(String(32))
+    mechanical_validation_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    semantic_support: Mapped[str] = mapped_column(String(24), nullable=False, default="not_run")
+    coverage_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("coverage_records.id", ondelete="RESTRICT")
+    )
+    validator_manifest_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+
+
+class SupportBinding(TimestampMixin, Base):
+    __tablename__ = "evidence_support_bindings"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    element_check_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("element_checks.id", ondelete="CASCADE"), nullable=False)
+    relationship_code: Mapped[str | None] = mapped_column(String(64))
+    role: Mapped[str] = mapped_column(String(64), nullable=False)
+    observation_codes_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    evidence_item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("evidence_items.id", ondelete="RESTRICT"), nullable=False
+    )
+    quote_spans_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    validator_refs_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+
+
+class NumericLink(TimestampMixin, Base):
+    __tablename__ = "numeric_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "element_check_id", "evidence_item_id", name="uq_numeric_links_element_evidence"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    element_check_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("element_checks.id", ondelete="CASCADE"), nullable=False
+    )
+    evidence_item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("evidence_items.id", ondelete="RESTRICT"), nullable=False
+    )
+    numeric_engine_record_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+class RoutingDecision(TimestampMixin, Base):
+    __tablename__ = "routing_decisions"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    analysis_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    check_element_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("check_elements.id", ondelete="RESTRICT")
+    )
+    task: Mapped[str] = mapped_column(String(40), nullable=False)
+    action: Mapped[str] = mapped_column(String(40), nullable=False)
+    selected_role: Mapped[str | None] = mapped_column(String(24))
+    reason_code: Mapped[str] = mapped_column(String(100), nullable=False)
+    feature_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    guard_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    remaining_limits_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    policy_manifest_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("method_manifests.id", ondelete="RESTRICT")
+    )
+    outcome: Mapped[str] = mapped_column(String(40), nullable=False)
+    job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("jobs.id", ondelete="RESTRICT"))
+    batching_manifest_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("method_manifests.id", ondelete="RESTRICT")
+    )
+    timing_refs_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class ProviderCallRecord(TimestampMixin, Base):
+    __tablename__ = "provider_call_records"
+    __table_args__ = (
+        UniqueConstraint("logical_call_id", "attempt_no", name="uq_provider_calls_logical_attempt"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    analysis_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    routing_decision_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("routing_decisions.id", ondelete="RESTRICT")
+    )
+    logical_call_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    task: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    response_manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    usage_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    provider_request_id: Mapped[str | None] = mapped_column(String(240))
+
+
+class SemanticBatchMember(TimestampMixin, Base):
+    __tablename__ = "semantic_batch_members"
+    __table_args__ = (
+        UniqueConstraint(
+            "analysis_run_id",
+            "batch_call_id",
+            "check_element_id",
+            name="uq_semantic_batch_members_entry",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    analysis_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    batch_call_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    check_element_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("check_elements.id", ondelete="RESTRICT"), nullable=False
+    )
+    entry_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    response_hash: Mapped[str | None] = mapped_column(String(64))
+    detail_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class RoutingCallLink(Base):
+    __tablename__ = "routing_call_links"
+    __table_args__ = (PrimaryKeyConstraint("routing_decision_id", "call_id"),)
+
+    routing_decision_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("routing_decisions.id", ondelete="CASCADE"), nullable=False
+    )
+    call_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
 
 
 class ElementCheck(TimestampMixin, Base):
     __tablename__ = "element_checks"
     __table_args__ = (
-        UniqueConstraint("analysis_run_id", "check_element_id", name="uq_element_checks_run_element"),
-        CheckConstraint("applicability_status IN ('applicable','not_applicable','unresolved')", name="ck_element_checks_applicability"),
-        CheckConstraint("source_coverage_status IN ('sufficient_for_check','partial','unreadable','unresolved')", name="ck_element_checks_coverage"),
-        CheckConstraint("evidence_relationship IN ('supported','partial','not_found','conflicting','unclear')", name="ck_element_checks_relationship"),
-        CheckConstraint("check_status IS NULL OR check_status IN ('no_issue_detected','finding_candidate','unassessable')", name="ck_element_checks_status"),
+        UniqueConstraint(
+            "analysis_run_id", "check_element_id", name="uq_element_checks_run_element"
+        ),
+        CheckConstraint(
+            "applicability_status IN ('applicable','not_applicable','unresolved')",
+            name="ck_element_checks_applicability",
+        ),
+        CheckConstraint(
+            "source_coverage_status IN ('sufficient_for_check','partial','unreadable','unresolved')",
+            name="ck_element_checks_coverage",
+        ),
+        CheckConstraint(
+            "evidence_relationship IN ('supported','partial','not_found','conflicting','unclear')",
+            name="ck_element_checks_relationship",
+        ),
+        CheckConstraint(
+            "check_status IS NULL OR check_status IN ('no_issue_detected','finding_candidate','unassessable')",
+            name="ck_element_checks_status",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    analysis_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False)
-    check_element_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("check_elements.id", ondelete="RESTRICT"), nullable=False)
-    applicability_status: Mapped[str] = mapped_column(String(24), nullable=False, default="unresolved")
-    source_coverage_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unresolved")
-    evidence_relationship: Mapped[str] = mapped_column(String(24), nullable=False, default="unclear")
+    analysis_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    check_element_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("check_elements.id", ondelete="RESTRICT"), nullable=False
+    )
+    applicability_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="unresolved"
+    )
+    source_coverage_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="unresolved"
+    )
+    evidence_relationship: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="unclear"
+    )
     check_status: Mapped[str | None] = mapped_column(String(32))
-    observations_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    observations_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
     interpretation: Mapped[str | None] = mapped_column(String(4000))
     reason_codes_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 
 
 class AnalysisResultEvidence(TimestampMixin, Base):
     __tablename__ = "analysis_result_evidence"
-    element_check_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("element_checks.id", ondelete="CASCADE"), primary_key=True)
-    evidence_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("evidence_items.id", ondelete="RESTRICT"), primary_key=True)
+    element_check_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("element_checks.id", ondelete="CASCADE"), primary_key=True
+    )
+    evidence_item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("evidence_items.id", ondelete="RESTRICT"), primary_key=True
+    )
 
 
 class FindingCandidate(TimestampMixin, Base):
     __tablename__ = "finding_candidates"
     __table_args__ = (
-        CheckConstraint("primary_category IN ('missing_requirement','rubric_coverage_gap','numerical_inconsistency')", name="ck_finding_candidates_category"),
-        CheckConstraint("technical_validation IN ('valid','invalid')", name="ck_finding_candidates_technical"),
-        CheckConstraint("semantic_support IN ('supported','unsupported','insufficient','not_required_deterministic')", name="ck_finding_candidates_semantic"),
+        CheckConstraint(
+            "primary_category IN ('missing_requirement','rubric_coverage_gap','numerical_inconsistency')",
+            name="ck_finding_candidates_category",
+        ),
+        CheckConstraint(
+            "technical_validation IN ('valid','invalid')", name="ck_finding_candidates_technical"
+        ),
+        CheckConstraint(
+            "semantic_support IN ('supported','unsupported','insufficient','not_required_deterministic')",
+            name="ck_finding_candidates_semantic",
+        ),
         UniqueConstraint("analysis_run_id", "dedup_key", name="uq_finding_candidates_dedup"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    analysis_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False)
+    analysis_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
+    )
     primary_category: Mapped[str] = mapped_column(String(40), nullable=False)
-    primary_criterion_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("criteria.id", ondelete="RESTRICT"), nullable=False)
+    primary_criterion_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("criteria.id", ondelete="RESTRICT"), nullable=False
+    )
     obligation_key: Mapped[str] = mapped_column(String(240), nullable=False)
     issue_signature: Mapped[str] = mapped_column(String(240), nullable=False)
     dedup_key: Mapped[str] = mapped_column(String(240), nullable=False)
     claim: Mapped[str] = mapped_column(String(4000), nullable=False)
     technical_validation: Mapped[str] = mapped_column(String(16), nullable=False, default="valid")
-    semantic_support: Mapped[str] = mapped_column(String(32), nullable=False, default="insufficient")
-    limitations_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    semantic_support: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="insufficient"
+    )
+    limitations_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
 
 
 class FindingElementLink(TimestampMixin, Base):
     __tablename__ = "finding_element_links"
-    finding_candidate_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("finding_candidates.id", ondelete="CASCADE"), primary_key=True)
-    check_element_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("check_elements.id", ondelete="RESTRICT"), primary_key=True)
+    finding_candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("finding_candidates.id", ondelete="CASCADE"), primary_key=True
+    )
+    check_element_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("check_elements.id", ondelete="RESTRICT"), primary_key=True
+    )
 
 
 class FindingRequirementLink(TimestampMixin, Base):
     __tablename__ = "finding_requirement_links"
-    finding_candidate_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("finding_candidates.id", ondelete="CASCADE"), primary_key=True)
-    requirement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("requirements.id", ondelete="RESTRICT"), primary_key=True)
+    finding_candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("finding_candidates.id", ondelete="CASCADE"), primary_key=True
+    )
+    requirement_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("requirements.id", ondelete="RESTRICT"), primary_key=True
+    )
 
 
 class FindingCriterionLink(TimestampMixin, Base):
     __tablename__ = "finding_criterion_links"
-    finding_candidate_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("finding_candidates.id", ondelete="CASCADE"), primary_key=True)
-    criterion_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("criteria.id", ondelete="RESTRICT"), primary_key=True)
+    finding_candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("finding_candidates.id", ondelete="CASCADE"), primary_key=True
+    )
+    criterion_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("criteria.id", ondelete="RESTRICT"), primary_key=True
+    )
 
 
 class FindingEvidenceLink(TimestampMixin, Base):
     __tablename__ = "finding_evidence_links"
-    finding_candidate_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("finding_candidates.id", ondelete="CASCADE"), primary_key=True)
-    evidence_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("evidence_items.id", ondelete="RESTRICT"), primary_key=True)
+    finding_candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("finding_candidates.id", ondelete="CASCADE"), primary_key=True
+    )
+    evidence_item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("evidence_items.id", ondelete="RESTRICT"), primary_key=True
+    )
+
+
+class FindingCoverageLink(Base):
+    __tablename__ = "finding_coverage_links"
+
+    finding_candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("finding_candidates.id", ondelete="CASCADE"), primary_key=True
+    )
+    coverage_record_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("coverage_records.id", ondelete="RESTRICT"), primary_key=True
+    )
 
 
 class NumericObservation(TimestampMixin, Base):
     __tablename__ = "numeric_observations"
     __table_args__ = (
-        CheckConstraint("source_quality IN ('native_literal','ocr_verified','lecturer_confirmed','unverified')", name="ck_numeric_observations_quality"),
-        CheckConstraint("(element_check_id IS NOT NULL)::integer + (review_version_id IS NOT NULL)::integer = 1", name="ck_numeric_observations_one_parent"),
+        CheckConstraint(
+            "source_quality IN ('native_literal','ocr_verified','lecturer_confirmed','unverified')",
+            name="ck_numeric_observations_quality",
+        ),
+        CheckConstraint(
+            "(element_check_id IS NOT NULL)::integer + (review_version_id IS NOT NULL)::integer = 1",
+            name="ck_numeric_observations_one_parent",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    element_check_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("element_checks.id", ondelete="RESTRICT"))
-    review_version_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("review_versions.id", ondelete="RESTRICT"))
-    evidence_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("evidence_items.id", ondelete="RESTRICT"), nullable=False)
+    element_check_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("element_checks.id", ondelete="RESTRICT")
+    )
+    review_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("review_versions.id", ondelete="RESTRICT")
+    )
+    evidence_item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("evidence_items.id", ondelete="RESTRICT"), nullable=False
+    )
     literal: Mapped[str] = mapped_column(String(240), nullable=False)
     canonical_decimal_text: Mapped[str | None] = mapped_column(String(240))
     context_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     source_quality: Mapped[str] = mapped_column(String(24), nullable=False)
-    verification_ref_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    verification_ref_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
 
 
 class NumericCheck(TimestampMixin, Base):
     __tablename__ = "numeric_checks"
     __table_args__ = (
-        CheckConstraint("comparability_status IN ('comparable','unresolved','not_comparable')", name="ck_numeric_checks_comparability"),
-        CheckConstraint("operation IN ('pairwise','sum_against_reported','ratio_against_reported')", name="ck_numeric_checks_operation"),
-        CheckConstraint("(element_check_id IS NOT NULL)::integer + (review_version_id IS NOT NULL)::integer = 1", name="ck_numeric_checks_one_parent"),
+        CheckConstraint(
+            "comparability_status IN ('comparable','unresolved','not_comparable')",
+            name="ck_numeric_checks_comparability",
+        ),
+        CheckConstraint(
+            "operation IN ('pairwise','sum_against_reported','ratio_against_reported')",
+            name="ck_numeric_checks_operation",
+        ),
+        CheckConstraint(
+            "(element_check_id IS NOT NULL)::integer + (review_version_id IS NOT NULL)::integer = 1",
+            name="ck_numeric_checks_one_parent",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    element_check_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("element_checks.id", ondelete="RESTRICT"))
-    review_version_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("review_versions.id", ondelete="RESTRICT"))
-    numeric_policy_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("numeric_policy_versions.id", ondelete="RESTRICT"), nullable=False)
+    element_check_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("element_checks.id", ondelete="RESTRICT")
+    )
+    review_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("review_versions.id", ondelete="RESTRICT")
+    )
+    numeric_policy_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("numeric_policy_versions.id", ondelete="RESTRICT"), nullable=False
+    )
     comparability_status: Mapped[str] = mapped_column(String(24), nullable=False)
     operation: Mapped[str] = mapped_column(String(32), nullable=False)
     normalized_context_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
@@ -1316,8 +1786,12 @@ class ReviewVersion(RevisionMixin, Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    submission_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("submission_versions.id", ondelete="RESTRICT"), nullable=False)
-    analysis_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("analysis_runs.id", ondelete="RESTRICT"))
+    submission_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("submission_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    analysis_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="RESTRICT")
+    )
     version_no: Mapped[int] = mapped_column(Integer, nullable=False)
     state: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -1330,16 +1804,28 @@ class ReviewVersion(RevisionMixin, Base):
 class ReviewElementDecision(RevisionMixin, Base):
     __tablename__ = "review_element_decisions"
     __table_args__ = (
-        UniqueConstraint("review_version_id", "check_element_id", name="uq_review_element_decision"),
+        UniqueConstraint(
+            "review_version_id", "check_element_id", name="uq_review_element_decision"
+        ),
         CheckConstraint("review_status IN ('pending','reviewed')", name="ck_review_element_status"),
-        CheckConstraint("resolution IS NULL OR resolution IN ('observed_no_issue','confirmed_issue','not_applicable','unable_to_conclude')", name="ck_review_element_resolution"),
-        CheckConstraint("applicability_override IS NULL OR applicability_override IN ('applicable','not_applicable','unresolved')", name="ck_review_element_applicability"),
+        CheckConstraint(
+            "resolution IS NULL OR resolution IN ('observed_no_issue','confirmed_issue','not_applicable','unable_to_conclude')",
+            name="ck_review_element_resolution",
+        ),
+        CheckConstraint(
+            "applicability_override IS NULL OR applicability_override IN ('applicable','not_applicable','unresolved')",
+            name="ck_review_element_applicability",
+        ),
         CheckConstraint("revision >= 1", name="ck_review_element_revision"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    review_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("review_versions.id", ondelete="CASCADE"), nullable=False)
-    check_element_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("check_elements.id", ondelete="RESTRICT"), nullable=False)
+    review_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("review_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    check_element_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("check_elements.id", ondelete="RESTRICT"), nullable=False
+    )
     review_status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     resolution: Mapped[str | None] = mapped_column(String(32))
     applicability_override: Mapped[str | None] = mapped_column(String(24))
@@ -1350,46 +1836,77 @@ class ReviewElementDecision(RevisionMixin, Base):
 
 class ReviewElementDecisionEvidence(TimestampMixin, Base):
     __tablename__ = "review_element_decision_evidence"
-    review_element_decision_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("review_element_decisions.id", ondelete="CASCADE"), primary_key=True)
-    evidence_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("evidence_items.id", ondelete="RESTRICT"), primary_key=True)
-    annotation_revision_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("review_annotation_revisions.id", ondelete="RESTRICT"))
+    review_element_decision_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("review_element_decisions.id", ondelete="CASCADE"), primary_key=True
+    )
+    evidence_item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("evidence_items.id", ondelete="RESTRICT"), primary_key=True
+    )
+    annotation_revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("review_annotation_revisions.id", ondelete="RESTRICT")
+    )
 
 
 class ReviewElementDecisionEvent(TimestampMixin, Base):
     __tablename__ = "review_element_decision_events"
     __table_args__ = (
-        UniqueConstraint("review_version_id", "check_element_id", "revision_no", name="uq_review_element_decision_event"),
+        UniqueConstraint(
+            "review_version_id",
+            "check_element_id",
+            "revision_no",
+            name="uq_review_element_decision_event",
+        ),
         CheckConstraint("revision_no >= 1", name="ck_review_element_event_revision"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    review_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("review_versions.id", ondelete="RESTRICT"), nullable=False)
-    check_element_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("check_elements.id", ondelete="RESTRICT"), nullable=False)
+    review_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("review_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    check_element_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("check_elements.id", ondelete="RESTRICT"), nullable=False
+    )
     revision_no: Mapped[int] = mapped_column(Integer, nullable=False)
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    actor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    actor_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
 
 
 class ReviewFinding(RevisionMixin, Base):
     __tablename__ = "review_findings"
     __table_args__ = (
         CheckConstraint("origin IN ('ai_review','lecturer')", name="ck_review_findings_origin"),
-        CheckConstraint("action IN ('pending','accept','edit','reject','defer')", name="ck_review_findings_action"),
-        CheckConstraint("primary_category IN ('missing_requirement','rubric_coverage_gap','numerical_inconsistency')", name="ck_review_findings_category"),
+        CheckConstraint(
+            "action IN ('pending','accept','edit','reject','defer')",
+            name="ck_review_findings_action",
+        ),
+        CheckConstraint(
+            "primary_category IN ('missing_requirement','rubric_coverage_gap','numerical_inconsistency')",
+            name="ck_review_findings_category",
+        ),
         UniqueConstraint("review_version_id", "candidate_id", name="uq_review_findings_candidate"),
         CheckConstraint("revision >= 1", name="ck_review_findings_revision"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    review_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("review_versions.id", ondelete="CASCADE"), nullable=False)
-    candidate_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("finding_candidates.id", ondelete="RESTRICT"))
+    review_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("review_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("finding_candidates.id", ondelete="RESTRICT")
+    )
     origin: Mapped[str] = mapped_column(String(16), nullable=False)
     action: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     primary_category: Mapped[str] = mapped_column(String(40), nullable=False)
-    primary_criterion_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("criteria.id", ondelete="RESTRICT"), nullable=False)
+    primary_criterion_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("criteria.id", ondelete="RESTRICT"), nullable=False
+    )
     claim: Mapped[str] = mapped_column(String(4000), nullable=False)
     coverage_attestation_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
-    numeric_check_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("numeric_checks.id", ondelete="RESTRICT"))
+    numeric_check_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("numeric_checks.id", ondelete="RESTRICT")
+    )
     reason: Mapped[str | None] = mapped_column(String(2000))
     actor_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     acted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -1398,57 +1915,110 @@ class ReviewFinding(RevisionMixin, Base):
 class ReviewFindingTarget(TimestampMixin, Base):
     __tablename__ = "review_finding_targets"
     __table_args__ = (
-        CheckConstraint("(check_element_id IS NOT NULL)::integer + (requirement_id IS NOT NULL)::integer + (criterion_id IS NOT NULL)::integer = 1", name="ck_review_finding_target_one_ref"),
+        CheckConstraint(
+            "(check_element_id IS NOT NULL)::integer + (requirement_id IS NOT NULL)::integer + (criterion_id IS NOT NULL)::integer = 1",
+            name="ck_review_finding_target_one_ref",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    review_finding_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("review_findings.id", ondelete="CASCADE"), nullable=False)
-    check_element_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("check_elements.id", ondelete="RESTRICT"))
-    requirement_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("requirements.id", ondelete="RESTRICT"))
-    criterion_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("criteria.id", ondelete="RESTRICT"))
+    review_finding_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("review_findings.id", ondelete="CASCADE"), nullable=False
+    )
+    check_element_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("check_elements.id", ondelete="RESTRICT")
+    )
+    requirement_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("requirements.id", ondelete="RESTRICT")
+    )
+    criterion_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("criteria.id", ondelete="RESTRICT")
+    )
 
 
 class ReviewFindingDecision(TimestampMixin, Base):
     __tablename__ = "review_finding_decisions"
     __table_args__ = (
-        UniqueConstraint("review_finding_id", "revision_no", name="uq_review_finding_decision_revision"),
+        UniqueConstraint(
+            "review_finding_id", "revision_no", name="uq_review_finding_decision_revision"
+        ),
         CheckConstraint("revision_no >= 1", name="ck_review_finding_decision_revision"),
-        CheckConstraint("action IN ('pending','accept','edit','reject','defer')", name="ck_review_finding_decision_action"),
+        CheckConstraint(
+            "action IN ('pending','accept','edit','reject','defer')",
+            name="ck_review_finding_decision_action",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    review_finding_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("review_findings.id", ondelete="RESTRICT"), nullable=False)
+    review_finding_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("review_findings.id", ondelete="RESTRICT"), nullable=False
+    )
     revision_no: Mapped[int] = mapped_column(Integer, nullable=False)
     action: Mapped[str] = mapped_column(String(16), nullable=False)
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    actor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    actor_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
 
 
 class EvidenceLink(TimestampMixin, Base):
     __tablename__ = "evidence_links"
     __table_args__ = (
-        CheckConstraint("(finding_candidate_id IS NOT NULL)::integer + (review_finding_id IS NOT NULL)::integer + (feedback_draft_id IS NOT NULL)::integer + (publication_id IS NOT NULL)::integer = 1", name="ck_evidence_links_one_subject"),
-        UniqueConstraint("evidence_item_id", "review_finding_id", "annotation_revision_id", name="uq_evidence_link_review_finding_revision"),
+        CheckConstraint(
+            "(finding_candidate_id IS NOT NULL)::integer + (review_finding_id IS NOT NULL)::integer + (feedback_draft_id IS NOT NULL)::integer + (publication_id IS NOT NULL)::integer = 1",
+            name="ck_evidence_links_one_subject",
+        ),
+        UniqueConstraint(
+            "evidence_item_id",
+            "review_finding_id",
+            "annotation_revision_id",
+            name="uq_evidence_link_review_finding_revision",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    evidence_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("evidence_items.id", ondelete="RESTRICT"), nullable=False)
-    finding_candidate_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("finding_candidates.id", ondelete="RESTRICT"))
-    review_finding_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("review_findings.id", ondelete="RESTRICT"))
-    feedback_draft_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("feedback_drafts.id", ondelete="RESTRICT"))
-    publication_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("publications.id", ondelete="RESTRICT"))
-    annotation_revision_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("review_annotation_revisions.id", ondelete="RESTRICT"))
+    evidence_item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("evidence_items.id", ondelete="RESTRICT"), nullable=False
+    )
+    finding_candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("finding_candidates.id", ondelete="RESTRICT")
+    )
+    review_finding_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("review_findings.id", ondelete="RESTRICT")
+    )
+    feedback_draft_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("feedback_drafts.id", ondelete="RESTRICT")
+    )
+    publication_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("publications.id", ondelete="RESTRICT")
+    )
+    annotation_revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("review_annotation_revisions.id", ondelete="RESTRICT")
+    )
 
 
 class ManualEvidence(TimestampMixin, Base):
     __tablename__ = "manual_evidence"
-    __table_args__ = (CheckConstraint("origin IN ('lecturer_selected','lecturer_transcription')", name="ck_manual_evidence_origin"),)
+    __table_args__ = (
+        CheckConstraint(
+            "origin IN ('lecturer_selected','lecturer_transcription')",
+            name="ck_manual_evidence_origin",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    evidence_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("evidence_items.id", ondelete="RESTRICT"), unique=True, nullable=False)
-    review_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("review_versions.id", ondelete="RESTRICT"), nullable=False)
-    annotation_revision_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("review_annotation_revisions.id", ondelete="RESTRICT"), nullable=False)
-    created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    evidence_item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("evidence_items.id", ondelete="RESTRICT"), unique=True, nullable=False
+    )
+    review_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("review_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    annotation_revision_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("review_annotation_revisions.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
     origin: Mapped[str] = mapped_column(String(32), nullable=False)
     source_anchor_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     transcription: Mapped[str | None] = mapped_column(String(20000))
@@ -1457,13 +2027,28 @@ class ManualEvidence(TimestampMixin, Base):
 
 class ReviewAnnotation(RevisionMixin, Base):
     __tablename__ = "review_annotations"
-    __table_args__ = (CheckConstraint("kind IN ('span_selection','transcription','evidence_binding')", name="ck_review_annotation_kind"),)
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('span_selection','transcription','evidence_binding')",
+            name="ck_review_annotation_kind",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    review_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("review_versions.id", ondelete="RESTRICT"), nullable=False)
+    review_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("review_versions.id", ondelete="RESTRICT"), nullable=False
+    )
     kind: Mapped[str] = mapped_column(String(24), nullable=False)
-    current_revision_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("review_annotation_revisions.id", use_alter=True, name="fk_review_annotation_current_revision"))
-    created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    current_revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(
+            "review_annotation_revisions.id",
+            use_alter=True,
+            name="fk_review_annotation_current_revision",
+        )
+    )
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
 
 
 class ReviewAnnotationRevision(TimestampMixin, Base):
@@ -1475,32 +2060,56 @@ class ReviewAnnotationRevision(TimestampMixin, Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    annotation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("review_annotations.id", ondelete="RESTRICT"), nullable=False)
+    annotation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("review_annotations.id", ondelete="RESTRICT"), nullable=False
+    )
     revision_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    previous_revision_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("review_annotation_revisions.id", ondelete="RESTRICT"))
+    previous_revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("review_annotation_revisions.id", ondelete="RESTRICT")
+    )
     operation: Mapped[str] = mapped_column(String(16), nullable=False)
-    file_asset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("file_assets.id", ondelete="RESTRICT"), nullable=False)
+    file_asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("file_assets.id", ondelete="RESTRICT"), nullable=False
+    )
     source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     anchor_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
-    original_evidence_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("evidence_items.id", ondelete="RESTRICT"))
-    corrected_evidence_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("evidence_items.id", ondelete="RESTRICT"))
+    original_evidence_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("evidence_items.id", ondelete="RESTRICT")
+    )
+    corrected_evidence_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("evidence_items.id", ondelete="RESTRICT")
+    )
     transcription: Mapped[str | None] = mapped_column(String(20000))
     reason: Mapped[str | None] = mapped_column(String(2000))
-    author_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    author_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
 
 
 class ReviewAnnotationTarget(TimestampMixin, Base):
     __tablename__ = "review_annotation_targets"
     __table_args__ = (
-        CheckConstraint("relationship_code IS NULL OR length(relationship_code) <= 120", name="ck_review_annotation_relationship_code"),
+        CheckConstraint(
+            "relationship_code IS NULL OR length(relationship_code) <= 120",
+            name="ck_review_annotation_relationship_code",
+        ),
         CheckConstraint("role IS NULL OR length(role) <= 120", name="ck_review_annotation_role"),
-        CheckConstraint("check_element_id IS NOT NULL OR review_finding_id IS NOT NULL", name="ck_review_annotation_target_present"),
+        CheckConstraint(
+            "check_element_id IS NOT NULL OR review_finding_id IS NOT NULL",
+            name="ck_review_annotation_target_present",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    annotation_revision_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("review_annotation_revisions.id", ondelete="CASCADE"), nullable=False)
-    check_element_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("check_elements.id", ondelete="RESTRICT"))
-    review_finding_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("review_findings.id", ondelete="RESTRICT"))
+    annotation_revision_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("review_annotation_revisions.id", ondelete="CASCADE"), nullable=False
+    )
+    check_element_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("check_elements.id", ondelete="RESTRICT")
+    )
+    review_finding_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("review_findings.id", ondelete="RESTRICT")
+    )
     relationship_code: Mapped[str | None] = mapped_column(String(120))
     role: Mapped[str | None] = mapped_column(String(120))
 
@@ -1509,25 +2118,40 @@ class FeedbackDraft(RevisionMixin, Base):
     __tablename__ = "feedback_drafts"
     __table_args__ = (
         UniqueConstraint("review_version_id", "sequence_no", name="uq_feedback_drafts_sequence"),
-        CheckConstraint("generation_mode IN ('model','template','manual')", name="ck_feedback_draft_mode"),
+        CheckConstraint(
+            "generation_mode IN ('model','template','manual')", name="ck_feedback_draft_mode"
+        ),
         CheckConstraint("state IN ('draft','approved')", name="ck_feedback_draft_state"),
+        CheckConstraint(
+            "generation_status IN ('not_requested','queued','running','completed','fallback')",
+            name="ck_feedback_generation_status",
+        ),
         CheckConstraint("sequence_no >= 1 AND revision >= 1", name="ck_feedback_draft_revision"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    review_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("review_versions.id", ondelete="RESTRICT"), nullable=False)
+    review_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("review_versions.id", ondelete="RESTRICT"), nullable=False
+    )
     sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
     generation_mode: Mapped[str] = mapped_column(String(16), nullable=False)
     source_review_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     blocks_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
     body_markdown: Mapped[str] = mapped_column(String(20000), nullable=False)
-    included_review_finding_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    exclusion_reasons_json: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    included_review_finding_ids_json: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    exclusion_reasons_json: Mapped[dict[str, str]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     state: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
     approved_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     model_manifest_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("method_manifests.id"))
+    generation_job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("jobs.id", ondelete="RESTRICT"))
+    generation_status: Mapped[str] = mapped_column(String(16), nullable=False, default="not_requested")
+    generation_failure_code: Mapped[str | None] = mapped_column(String(80))
 
 
 class Publication(TimestampMixin, Base):
@@ -1538,16 +2162,28 @@ class Publication(TimestampMixin, Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    submission_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("submissions.id", ondelete="RESTRICT"), nullable=False)
-    submission_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("submission_versions.id", ondelete="RESTRICT"), nullable=False)
-    review_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("review_versions.id", ondelete="RESTRICT"), nullable=False)
-    feedback_draft_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("feedback_drafts.id", ondelete="RESTRICT"), nullable=False)
+    submission_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("submissions.id", ondelete="RESTRICT"), nullable=False
+    )
+    submission_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("submission_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    review_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("review_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    feedback_draft_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("feedback_drafts.id", ondelete="RESTRICT"), nullable=False
+    )
     sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
     snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    approved_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    approved_by: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
     approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    published_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    published_by: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -1555,15 +2191,29 @@ class PublicationEvent(TimestampMixin, Base):
     __tablename__ = "publication_events"
     __table_args__ = (
         CheckConstraint("event IN ('released','withdrawn')", name="ck_publication_event_type"),
-        Index("uq_publication_released_event", "publication_id", unique=True,
-              postgresql_where=text("event = 'released'")),
-        Index("uq_publication_withdrawn_event", "publication_id", unique=True,
-              postgresql_where=text("event = 'withdrawn'")),
+        Index(
+            "uq_publication_released_event",
+            "publication_id",
+            unique=True,
+            postgresql_where=text("event = 'released'"),
+        ),
+        Index(
+            "uq_publication_withdrawn_event",
+            "publication_id",
+            unique=True,
+            postgresql_where=text("event = 'withdrawn'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    publication_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("publications.id", ondelete="RESTRICT"), nullable=False)
+    publication_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("publications.id", ondelete="RESTRICT"), nullable=False
+    )
     event: Mapped[str] = mapped_column(String(16), nullable=False)
-    actor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    actor_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
     reason: Mapped[str | None] = mapped_column(String(2000))
-    event_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+    event_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )

@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
@@ -843,6 +844,99 @@ def _mutate_cached(
     db: DbSession, identity: Identity, route: str, key: str, body: Any
 ) -> dict[str, Any] | None:
     return replay_or_lock(db, identity.user.id, "POST", route, key, body)
+
+
+def _queue_provider_draft(
+    db: DbSession,
+    settings: Settings,
+    version: AssignmentVersion,
+    target_id: UUID,
+    task_type: Literal["criteria_draft", "specification_draft"],
+) -> UUID | None:
+    if settings.provider_mode == "off" or (
+        settings.provider_mode == "mock" and settings.data_mode != "synthetic"
+    ):
+        return None
+    criterion_set = db.get(CriterionSetVersion, target_id)
+    if criterion_set is None or criterion_set.assignment_id != version.assignment_id:
+        raise HTTPException(status_code=409, detail="criterion set snapshot is unavailable")
+    stage_name = "draft_criteria" if task_type == "criteria_draft" else "draft_specification"
+    model_payload = {
+        "schema_version": 1,
+        "purpose": task_type,
+        "provider_mode": settings.provider_mode,
+        "data_mode": settings.data_mode,
+        "role": "efficient",
+        "model": settings.model_efficient,
+        "output_schema": "DraftAssistanceOutput-v1",
+        "implementation": {
+            path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
+            for path in (
+                "packages/domain/src/align_domain/drafting.py",
+                "packages/domain/src/align_domain/providers.py",
+                "services/worker/src/align_worker/drafting.py",
+            )
+        },
+        "live_calls": "blocked_before_network",
+        "limits": {"max_text_calls": 3, "max_input_tokens": 20000, "max_output_tokens": 4000},
+        "budget_usd": str(settings.spec_draft_budget_usd),
+    }
+    model_manifest = register_manifest(db, "model", model_payload)
+    policy_payload = json.loads(Path(settings.routing_policy_file).read_text(encoding="utf-8"))
+    policy_manifest = register_manifest(db, "routing", policy_payload)
+    scope = {
+        "assignment_id": str(version.assignment_id),
+        "assignment_version_id": str(version.id),
+        "target_id": str(target_id),
+        "target_revision": criterion_set.revision,
+        "target_content_hash": criterion_set.content_hash,
+        "task_type": task_type,
+        "provider_mode": settings.provider_mode,
+        "data_mode": settings.data_mode,
+        "model_manifest_id": str(model_manifest.id),
+        "model_manifest_sha256": model_manifest.sha256,
+        "routing_manifest_id": str(policy_manifest.id),
+        "routing_manifest_sha256": policy_manifest.sha256,
+        "provider_model": settings.model_efficient,
+    }
+    fingerprint = canonical_hash({"scope": scope, "instruction_hash": version.instruction_hash})
+    existing = db.scalar(select(Job).where(Job.type == task_type, Job.input_fingerprint == fingerprint))
+    if existing is not None:
+        return existing.id
+    job_id = uuid4()
+    db.add(Job(
+        id=job_id,
+        type=task_type,
+        subject_id=target_id,
+        scope_json=scope,
+        input_fingerprint=fingerprint,
+        status="queued",
+        stage=stage_name,
+        job_limits_json={
+            "max_active_seconds": settings.job_max_active_seconds,
+            "max_calls": 3,
+            "max_vision_calls": 2,
+            "max_text_input_tokens": 20000,
+            "max_text_output_tokens": 4000,
+            "budget_usd": str(settings.spec_draft_budget_usd),
+        },
+    ))
+    db.flush()
+    stage_hash = hashlib.sha256(f"{fingerprint}:{stage_name}".encode("ascii")).hexdigest()
+    db.add(JobStage(
+        job_id=job_id,
+        stage_name=stage_name,
+        input_hash=stage_hash,
+        status="queued",
+        output_refs_json={},
+        attempt_count=0,
+    ))
+    db.add(OutboxEvent(
+        event_type="job.execute",
+        subject_id=job_id,
+        payload_json={"job_id": str(job_id)},
+    ))
+    return job_id
 
 
 @router.post("/assignments", status_code=201)
@@ -1760,6 +1854,11 @@ def create_criteria_draft(
         if proposals
         else ("manual_review_required" if body.generate_from_instruction else "manual")
     )
+    provider_draft_job_id = (
+        _queue_provider_draft(db, settings, version, criterion_set.id, "criteria_draft")
+        if body.generate_from_instruction
+        else None
+    )
     response = {
         "assignment_version_id": str(version.id),
         "criterion_set_version_id": str(criterion_set.id),
@@ -1778,6 +1877,8 @@ def create_criteria_draft(
             "cost_usd": "0",
             "proposals": proposals,
             "proposals_truncated": proposals_truncated,
+            "provider_draft_job_id": str(provider_draft_job_id) if provider_draft_job_id else None,
+            "provider_draft_status": "queued" if provider_draft_job_id else "manual_only",
             "rubric_parser_status": rubric_parser_job["status"] if rubric_parser_job else "not_requested",
             "rubric_parser_job_id": rubric_parser_job["job_id"] if rubric_parser_job else None,
             "message": (
@@ -2073,6 +2174,7 @@ def create_spec_draft(
     request: Request,
     identity: Annotated[Identity, Depends(require_verified_active_identity)],
     db: Annotated[DbSession, Depends(get_db)],
+    settings: Annotated[Settings, Depends(get_settings)],
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ) -> dict[str, Any]:
     version = db.scalar(
@@ -2137,6 +2239,9 @@ def create_spec_draft(
     version.criterion_set_version_id = criterion_set.id
     version.specification_version_id = spec.id
     version.revision += 1
+    provider_draft_job_id = _queue_provider_draft(
+        db, settings, version, criterion_set.id, "specification_draft"
+    )
     response = {
         "id": str(spec.id),
         "assignment_version_id": str(version.id),
@@ -2147,6 +2252,7 @@ def create_spec_draft(
         "content_hash": spec.content_hash,
         "payload": empty,
         "lint": None,
+        "provider_draft_job_id": str(provider_draft_job_id) if provider_draft_job_id else None,
     }
     _audit(
         db, identity, request, "assignment.specification.created", "specification_version", spec.id
@@ -2154,6 +2260,36 @@ def create_spec_draft(
     store_response(db, identity.user.id, "POST", route, idempotency_key, response)
     db.commit()
     return response
+
+
+@router.get("/assignment-draft-jobs/{job_id}")
+def get_assignment_draft_job(
+    job_id: UUID,
+    identity: Annotated[Identity, Depends(require_password_change_completed)],
+    db: Annotated[DbSession, Depends(get_db)],
+) -> dict[str, Any]:
+    job = db.get(Job, job_id)
+    if job is None or job.type not in {"criteria_draft", "specification_draft"}:
+        raise HTTPException(status_code=404, detail="draft job not found")
+    try:
+        assignment_id = UUID(str(job.scope_json.get("assignment_id")))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="draft job not found") from exc
+    _lecturer_assignment(db, assignment_id, identity)
+    stage = db.scalar(
+        select(JobStage)
+        .where(JobStage.job_id == job.id)
+        .order_by(JobStage.created_at.desc(), JobStage.id)
+    )
+    output = stage.output_refs_json if stage and isinstance(stage.output_refs_json, dict) else {}
+    return {
+        "id": str(job.id),
+        "type": job.type,
+        "status": job.status,
+        "stage": job.stage,
+        "generation": output,
+        "limitation_code": job.last_error_code,
+    }
 
 
 def _load_spec(

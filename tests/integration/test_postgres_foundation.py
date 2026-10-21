@@ -34,6 +34,12 @@ def test_postgres_has_pgvector_08_and_role_separation() -> None:
             ).scalar_one() is False
             assert connection.execute(
                 text("SELECT has_table_privilege(current_user, 'courses', 'SELECT')")
+            ).scalar_one() is True
+            assert connection.execute(
+                text("SELECT has_table_privilege(current_user, 'courses', 'UPDATE')")
+            ).scalar_one() is False
+            assert connection.execute(
+                text("SELECT has_table_privilege(current_user, 'courses', 'DELETE')")
             ).scalar_one() is False
             assert connection.execute(
                 text("SELECT has_table_privilege(current_user, 'enrollments', 'SELECT')")

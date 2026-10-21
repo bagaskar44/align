@@ -15,6 +15,7 @@ from sqlalchemy.exc import OperationalError
 
 from align_api.config import get_settings
 from align_api.models import (
+    AnalysisRun,
     AuditEvent,
     FileAsset,
     Job,
@@ -126,10 +127,27 @@ def reap_expired_leases() -> dict[str, int]:
             .limit(100)
         ).all()
         for job in jobs:
+            if job.type == "analysis":
+                analysis = db.scalar(
+                    select(AnalysisRun).where(AnalysisRun.id == job.subject_id).with_for_update()
+                )
+                if analysis is None:
+                    job.status = "failed"
+                    job.last_error_code = "ANALYSIS_RUN_MISSING"
+                    job.lease_until = None
+                    job.lease_fence += 1
+                    recovered_jobs += 1
+                    continue
+                if analysis.status == "running":
+                    analysis.status = "queued"
+                    analysis.completion_kind = None
             if job.type in {"context_draft", "rubric_draft", "submission_parse"}:
                 reservations = db.scalars(
                     select(ProcessingTimeReservation)
-                    .where(ProcessingTimeReservation.job_id == job.id, ProcessingTimeReservation.state == "held")
+                    .where(
+                        ProcessingTimeReservation.job_id == job.id,
+                        ProcessingTimeReservation.state == "held",
+                    )
                     .with_for_update()
                 ).all()
                 for reservation in reservations:
@@ -138,7 +156,10 @@ def reap_expired_leases() -> dict[str, int]:
                     reservation.finished_at = now
                     checkpoint = db.scalar(
                         select(ParserCheckpoint)
-                        .where(ParserCheckpoint.job_id == job.id, ParserCheckpoint.task_key == reservation.task_key)
+                        .where(
+                            ParserCheckpoint.job_id == job.id,
+                            ParserCheckpoint.task_key == reservation.task_key,
+                        )
                         .with_for_update()
                     )
                     if checkpoint is not None and checkpoint.status == "running":
@@ -146,7 +167,10 @@ def reap_expired_leases() -> dict[str, int]:
                         checkpoint.finished_at = now
                         checkpoint.actual_active_ms = reservation.actual_active_ms
                         checkpoint.limitations_json = [
-                            {"code": "parser_timeout", "message": "Proses parser berhenti sebelum checkpoint selesai."}
+                            {
+                                "code": "parser_timeout",
+                                "message": "Proses parser berhenti sebelum checkpoint selesai.",
+                            }
                         ]
                         artifact = db.get(ParseArtifact, checkpoint.parse_artifact_id)
                         if artifact is not None:
@@ -155,15 +179,24 @@ def reap_expired_leases() -> dict[str, int]:
             job.status = "queued"
             job.lease_until = None
             job.lease_fence += 1
+            if job.type == "analysis":
+                assert analysis is not None
+                event_type = "job.analysis_run"
+                subject_id = analysis.id
+                payload = {"analysis_run_id": str(analysis.id)}
+            else:
+                event_type = {
+                    "context_draft": "job.parse_context",
+                    "rubric_draft": "job.parse_rubric",
+                    "submission_parse": "job.parse_submission",
+                }.get(job.type, "job.execute")
+                subject_id = job.id
+                payload = {"job_id": str(job.id)}
             db.add(
                 OutboxEvent(
-                    event_type={
-                        "context_draft": "job.parse_context",
-                        "rubric_draft": "job.parse_rubric",
-                        "submission_parse": "job.parse_submission",
-                    }.get(job.type, "job.execute"),
-                    subject_id=job.id,
-                    payload_json={"job_id": str(job.id)},
+                    event_type=event_type,
+                    subject_id=subject_id,
+                    payload_json=payload,
                     next_attempt_at=now,
                 )
             )
@@ -202,15 +235,27 @@ def cleanup_expired_submission_uploads(limit: int = 100) -> dict[str, int]:
         object_key = ""
         with SessionFactory.begin() as db:
             # Match finalization's submission-before-asset lock order.
-            submission = db.scalar(select(Submission).where(Submission.id == submission_id).with_for_update())
-            asset = db.scalar(select(FileAsset).where(
-                FileAsset.id == asset_id, FileAsset.submission_id == submission_id
-            ).with_for_update())
-            if (submission is None or asset is None or asset.purpose != "submission"
-                or asset.created_at > cutoff or asset.validation_state not in {"validated", "quarantined", "rejected"}
-                or db.scalar(select(SubmissionVersionFile.file_asset_id).where(
-                    SubmissionVersionFile.file_asset_id == asset.id
-                )) is not None):
+            submission = db.scalar(
+                select(Submission).where(Submission.id == submission_id).with_for_update()
+            )
+            asset = db.scalar(
+                select(FileAsset)
+                .where(FileAsset.id == asset_id, FileAsset.submission_id == submission_id)
+                .with_for_update()
+            )
+            if (
+                submission is None
+                or asset is None
+                or asset.purpose != "submission"
+                or asset.created_at > cutoff
+                or asset.validation_state not in {"validated", "quarantined", "rejected"}
+                or db.scalar(
+                    select(SubmissionVersionFile.file_asset_id).where(
+                        SubmissionVersionFile.file_asset_id == asset.id
+                    )
+                )
+                is not None
+            ):
                 continue
             if asset.validation_state != "quarantined":
                 asset.validation_state = "quarantined"
@@ -236,28 +281,42 @@ def cleanup_expired_submission_uploads(limit: int = 100) -> dict[str, int]:
             continue
 
         with SessionFactory.begin() as db:
-            submission = db.scalar(select(Submission).where(Submission.id == submission_id).with_for_update())
-            asset = db.scalar(select(FileAsset).where(
-                FileAsset.id == asset_id, FileAsset.submission_id == submission_id
-            ).with_for_update())
-            if (submission is None or asset is None or asset.validation_state != "quarantined"
-                or asset.created_at > cutoff or db.scalar(select(SubmissionVersionFile.file_asset_id).where(
-                    SubmissionVersionFile.file_asset_id == asset.id
-                )) is not None):
+            submission = db.scalar(
+                select(Submission).where(Submission.id == submission_id).with_for_update()
+            )
+            asset = db.scalar(
+                select(FileAsset)
+                .where(FileAsset.id == asset_id, FileAsset.submission_id == submission_id)
+                .with_for_update()
+            )
+            if (
+                submission is None
+                or asset is None
+                or asset.validation_state != "quarantined"
+                or asset.created_at > cutoff
+                or db.scalar(
+                    select(SubmissionVersionFile.file_asset_id).where(
+                        SubmissionVersionFile.file_asset_id == asset.id
+                    )
+                )
+                is not None
+            ):
                 continue
             db.delete(asset)
             submission.draft_revision += 1
             submission.revision += 1
             submission.updated_at = now
-            db.add(AuditEvent(
-                worker_id="align-cleanup",
-                action="submission.expired_draft_asset.deleted",
-                object_type="file_asset",
-                object_id=asset_id,
-                old_version_refs_json={"sha256": asset.sha256, "retention_hours": 24},
-                request_id=uuid4(),
-                occurred_at=now,
-            ))
+            db.add(
+                AuditEvent(
+                    worker_id="align-cleanup",
+                    action="submission.expired_draft_asset.deleted",
+                    object_type="file_asset",
+                    object_id=asset_id,
+                    old_version_refs_json={"sha256": asset.sha256, "retention_hours": 24},
+                    request_id=uuid4(),
+                    occurred_at=now,
+                )
+            )
             deleted += 1
     return {"deleted": deleted, "storage_failures": storage_failures, "candidates": len(candidates)}
 
@@ -292,10 +351,16 @@ def execute_job(self: Any, job_id: str) -> dict[str, object]:
             return {"status": job.status, "duplicate": True}
 
         stage_name = job.stage or "validate_manifest"
-        stage_hash = hashlib.sha256(f"{job.input_fingerprint}:{stage_name}".encode("ascii")).hexdigest()
+        stage_hash = hashlib.sha256(
+            f"{job.input_fingerprint}:{stage_name}".encode("ascii")
+        ).hexdigest()
         stage = db.scalar(
             select(JobStage)
-            .where(JobStage.job_id == job.id, JobStage.stage_name == stage_name, JobStage.input_hash == stage_hash)
+            .where(
+                JobStage.job_id == job.id,
+                JobStage.stage_name == stage_name,
+                JobStage.input_hash == stage_hash,
+            )
             .with_for_update()
         )
         if stage is not None and stage.status == "succeeded":
@@ -333,6 +398,16 @@ def execute_job(self: Any, job_id: str) -> dict[str, object]:
         from align_worker.context_parser import execute_submission_job
 
         return execute_submission_job(parsed_id, fence, fingerprint)
+    if stage_name == "draft_feedback" and job.type == "feedback_draft":
+        from align_worker.feedback import execute_feedback_job
+
+        return execute_feedback_job(parsed_id, fence, fingerprint)
+    if stage_name in {"draft_criteria", "draft_specification"} and job.type in {
+        "criteria_draft", "specification_draft"
+    }:
+        from align_worker.drafting import execute_draft_job
+
+        return execute_draft_job(parsed_id, fence, fingerprint)
 
     # Do not let an unavailable B0 capability become a fabricated academic result.
     failure_code = "STAGE_HANDLER_UNAVAILABLE_B0"
@@ -363,7 +438,11 @@ def execute_job(self: Any, job_id: str) -> dict[str, object]:
             return {"status": "stale", "fenced": True}
         stage = db.scalar(
             select(JobStage)
-            .where(JobStage.job_id == job.id, JobStage.stage_name == stage_name, JobStage.input_hash == stage_hash)
+            .where(
+                JobStage.job_id == job.id,
+                JobStage.stage_name == stage_name,
+                JobStage.input_hash == stage_hash,
+            )
             .with_for_update()
         )
         if stage is None:
@@ -385,7 +464,9 @@ def execute_job(self: Any, job_id: str) -> dict[str, object]:
     soft_time_limit=int(os.environ.get("JOB_MAX_ACTIVE_SECONDS", "600")) + 30,
     time_limit=int(os.environ.get("JOB_MAX_ACTIVE_SECONDS", "600")) + 60,
     max_retries=5,
-    autoretry_for=(OperationalError,), retry_backoff=True, retry_jitter=True,
+    autoretry_for=(OperationalError,),
+    retry_backoff=True,
+    retry_jitter=True,
 )
 def parse_context(job_id: str) -> dict[str, object]:
     # The coordinator can run several bounded children; each child retains the
@@ -398,7 +479,9 @@ def parse_context(job_id: str) -> dict[str, object]:
     soft_time_limit=int(os.environ.get("JOB_MAX_ACTIVE_SECONDS", "600")) + 30,
     time_limit=int(os.environ.get("JOB_MAX_ACTIVE_SECONDS", "600")) + 60,
     max_retries=5,
-    autoretry_for=(OperationalError,), retry_backoff=True, retry_jitter=True,
+    autoretry_for=(OperationalError,),
+    retry_backoff=True,
+    retry_jitter=True,
 )
 def parse_rubric(job_id: str) -> dict[str, object]:
     return execute_job.run(job_id)  # type: ignore[no-any-return]
@@ -409,8 +492,24 @@ def parse_rubric(job_id: str) -> dict[str, object]:
     soft_time_limit=int(os.environ.get("JOB_MAX_ACTIVE_SECONDS", "600")) + 30,
     time_limit=int(os.environ.get("JOB_MAX_ACTIVE_SECONDS", "600")) + 60,
     max_retries=5,
-    autoretry_for=(OperationalError,), retry_backoff=True, retry_jitter=True,
+    autoretry_for=(OperationalError,),
+    retry_backoff=True,
+    retry_jitter=True,
 )
 def parse_submission(job_id: str) -> dict[str, object]:
     return execute_job.run(job_id)  # type: ignore[no-any-return]
 
+
+@shared_task(
+    bind=True,
+    name="align.analysis_run",
+    max_retries=2,
+    autoretry_for=(OperationalError,),
+    retry_backoff=True,
+    retry_jitter=True,
+)
+def execute_analysis(self: Any, analysis_run_id: str) -> dict[str, Any]:
+    """Execute one fingerprinted B5 run; all writes commit atomically with its stages."""
+    from align_worker.executor import execute_analysis_run
+
+    return execute_analysis_run(analysis_run_id)

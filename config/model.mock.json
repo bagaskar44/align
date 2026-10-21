@@ -1,10 +1,12 @@
 {
   "schema_version": 1,
-  "manifest_id": "model-mock-v1",
+  "manifest_id": "model-mock-v2",
   "provider_mode": "mock",
   "live_model_ids": null,
   "embedding_dimensions": 1536,
   "rates_manifest": "model-rates.unverified.json",
-  "paid_calls": false
+  "paid_calls": false,
+  "semantic_verification": "explicit_mock_abstention",
+  "label": "SIMULASI • data sintetis"
 }
 

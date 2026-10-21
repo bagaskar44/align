@@ -200,8 +200,8 @@ def seed_synthetic() -> None:
 def register_release(filename: str) -> None:
     manifest_path = Path(filename).resolve()
     release = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if release.get("schema_version") != 1 or release.get("provider_mode") != "mock" or release.get("data_mode") != "synthetic":
-        raise SystemExit("B0 only registers schema-1 synthetic mock releases")
+    if release.get("schema_version") not in {1, 2} or release.get("provider_mode") != "mock" or release.get("data_mode") != "synthetic":
+        raise SystemExit("only schema-1 B0 or schema-2 synthetic mock releases can be registered")
     manifest_payloads: dict[str, dict[str, Any]] = {}
     for kind, relative_path in release["manifests"].items():
         if kind not in RELEASE_MANIFEST_COLUMNS:
@@ -269,17 +269,40 @@ def activate_release(release_id: str) -> None:
         available = set(payload.get("capabilities_available", []))
         unavailable = set(payload.get("capabilities_unavailable", []))
         if payload.get("provider_mode") != "mock" or payload.get("data_mode") != "synthetic":
-            raise SystemExit("B0 baseline activation requires synthetic mock mode")
+            raise SystemExit("baseline activation requires synthetic mock mode")
         if not {"manual_auth", "mock_provider_schema"}.issubset(available):
-            raise SystemExit("required B0 baseline capabilities are not available")
-        if any(name not in unavailable for name in ("native_parser", "live_provider", "paid_calls")):
-            raise SystemExit("unavailable parser/live/paid capabilities must remain explicit")
+            raise SystemExit("required baseline identity/mock capabilities are not available")
+        if payload.get("schema_version") == 1:
+            if any(name not in unavailable for name in ("native_parser", "live_provider", "paid_calls")):
+                raise SystemExit("unavailable parser/live/paid capabilities must remain explicit")
+        elif payload.get("schema_version") == 2:
+            required = {
+                "b5_executor", "deterministic_applicability_dag", "scoped_hybrid_retrieval",
+                "typed_grounding", "semantic_batch1_validator", "real_adapter_configurable",
+                "review_analysis_integration",
+            }
+            unavailable_required = {
+                "paid_calls", "live_semantic_verification", "efficient_semantic_route",
+                "batch3", "batch5", "empirical_quality",
+            }
+            if not required.issubset(available) or not unavailable_required.issubset(unavailable):
+                raise SystemExit("B5 executor capability declaration is incomplete")
+        else:
+            raise SystemExit("unsupported release schema version")
         if not checks.get("mock_schema_contract") or not checks.get("paid_calls_fail_closed"):
             raise SystemExit("release capability checks have not passed")
         if checks.get("baseline_batch_size") != 1:
             raise SystemExit("only baseline batch size one may be activated in B0")
         if checks.get("empirical_verification") is not False:
-            raise SystemExit("B0 cannot claim empirical verification")
+            raise SystemExit("synthetic mock release cannot claim empirical verification")
+        if payload.get("schema_version") == 2 and not all(
+            checks.get(name) is True for name in (
+                "deterministic_executor", "source_scope_isolation",
+                "quote_is_not_semantic_support", "empty_top_k_is_not_absence",
+                "human_history_immutable",
+            )
+        ):
+            raise SystemExit("B5 software gate checks have not passed")
         actor = _operator(db)
         if actor is None:
             raise SystemExit("bootstrap a local operator account before activation")
