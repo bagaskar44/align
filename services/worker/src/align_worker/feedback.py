@@ -6,9 +6,11 @@ from uuid import UUID
 
 from sqlalchemy import select
 
+from align_api.config import get_settings
 from align_api.models import FeedbackDraft, Job, JobStage, ReviewVersion
 from align_api.reviews import _feedback_hash, _generate_model_feedback
 from align_worker.database import SessionFactory
+from align_worker.finance import WorkerPaidCallLedger
 
 
 def execute_feedback_job(
@@ -51,6 +53,7 @@ def execute_feedback_job(
                 job,
                 list(draft.included_review_finding_ids_json),
                 dict(draft.exclusion_reasons_json),
+                paid_call_ledger=WorkerPaidCallLedger(enabled=get_settings().paid_calls_enabled),
             )
 
         if draft is not None and review is not None:

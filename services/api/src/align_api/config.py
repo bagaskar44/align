@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     app_log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
     database_url: str = "postgresql+psycopg://align_api:align_api@localhost:5432/align"
+    operator_database_url: str | None = None
     worker_database_url: str = "postgresql+psycopg://align_worker:align_worker@localhost:5432/align"
     migration_database_url: str = "postgresql+psycopg://align_migration:align_migration@localhost:5432/align"
     redis_url: str = "redis://localhost:6379/0"
@@ -31,6 +32,7 @@ class Settings(BaseSettings):
 
     csrf_server_secret: SecretStr = SecretStr("development-only-csrf-secret-change-me")
     provider_mode: Literal["mock", "off", "live"] = "mock"
+    paid_calls_enabled: bool = False
     openai_api_key: SecretStr | None = None
     model_efficient: str | None = None
     model_complex: str | None = None

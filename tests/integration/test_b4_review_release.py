@@ -7,6 +7,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from threading import Barrier
 from uuid import UUID, uuid4
@@ -15,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select, text
 
+from align_api.cli import ensure_budget_account
 from align_api.config import get_settings
 from align_api.db import SessionFactory
 from align_api.main import create_app
@@ -23,6 +25,7 @@ from align_api.models import (
     Assignment,
     AssignmentGroup,
     AssignmentVersion,
+    BudgetAccount,
     CheckElement,
     ContextVersion,
     Course,
@@ -38,6 +41,8 @@ from align_api.models import (
     FindingEvidenceLink,
     FindingRequirementLink,
     GroupMembership,
+    Job,
+    MethodManifest,
     NumericPolicyVersion,
     ParseArtifact,
     Publication,
@@ -49,11 +54,15 @@ from align_api.models import (
     SubmissionVersion,
     SubmissionVersionFile,
     SubmissionVersionMember,
+    UsageReservation,
     User,
 )
 from align_api.security import hash_password
 from align_api.storage import storage_client
 from align_domain.assignment_contracts import canonical_hash
+from align_domain.finance import BudgetState
+from align_worker.database import SessionFactory as WorkerSessionFactory
+from align_worker.finance import CallBounds, release_unstarted_call, reserve_call
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("ALIGN_RUN_INTEGRATION") != "true",
@@ -99,7 +108,7 @@ def _scenario():
         db.flush()
         numeric_policy_payload = {
             "metric_definition": "Besaran sintetis yang sama dalam konteks yang sama.",
-            "required_context_fields": ["metric", "period", "unit"], "number_locale": "id-ID",
+            "required_context_fields": ["metric", "entity", "period", "definition", "unit"], "number_locale": "id-ID",
             "canonical_unit": "kg", "allowed_conversions": [], "comparison_mode": "pairwise",
             "absolute_tolerance": "0", "relative_tolerance": "0",
             "rounding": {"mode": "none", "quantum": None},
@@ -266,7 +275,67 @@ def _scenario():
                "classmate": classmate, "outsider": outsider, "numeric_policy": numeric_policy}
 
 
-def test_provider_off_manual_review_annotation_feedback_release_and_withdrawal(_scenario) -> None:
+@pytest.fixture
+def _budget_exhausted():
+    """Use the full USD 20 spendable pool, leaving provider-off manual review intact."""
+    nonce = uuid4().hex
+    rate_content = {
+        "schema_version": 1,
+        "status": "verified",
+        "currency": "USD",
+        "verification": {"source_ref": f"test:{nonce}", "reviewed_by": "synthetic-test", "effective_date": "2026-10-22"},
+        "models": {f"b6-exhausted-{nonce[:8]}": {
+            "input_per_million": "20", "output_per_million": "0", "embedding_per_million": "0"
+        }},
+    }
+    model_id = f"b6-exhausted-{nonce[:8]}"
+    call_id, logical_call_id = uuid4(), uuid4()
+    with SessionFactory.begin() as db:
+        ensure_budget_account(db)
+        db.flush()
+        account = db.scalar(select(BudgetAccount).where(BudgetAccount.active.is_(True)))
+        assert account is not None and account.spend_frozen is False
+        rate = MethodManifest(
+            kind="rates", version_label=f"b6-exhausted-{nonce[:8]}",
+            content_json=rate_content, sha256=canonical_hash(rate_content), verified_at=datetime.now(UTC),
+        )
+        job = Job(
+            type="b6_budget_exhaustion_fixture", subject_id=uuid4(), scope_json={"fixture": nonce},
+            input_fingerprint=canonical_hash({"fixture": nonce}), status="queued",
+            job_limits_json={
+                "max_calls": 1, "max_vision_calls": 0, "max_text_input_tokens": 1_000_000,
+                "max_text_output_tokens": 0, "max_embedding_tokens": 0,
+                "max_active_seconds": 600, "budget_usd": "20",
+            },
+        )
+        db.add_all([rate, job])
+        db.flush()
+        job_id, rate_id = job.id, rate.id
+    reserve_call(
+        job_id=job_id, call_id=call_id, logical_call_id=logical_call_id, attempt_no=1,
+        rate_manifest_id=rate_id, model_id=model_id,
+        bounds=CallBounds(input_tokens=1_000_000, active_ms=1),
+    )
+    with WorkerSessionFactory() as db:
+        reservation = db.scalar(select(UsageReservation).where(UsageReservation.call_id == call_id))
+        account = db.scalar(select(BudgetAccount).where(BudgetAccount.active.is_(True)))
+        assert reservation is not None and reservation.status == "held"
+        assert reservation.amount_reserved == Decimal("20.00000000")
+        assert account is not None
+        assert BudgetState(
+            confirmed_total=account.confirmed_total,
+            reserve_floor=account.reserve_floor,
+            known_spend=Decimal("0"),
+            held_reservations=reservation.amount_reserved,
+            planned_topup=account.planned_topup,
+        ).spendable == Decimal("0E-8")
+    try:
+        yield
+    finally:
+        release_unstarted_call(call_id, proof="provider-off manual-review fixture made no provider request")
+
+
+def test_provider_off_manual_review_annotation_feedback_release_and_withdrawal(_scenario, _budget_exhausted) -> None:
     scenario = _scenario
     clients, csrf = scenario["clients"], scenario["csrf"]
     source, element, criterion, evidence = scenario["source"], scenario["element"], scenario["criterion"], scenario["evidence"]
@@ -740,7 +809,8 @@ def test_manual_numeric_finding_uses_decimal_policy_and_rejects_unverified_liter
         json={"analysis_run_id": None})
     assert created.status_code == 201, created.text
     review_id, revision = created.json()["id"], created.json()["revision"]
-    context = {"metric": "massa", "period": "2026", "unit": "kg"}
+    context = {"metric": "massa", "entity": "produk-A", "period": "2026",
+        "definition": "massa bersih", "unit": "kg"}
     numeric = {"numeric_policy_version_id": str(scenario["numeric_policy"].id),
         "verification_note": "Dosen membandingkan angka pada original secara manual.",
         "operands": [

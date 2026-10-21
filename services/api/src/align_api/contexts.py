@@ -38,6 +38,7 @@ from align_api.models import (
     ParseArtifact,
     SourceUnit,
 )
+from align_api.paid_calls import active_paid_release_scope
 from align_api.parser_profiles import profile_payload, register_manifest
 
 router = APIRouter(tags=["course context"])
@@ -420,6 +421,7 @@ def create_context_draft(
         })
         provider_manifest = register_manifest(db, "model", context_provider_payload(settings))
         provider_policy = register_manifest(db, "routing", json.loads(Path(settings.routing_policy_file).read_text()))
+        paid_release_scope = active_paid_release_scope(db, enabled=settings.paid_calls_enabled)
         fingerprint = canonical_hash(
             {
                 "context_version_id": str(context.id),
@@ -427,6 +429,7 @@ def create_context_draft(
                 "parser_manifest_sha256": parser_manifest.sha256,
                 "provider_manifest_sha256": provider_manifest.sha256,
                 "provider_policy_sha256": provider_policy.sha256,
+                "paid_release": paid_release_scope,
             }
         )
         parse_artifact_ids: list[str] = []
@@ -463,6 +466,7 @@ def create_context_draft(
                     "context_provider": {"mode": settings.provider_mode, "data_mode": settings.data_mode,
                         "manifest_id": str(provider_manifest.id), "manifest_sha256": provider_manifest.sha256,
                         "policy_id": str(provider_policy.id), "policy_sha256": provider_policy.sha256},
+                    **paid_release_scope,
                 },
                 input_fingerprint=fingerprint,
                 status="queued",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from typing import Any
+from urllib.error import URLError
 from uuid import uuid4
 
 import pytest
@@ -90,6 +91,91 @@ def test_live_embedding_adapter_rejects_missing_or_nonfinite_vectors(monkeypatch
 def test_live_provider_guard_fails_before_any_network_adapter_exists() -> None:
     with pytest.raises(PaidCallBlocked, match="PAID_CALL_GUARD_INCOMPLETE"):
         assert_live_call_guard(context())
+
+
+def test_paid_adapter_reserves_before_network_and_settles_actual_usage(monkeypatch: pytest.MonkeyPatch) -> None:
+    call = context().model_copy(update={
+        "rate_manifest_id": uuid4(),
+        "paid_calls_enabled": True,
+        "billing_bounds": {
+            "input_tokens": 400, "output_tokens": 200, "embedding_tokens": 0,
+            "vision_calls": 0, "image_count": 0, "active_ms": 60_000,
+        },
+    })
+    events: list[str] = []
+
+    class FakeLedger:
+        def reserve(self, _context: ProviderContext, model_id: str, bounds: dict[str, int]) -> None:
+            assert model_id == "test-model"
+            assert bounds["input_tokens"] <= 400
+            events.append("reserved")
+
+        def settle(self, _call_id: Any, *, provider_request_id: str | None, usage: dict[str, int]) -> None:
+            assert provider_request_id == "req_test"
+            assert usage["input_tokens"] == 10 and usage["output_tokens"] == 3
+            events.append("settled")
+
+        def unknown(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("successful provider response must settle")
+
+    class FakeResponse:
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"id":"req_test","usage":{"input_tokens":10,"output_tokens":3}}'
+
+    def fake_urlopen(*_args: Any, **_kwargs: Any) -> FakeResponse:
+        assert events == ["reserved"]
+        events.append("network")
+        return FakeResponse()
+
+    monkeypatch.setattr("align_domain.providers.urllib.request.urlopen", fake_urlopen)
+    provider = OpenAIResponsesProvider(
+        "test-only-not-a-secret", {"complex": "test-model"}, paid_call_ledger=FakeLedger()
+    )
+    result = provider._post(call, "responses", {"model": "test-model", "input": "small"})
+    assert result["id"] == "req_test"
+    assert events == ["reserved", "network", "settled"]
+
+
+def test_paid_adapter_keeps_unknown_transport_attempt_in_ledger(monkeypatch: pytest.MonkeyPatch) -> None:
+    call = context().model_copy(update={
+        "rate_manifest_id": uuid4(),
+        "paid_calls_enabled": True,
+        "billing_bounds": {
+            "input_tokens": 400, "output_tokens": 200, "embedding_tokens": 0,
+            "vision_calls": 0, "image_count": 0, "active_ms": 60_000,
+        },
+    })
+    events: list[str] = []
+
+    class FakeLedger:
+        def reserve(self, *_args: Any, **_kwargs: Any) -> None:
+            events.append("reserved")
+
+        def settle(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("transport failure cannot settle as known")
+
+        def unknown(self, _call_id: Any, *, provider_request_id: str | None, reason: str) -> None:
+            assert provider_request_id is None
+            assert reason == "transport_or_response_error"
+            events.append("unknown")
+
+    def failed_urlopen(*_args: Any, **_kwargs: Any) -> None:
+        events.append("network")
+        raise URLError("synthetic transport failure")
+
+    monkeypatch.setattr("align_domain.providers.urllib.request.urlopen", failed_urlopen)
+    provider = OpenAIResponsesProvider(
+        "test-only-not-a-secret", {"complex": "test-model"}, paid_call_ledger=FakeLedger()
+    )
+    with pytest.raises(RuntimeError, match="provider_transport_or_response_error"):
+        provider._post(call, "responses", {"model": "test-model", "input": "small"})
+    assert events == ["reserved", "network", "unknown"]
 
 
 def test_job_contract_rejects_extra_fields_and_invalid_fingerprints() -> None:

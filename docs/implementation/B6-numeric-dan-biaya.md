@@ -1,6 +1,6 @@
 # B6 — Numeric dan Biaya
 
-**Status implementasi: BELUM DIMULAI. Hasil pengujian: BELUM DIJALANKAN.**
+**Status per 22 Oktober 2026: jalur software B6 selesai dan teruji pada fixture mock/synthetic serta PostgreSQL terisolasi.** Tidak ada provider berbayar yang dipanggil; harga provider aktual dan laporan empiris eligible belum tersedia, sehingga baseline mock/synthetic dan batch 1 tetap aktif.
 
 [Indeks dan matriks](README.md) · [Master](../../ALIGN_IMPLEMENTATION_SPEC.md) · [Predecessor: B5](B5-ai-executor.md) · [Berikutnya: B7](B7-ux-dan-robustness.md)
 
@@ -101,12 +101,37 @@ Jalankan concurrency/reservation/reconciliation pada PostgreSQL nyata. Mock prov
 
 ## 6. Gate dan handover
 
-- [ ] Semua mode numeric dan source/comparability/Decimal gates benar; manual B4 regression lulus.
-- [ ] Seluruh paid consumer/evaluator hooks melewati reservation/ledger/limits/reconciliation tunggal.
-- [ ] Concurrent/unknown billing/seed/restart/topup tests membuktikan integritas finansial.
-- [ ] Immutable manifests/release/report validation dan candidate activation guards tersedia; baseline tetap usable tanpa penelitian.
-- [ ] Manual provider-off dan simulated budget-exhausted review→publish berjalan.
-- [ ] Traceability, exact command/results/rates verification status, operational limitations dan `docs/handover/B6.md` diperbarui.
+- [x] Numeric source/comparability/Decimal software gates dan regresi manual B4 diuji.
+- [x] Semua paid consumer provider memakai guard reservation/rate/limit/ledger/reconciliation bersama; tanpa guard lengkap, request dihentikan sebelum jaringan.
+- [x] Concurrent reservation, pending liability, rekonsiliasi, seed/restart dan limit tests lulus pada tingkat unit serta PostgreSQL.
+- [x] Resource/model/routing/batching/rate release binding dan schema/gate laporan immutable diuji; baseline tetap aktif tanpa penelitian.
+- [x] Alur review manual provider-off tetap dapat dipublikasikan dengan spendable budget nol karena reservation sintetis $20 masih held.
+- [x] Traceability, hasil, skip, status verifikasi tarif dan limitation dicatat pada handover B6.
+
+### Hasil aktual per 22 Oktober 2026
+
+Audit paid consumers menemukan satu endpoint HTTP provider di `packages/domain/src/align_domain/providers.py`; semua panggilan model melewati adapter ini. Caller live yang tersedia adalah ekstraksi konteks B1 (`context_provider.py`), drafting tugas/spec B2 (`drafting.py`), analysis/embedding B5 (`executor.py`), serta feedback (`reviews.py` melalui `feedback.py`). `assignments.py` hanya meneruskan release scope ke job drafting. Pencarian `urlopen`, `requests`, `httpx` dan konstruktor provider tidak menemukan endpoint/provider call kedua; `scripts/prepare-parser-resources.py` memakai URL registry parser tetap dan bukan paid consumer. Adapter kini mensyaratkan feature flag, release aktif, rate manifest terverifikasi, billing bounds dan ledger injected; ia commit reservation sebelum network dan settle atau mempertahankan pending liability setelah response/ketidakpastian. Environment default `PAID_CALLS_ENABLED=false`.
+
+Numeric acquisition memakai exact selector untuk literal XLSX terverifikasi, menyimpan observation/check canonical Decimal serta context/policy/source refs. Parser memakai locale eksplisit, unit/dimension dan conversion yang diizinkan, Decimal precision 34, tolerance `max(abs, rel)`, serta operasi pairwise/sum/ratio. Formula/cache, hidden sheet, OCR/image dan free text tidak menjadi operand otomatis; unit tanpa bukti terverifikasi abstain/unassessable. Itu limitation scope acquisition saat ini, bukan alasan mengubahnya menjadi temuan absence.
+
+Ledger mengunci akun global dan budget job sebelum reservation, memakai rate manifest immutable, batas usage dan `ceil` uang USD 8 desimal; planned top-up tidak dihitung sebagai saldo. Reservation $20 pada akun $25 dengan floor $5 menghasilkan spendable $0. Timeout/worker expiry tetap `reconciliation_required`; retry baru membutuhkan reservation tersendiri. Hasil tidak mengklaim exactly-once billing atau rekonsiliasi otomatis dari penyedia.
+
+**Perintah dan hasil yang dijalankan:**
+
+| Pemeriksaan | Hasil aktual |
+|---|---|
+| `.venv/bin/pytest tests/unit -q` | **122 passed**, 1 Starlette/httpx deprecation warning. |
+| `docker compose --project-name align-b6-final8-20261022 --env-file .env --profile test run --rm --build test-runner` | **36 passed, 7 skipped**, 1 warning, 66.33 detik pada PostgreSQL/Redis/Object Storage disposable Compose project. Migration ke head berhasil. Enam skip parser B1 opt-in memerlukan model terkunci dan admission capacity; satu skip B3 OOM membutuhkan disposable Linux container dengan memory cap eksplisit. Skip bukan lulus dan tidak menutup gate B6. Project dihentikan tanpa menghapus volume. |
+| `.venv/bin/ruff check .` | Lulus. |
+| `.venv/bin/mypy packages/domain/src services/api/src services/worker/src` | Lulus, 47 source files. |
+| `git diff --check` | Lulus. |
+| Web lint/typecheck | Lulus; lint mempunyai satu warning `<img>` existing di `SubmissionViewer.tsx`. |
+| `docker compose -p align-b6-web-build-20261022 --env-file .env build web` | Build production Next.js/TypeScript sukses. Host build gagal saat Turbopack mencoba membuka child-process port (`Operation not permitted` sandbox); Docker build yang sama berhasil. |
+| PostgreSQL adapter smoke `test_live_adapter_commits_reservation_then_settles_postgres_before_return` | **1 passed** pada fake transport; reservation terlihat committed sebelum stub network dipanggil, settlement tersimpan sesudahnya, dan perubahan rate manifest tertaut ditolak. Tidak ada network/provider request nyata. |
+| Isolated database seed/restart smoke (`align-b6-smoke-20261022`) | Seed pertama membuat 5 user, 2 course, 4 membership dalam mock; seed ulang dan sesudah restart masing-masing membuat 0. Release baseline berhasil register/activate dengan `empirical_verification=false`; saldo DB tetap $25, floor $5, planned top-up $0. Secret/password tidak dicetak. Project dihentikan tanpa `down -v`. |
+| `tests/integration/test_b4_review_release.py` dalam suite penuh | Keenam tes lulus, termasuk manual review → feedback → approval/publication/withdrawal dengan reservation $20 held dan spendable $0. Regression fixture memanggil `flush()` setelah membuat account sebelum query. |
+
+Harga nyata belum diverifikasi dan tidak ada panggilan berbayar. Manifest tarif baseline tetap `unverified`. Report fixtures hanya memverifikasi bentuk dan aturan kompatibilitas/eligibility; tidak ada eligible empirical report atau otorisasi institusi untuk menyatakan optimasi. `config/release.baseline.json` tetap provider `mock`, `data_mode=synthetic`, `empirical_verification=false`, `config/batching.baseline.json` maximum 1. Lint/typecheck/build web telah dijalankan, tetapi Playwright tidak dijalankan khusus B6; alur manual provider-off/exhaustion dibuktikan melalui integration test.
 
 **BERHENTI setelah B6; jangan mulai B7 otomatis.** Selesai software biaya bukan bukti initialUSD25 mencukupi seluruh penelitian atau batch3/5 menghemat biaya.
 

@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from align_api.config import get_settings
 from align_api.idempotency import canonical_hash
+from align_api.paid_calls import parse_manifest_id
 from align_domain.context_proposals import ContextFieldOutput
 from align_domain.providers import (
     MockProvider,
@@ -17,6 +18,7 @@ from align_domain.providers import (
     PaidCallBlocked,
     ProviderContext,
 )
+from align_worker.finance import WorkerPaidCallLedger
 
 
 def propose_context_fields(
@@ -77,6 +79,17 @@ def propose_context_fields(
             call_id=uuid5(job_id, canonical_hash(payload)), job_id=job_id,
             manifest_id=UUID(config["manifest_id"]), policy_id=UUID(config["policy_id"]),
             scope_ids=[context_id], max_input_tokens=20_000, max_output_tokens=4_000,
+            paid_release_manifest_id=parse_manifest_id(scope.get("paid_release_manifest_id")),
+            rate_manifest_id=parse_manifest_id(scope.get("rate_manifest_id")),
+            paid_calls_enabled=bool(scope.get("paid_calls_enabled") and get_settings().paid_calls_enabled),
+            billing_bounds={
+                "input_tokens": min(20_000, (len(json.dumps(payload, ensure_ascii=False).encode()) + 3) // 4 + 512),
+                "output_tokens": 4_000,
+                "embedding_tokens": 0,
+                "vision_calls": 0,
+                "image_count": 0,
+                "active_ms": min(60_000, get_settings().job_max_active_seconds * 1000),
+            },
         )
         selected_provider = provider
         if selected_provider is None:
@@ -92,6 +105,7 @@ def propose_context_fields(
                         "efficient": settings.model_efficient or "",
                         "extract_fields": settings.model_efficient or "",
                     },
+                    paid_call_ledger=WorkerPaidCallLedger(enabled=settings.paid_calls_enabled),
                 )
         result = selected_provider.extract_fields(call, payload)
         expected_simulated = mode == "mock"

@@ -121,7 +121,7 @@ class MethodManifest(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("sha256", name="uq_method_manifests_sha256"),
         CheckConstraint(
-            "kind IN ('parser','parser_resource','model','retrieval','rules','prompt','routing','batching')",
+            "kind IN ('parser','parser_resource','model','rates','retrieval','rules','prompt','routing','batching')",
             name="ck_method_manifests_kind",
         ),
     )
@@ -171,6 +171,13 @@ class ReleaseManifest(TimestampMixin, Base):
     )
     batching_policy_manifest_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("method_manifests.id"), nullable=False
+    )
+    parser_resource_manifest_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("method_manifests.id")
+    )
+    rate_manifest_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("method_manifests.id"))
+    policy_validation_report_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("policy_validation_reports.id", ondelete="RESTRICT")
     )
     grounding_registry_version: Mapped[str] = mapped_column(String(80), nullable=False)
     lint_registry_version: Mapped[str] = mapped_column(String(80), nullable=False)
@@ -250,6 +257,13 @@ class OutboxEvent(TimestampMixin, Base):
 class BudgetAccount(RevisionMixin, Base):
     __tablename__ = "budget_accounts"
     __table_args__ = (
+        Index(
+            "uq_budget_accounts_single_active",
+            "active",
+            unique=True,
+            postgresql_where=text("active IS TRUE"),
+            sqlite_where=text("active = 1"),
+        ),
         CheckConstraint("currency = 'USD'", name="ck_budget_accounts_currency"),
         CheckConstraint(
             "confirmed_total >= 0 AND reserve_floor >= 0 AND planned_topup >= 0",
@@ -263,13 +277,17 @@ class BudgetAccount(RevisionMixin, Base):
     reserve_floor: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
     planned_topup: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    spend_frozen: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    freeze_reason: Mapped[str | None] = mapped_column(String(240))
 
 
 class UsageReservation(TimestampMixin, Base):
     __tablename__ = "usage_reservations"
     __table_args__ = (
         UniqueConstraint("call_id", name="uq_usage_reservations_call"),
+        UniqueConstraint("logical_call_id", "attempt_no", name="uq_usage_reservations_logical_attempt"),
         CheckConstraint("amount_reserved >= 0", name="ck_usage_reservations_nonnegative"),
+        CheckConstraint("attempt_no >= 1", name="ck_usage_reservations_attempt_no"),
         CheckConstraint(
             "status IN ('held','settled','released','reconciliation_required')",
             name="ck_usage_reservations_status",
@@ -282,7 +300,10 @@ class UsageReservation(TimestampMixin, Base):
     )
     job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("jobs.id"), nullable=False)
     call_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    logical_call_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
     amount_reserved: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    bounds_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="held")
 
 
@@ -310,6 +331,72 @@ class UsageEntry(TimestampMixin, Base):
     rates_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     actual_cost: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
     status: Mapped[str] = mapped_column(String(16), nullable=False)
+
+
+class UsageReconciliation(TimestampMixin, Base):
+    """Append-only operator evidence resolving an immutable pending usage attempt."""
+
+    __tablename__ = "usage_reconciliations"
+    __table_args__ = (
+        UniqueConstraint("usage_entry_id", name="uq_usage_reconciliations_entry"),
+        CheckConstraint("actual_cost >= 0", name="ck_usage_reconciliations_cost_nonnegative"),
+        CheckConstraint("resolution IN ('billed','not_billed')", name="ck_usage_reconciliations_resolution"),
+        CheckConstraint(
+            "(resolution != 'not_billed' OR actual_cost = 0)",
+            name="ck_usage_reconciliations_not_billed_zero",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    usage_entry_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("usage_entries.id", ondelete="RESTRICT"), nullable=False
+    )
+    reservation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("usage_reservations.id", ondelete="RESTRICT"), nullable=False
+    )
+    actual_cost: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    resolution: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider_request_id: Mapped[str | None] = mapped_column(String(240))
+    evidence_ref: Mapped[str] = mapped_column(String(1000), nullable=False)
+    actor_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+
+class BudgetTopup(TimestampMixin, Base):
+    """Confirmed operator funding; planned top-ups never enter this ledger."""
+
+    __tablename__ = "budget_topups"
+    __table_args__ = (
+        UniqueConstraint("confirmation_ref", name="uq_budget_topups_confirmation_ref"),
+        CheckConstraint("amount > 0", name="ck_budget_topups_amount_positive"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    budget_account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("budget_accounts.id", ondelete="RESTRICT"), nullable=False
+    )
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    confirmation_ref: Mapped[str] = mapped_column(String(240), nullable=False)
+    actor_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    reason: Mapped[str] = mapped_column(String(1000), nullable=False)
+
+
+class PolicyValidationReport(TimestampMixin, Base):
+    """Immutable evidence envelope used to decide policy release eligibility."""
+
+    __tablename__ = "policy_validation_reports"
+    __table_args__ = (
+        UniqueConstraint("report_hash", name="uq_policy_validation_reports_hash"),
+        CheckConstraint("status IN ('eligible','ineligible','incomplete')", name="ck_policy_validation_reports_status"),
+        CheckConstraint("data_mode IN ('synthetic','institutional')", name="ck_policy_validation_reports_mode"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    report_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    data_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    candidate_core_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    baseline_core_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    report_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
 
 
 class AuditEvent(TimestampMixin, Base):

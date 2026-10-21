@@ -31,6 +31,7 @@ from align_api.models import (
 )
 from align_api.storage import storage_client
 from align_worker.database import SessionFactory
+from align_worker.finance import reconcile_stale_reservations
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,10 @@ def foundation_smoke(self: Any, operation_id: str) -> dict[str, object]:
 )
 def reap_expired_leases() -> dict[str, int]:
     now = datetime.now(UTC)
+    settings = get_settings()
+    reconciliation_required_calls = reconcile_stale_reservations(
+        minimum_age_seconds=max(settings.stage_hard_seconds, settings.worker_lease_seconds) + 60
+    )
     recovered_operations = 0
     recovered_jobs = 0
     with SessionFactory.begin() as db:
@@ -201,7 +206,11 @@ def reap_expired_leases() -> dict[str, int]:
                 )
             )
             recovered_jobs += 1
-    return {"operations": recovered_operations, "jobs": recovered_jobs}
+    return {
+        "operations": recovered_operations,
+        "jobs": recovered_jobs,
+        "reconciliation_required_calls": reconciliation_required_calls,
+    }
 
 
 @shared_task(

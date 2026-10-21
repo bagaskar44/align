@@ -62,6 +62,7 @@ from align_api.models import (
     SpecLintResolution,
     User,
 )
+from align_api.paid_calls import active_paid_release_scope
 from align_api.parser_profiles import profile_payload, register_manifest
 from align_domain.assignment_contracts import (
     NumericPolicyPayload,
@@ -899,6 +900,7 @@ def _queue_provider_draft(
         "routing_manifest_sha256": policy_manifest.sha256,
         "provider_model": settings.model_efficient,
     }
+    scope.update(active_paid_release_scope(db, enabled=settings.paid_calls_enabled))
     fingerprint = canonical_hash({"scope": scope, "instruction_hash": version.instruction_hash})
     existing = db.scalar(select(Job).where(Job.type == task_type, Job.input_fingerprint == fingerprint))
     if existing is not None:

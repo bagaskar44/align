@@ -1659,6 +1659,7 @@ def _generate_model_feedback(
     job: Job,
     included: list[str],
     exclusions: dict[str, str],
+    paid_call_ledger: Any | None = None,
 ) -> tuple[str | None, list[dict[str, Any]] | None, str | None]:
     """Generate one scoped draft; unavailable, over-budget, and invalid outputs abstain."""
     if not included:
@@ -1676,6 +1677,7 @@ def _generate_model_feedback(
     model_manifest = db.get(MethodManifest, release.model_manifest_id)
     if model_manifest is None or model_manifest.kind != "model":
         return None, None, "model_manifest_unavailable"
+    routing_manifest = db.get(MethodManifest, release.routing_policy_manifest_id)
     provider_mode = str(release.manifest_payload.get("provider_mode", "off"))
     if provider_mode not in {"mock", "live", "off"}:
         return None, None, "provider_disabled"
@@ -1744,6 +1746,26 @@ def _generate_model_feedback(
         scope_ids=[review.id],
         max_input_tokens=12_000,
         max_output_tokens=3_000,
+        paid_release_manifest_id=release.id,
+        rate_manifest_id=release.rate_manifest_id,
+        logical_call_id=call_id,
+        paid_calls_enabled=bool(
+            settings.paid_calls_enabled
+            and release.state == "active"
+            and release.manifest_payload.get("provider_mode") == "live"
+            and release.rate_manifest_id is not None
+            and model_manifest.content_json.get("paid_calls") is True
+            and routing_manifest is not None
+            and routing_manifest.content_json.get("allow_live") is True
+        ),
+        billing_bounds={
+            "input_tokens": min(12_000, input_tokens + 2048),
+            "output_tokens": 3_000,
+            "embedding_tokens": 0,
+            "vision_calls": 0,
+            "image_count": 0,
+            "active_ms": 60_000,
+        },
     )
     provider: Any | None = None
     if provider_mode == "mock":
@@ -1756,6 +1778,7 @@ def _generate_model_feedback(
                 "complex": settings.model_complex or "",
                 "draft_feedback": settings.model_efficient or "",
             },
+            paid_call_ledger=paid_call_ledger,
         )
     route = RoutingDecision(
         analysis_run_id=run.id,
@@ -1773,7 +1796,8 @@ def _generate_model_feedback(
             "review_complete": review.state == "complete",
             "selected_confirmed_findings_only": True,
             "source_scope_verified": True,
-            "paid_call_guard": "blocked_before_network",
+            "paid_call_guard": "ledger_reservation_before_network",
+            "paid_calls_enabled": context.paid_calls_enabled,
         },
         remaining_limits_json={
             "calls": 2,

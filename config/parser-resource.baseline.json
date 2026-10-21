@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "manifest_id": "parser-resource-baseline-v1",
+  "resource_manifest": "parser-context-resources.json",
+  "resource_manifest_sha256": "797d4b9731fec7722fbe9b3e266d6e65118f30979bd5118dafd5b58bc176d7fb",
+  "status": "pinned_not_empirically_verified",
+  "network_fetch_during_parse": false,
+  "notes": "Resource identity is pinned; availability and parser quality remain separate runtime evidence."
+}

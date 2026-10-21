@@ -44,6 +44,8 @@ from align_api.models import (
     GroundingEvaluation,
     Job,
     MethodManifest,
+    NumericCheck,
+    NumericObservation,
     NumericPolicyVersion,
     OutboxEvent,
     ParseArtifact,
@@ -63,7 +65,11 @@ from align_api.models import (
 from align_api.models import (
     SupportBinding as EvidenceSupportBinding,
 )
-from align_domain.assignment_contracts import SpecificationPayload, canonical_hash
+from align_domain.assignment_contracts import (
+    NumericPolicyPayload,
+    SpecificationPayload,
+    canonical_hash,
+)
 from align_domain.executor import (
     ObservationBundle,
     SemanticClaimAssessment,
@@ -89,7 +95,13 @@ from align_domain.providers import (
     PaidCallBlocked,
     ProviderContext,
 )
+from align_domain.review_numeric import (
+    NumericPolicyError,
+    compare_numeric_policy,
+    parse_numeric_operand,
+)
 from align_worker.database import SessionFactory
+from align_worker.finance import WorkerPaidCallLedger, provider_finance_context
 
 ANALYSIS_NAMESPACE = UUID("93db6ec9-fc68-4d66-b82d-e706d195a227")
 TOKENIZER_MANIFEST = "unicode-wordpunct-nfkc-v1"
@@ -461,6 +473,196 @@ def _dependency_coverage_inventory(
     return inventory
 
 
+def _numeric_selector_matches(item: EvidenceItem, selector: dict[str, Any]) -> bool:
+    content = item.content_original_json
+    anchor = item.anchor_json
+    expected = {
+        "sheet_name": anchor.get("sheet_name"),
+        "row_label": str(content["row_label"]) if content.get("row_label") is not None else None,
+        "column_label": str(content["column_label"]) if content.get("column_label") is not None else None,
+    }
+    for key, wanted in selector.items():
+        if wanted is not None and (not isinstance(wanted, str) or expected.get(key) != wanted):
+            return False
+    return True
+
+
+def _numeric_literal(item: EvidenceItem) -> str | None:
+    content = item.content_original_json
+    if item.type != "spreadsheet_cell" or item.parse_status != "parsed":
+        return None
+    if content.get("formula") is not None or content.get("hidden_sheet") is True:
+        return None
+    literal = content.get("text")
+    return literal if isinstance(literal, str) else None
+
+
+def _run_numeric_policy(
+    db: Session,
+    *,
+    run: AnalysisRun,
+    check: ElementCheck,
+    coverage: CoverageRecord,
+    element: Any,
+    policy_row: NumericPolicyVersion | None,
+    evidence_items: dict[UUID, EvidenceItem],
+    locale: str | None,
+) -> tuple[NumericCheck | None, list[UUID], str | None]:
+    """Acquire source-backed numeric observations and run only an approved deterministic policy."""
+    policy_id = element.numeric_policy_version_id
+    if policy_row is None or policy_row.id != policy_id or policy_row.state != "approved":
+        return None, [], "numeric_policy_unavailable"
+    try:
+        typed = NumericPolicyPayload.model_validate(policy_row.payload_json)
+    except Exception:
+        return None, [], "numeric_policy_invalid"
+    policy = typed.model_dump(mode="json", exclude_none=True)
+    selectors = policy.get("source_selectors")
+    contexts = policy.get("context_by_role")
+    operation = str(policy.get("comparison_mode", "pairwise"))
+    observations: list[NumericObservation] = []
+    operands: list[dict[str, Any]] = []
+    selected_ids: list[UUID] = []
+    reason: str | None = None
+
+    if not isinstance(selectors, dict) or not isinstance(contexts, dict):
+        reason = "numeric_source_selectors_missing"
+        for item in sorted(evidence_items.values(), key=lambda row: (str(row.source_unit_id), str(row.id))):
+            literal = _numeric_literal(item)
+            if literal is None:
+                continue
+            try:
+                parse_numeric_operand(
+                    literal,
+                    str(locale or policy.get("number_locale", "")),
+                    str(policy.get("canonical_unit", "")),
+                )
+            except NumericPolicyError:
+                continue
+            row = NumericObservation(
+                element_check_id=check.id,
+                evidence_item_id=item.id,
+                literal=literal,
+                context_json={},
+                source_quality="unverified",
+                verification_ref_json={"locator": item.anchor_json, "reason": reason},
+            )
+            db.add(row)
+            observations.append(row)
+            selected_ids.append(item.id)
+    else:
+        for role, selector_value in selectors.items():
+            context_value = contexts.get(role)
+            selector_list = selector_value if role == "operands" and isinstance(selector_value, list) else [selector_value]
+            context_list = context_value if role == "operands" and isinstance(context_value, list) else [context_value]
+            if len(selector_list) != len(context_list) or not selector_list:
+                reason = reason or "numeric_context_unresolved"
+                continue
+            target_role = "operand" if role == "operands" else role
+            for selector, role_context in zip(selector_list, context_list, strict=True):
+                if not isinstance(selector, dict):
+                    return None, [], "numeric_selector_invalid"
+                if not isinstance(role_context, dict):
+                    reason = reason or "numeric_context_unresolved"
+                    role_context = {}
+                hits = [
+                    item for item in evidence_items.values()
+                    if _numeric_selector_matches(item, selector)
+                ]
+                hits = sorted(hits, key=lambda row: (str(row.source_unit_id), str(row.id)))
+                if len(hits) != 1:
+                    reason = reason or "numeric_operand_selection_unresolved"
+                for item in hits:
+                    observation_context = dict(role_context)
+                    literal = _numeric_literal(item)
+                    quality = "native_literal"
+                    if literal is None:
+                        literal = str(item.content_original_json.get("text", ""))[:240]
+                        quality = "unverified"
+                        reason = reason or "numeric_source_unverified"
+                    else:
+                        try:
+                            _, source_unit = parse_numeric_operand(
+                                literal,
+                                str(locale or policy.get("number_locale", "")),
+                                str(observation_context.get("unit", "")),
+                            )
+                            observation_context["unit"] = source_unit
+                        except NumericPolicyError as exc:
+                            quality = "unverified"
+                            reason = reason or str(exc)
+                    row = NumericObservation(
+                        element_check_id=check.id,
+                        evidence_item_id=item.id,
+                        literal=literal,
+                        context_json=observation_context,
+                        source_quality=quality,
+                        verification_ref_json={
+                            "locator": item.anchor_json,
+                            "parser_manifest_id": str(item.parser_manifest_id) if item.parser_manifest_id else None,
+                            "selector": selector,
+                        },
+                    )
+                    db.add(row)
+                    observations.append(row)
+                    selected_ids.append(item.id)
+                    operands.append({
+                        "evidence_id": str(item.id),
+                        "literal": literal,
+                        "context": observation_context,
+                        "role": target_role,
+                        "source_quality": quality,
+                    })
+        if len(set(selected_ids)) != len(selected_ids):
+            reason = reason or "numeric_operand_selection_ambiguous"
+
+    result: dict[str, Any] | None = None
+    if reason is None:
+        try:
+            result = compare_numeric_policy(policy, operands)
+        except NumericPolicyError as exc:
+            reason = str(exc)
+    rule_manifest_id: UUID | None = None
+    try:
+        rule_manifest_id = UUID(str(run.manifest_snapshot_json.get("rules_manifest_id")))
+    except (ValueError, TypeError):
+        pass
+    numeric = NumericCheck(
+        element_check_id=check.id,
+        numeric_policy_version_id=policy_row.id,
+        comparability_status="comparable" if result is not None else "unresolved",
+        operation=operation,
+        normalized_context_json=result["normalized_context"] if result else {},
+        operands_snapshot_json=result["operands_snapshot"] if result else [
+            {"reason": reason or "numeric_comparison_unresolved", "evidence_ids": [str(item) for item in selected_ids]}
+        ],
+        result_decimal_text=result["result_decimal_text"] if result else None,
+        difference_text=result["difference_text"] if result else None,
+        allowed_difference_text=result["allowed_difference_text"] if result else None,
+        inconsistent=result["inconsistent"] if result else None,
+        rule_manifest_id=rule_manifest_id,
+    )
+    db.add(numeric)
+    db.flush()
+    if result:
+        decimal_by_id = {
+            UUID(str(item["evidence_id"])): item.get("normalized_decimal")
+            for item in result["operands_snapshot"]
+            if isinstance(item, dict) and item.get("evidence_id")
+        }
+        for observation in observations:
+            observation.canonical_decimal_text = decimal_by_id.get(observation.evidence_item_id)
+        for evidence_id in sorted(set(selected_ids), key=str):
+            db.add(AnalysisResultEvidence(element_check_id=check.id, evidence_item_id=evidence_id))
+        coverage.sufficient_for_positive = True
+        coverage.retrieval_json = {
+            **coverage.retrieval_json,
+            "numeric_policy_version_id": str(policy_row.id),
+            "numeric_selected_evidence_ids": [str(item) for item in sorted(set(selected_ids), key=str)],
+        }
+    return numeric, sorted(set(selected_ids), key=str), reason
+
+
 def _persist_element(
     db: Session,
     *,
@@ -644,7 +846,7 @@ def _persist_element(
             selected_role="embedding",
             reason_code="query_embedding_required",
             feature_snapshot_json={"text_count": 1, "embedding_index_ready": True},
-            guard_snapshot_json={"source_scope_verified": True, "paid_call_guard": "blocked_before_network"},
+            guard_snapshot_json={"source_scope_verified": True, "paid_call_guard": "ledger_reservation_before_network"},
             remaining_limits_json={"embedding_tokens": max(0, limits["max_embedding_tokens"] - counters["embedding_tokens"])},
             policy_manifest_id=routing_manifest_id,
             outcome="queued",
@@ -909,7 +1111,7 @@ def _persist_element(
     route = RoutingDecision(
         analysis_run_id=run.id,
         check_element_id=element_row.id,
-        task="interpret_evidence",
+        task="compare_numbers" if element.grounding_contract.mode == "comparable_numeric" else "interpret_evidence",
         action="call" if mode in {"mock", "live"} and role and applicability == "applicable" else "manual_only",
         selected_role=role,
         reason_code=reason_code,
@@ -922,7 +1124,7 @@ def _persist_element(
         guard_snapshot_json={
             "authorized_submission_version": str(source.id),
             "source_scope_verified": True,
-            "paid_call_guard": "blocked_before_network",
+            "paid_call_guard": "ledger_reservation_before_network",
         },
         remaining_limits_json={
             "calls": max(0, limits["max_calls"] - counters["calls"]),
@@ -938,6 +1140,109 @@ def _persist_element(
     )
     db.add(route)
     db.flush()
+    if applicability == "applicable" and element.grounding_contract.mode == "comparable_numeric":
+        policy_row = db.get(NumericPolicyVersion, element.numeric_policy_version_id)
+        numeric_check, numeric_evidence_ids, numeric_reason = _run_numeric_policy(
+            db,
+            run=run,
+            check=check,
+            coverage=coverage,
+            element=element,
+            policy_row=policy_row,
+            evidence_items=compatible_items,
+            locale=None,
+        )
+        route.action = "manual_only"
+        route.selected_role = None
+        route.reason_code = "deterministic_numeric_comparison" if numeric_check and numeric_check.comparability_status == "comparable" else "numeric_comparability_unresolved"
+        route.outcome = "completed" if numeric_check and numeric_check.comparability_status == "comparable" else "abstained"
+        route.feature_snapshot_json = {
+            **route.feature_snapshot_json,
+            "numeric_policy_version_id": str(policy_row.id) if policy_row else None,
+            "numeric_evidence_count": len(numeric_evidence_ids),
+            "numeric_comparability": numeric_check.comparability_status if numeric_check else "unresolved",
+        }
+        if numeric_check and numeric_check.comparability_status == "comparable":
+            check.source_coverage_status = "sufficient_for_check"
+            check.evidence_relationship = "conflicting" if numeric_check.inconsistent else "supported"
+            check.reason_codes_json = []
+            check.interpretation = (
+                "Perbandingan numerik deterministik melampaui toleransi kebijakan yang disetujui."
+                if numeric_check.inconsistent
+                else "Perbandingan numerik deterministik berada dalam toleransi kebijakan yang disetujui."
+            )
+            grounding.mechanical_status = "valid"
+            grounding.semantic_status = "not_required_deterministic"
+            grounding.semantic_support = "not_required_deterministic"
+            grounding.status = "supported"
+            grounding.decision_basis = "numeric_comparison"
+            grounding.mechanical_validation_json = {
+                **grounding.mechanical_validation_json,
+                "numeric_gate": "valid",
+                "numeric_check_id": str(numeric_check.id),
+            }
+            grounding.evaluation_json = {
+                "state": "completed",
+                "mode": "comparable_numeric",
+                "decision_basis": "numeric_comparison",
+                "numeric_check_id": str(numeric_check.id),
+                "policy_version_id": str(numeric_check.numeric_policy_version_id),
+                "rule_manifest_id": str(numeric_check.rule_manifest_id) if numeric_check.rule_manifest_id else None,
+                "comparability_status": numeric_check.comparability_status,
+                "inconsistent": numeric_check.inconsistent,
+                "semantic_verifier_required": False,
+            }
+            grounding.limitation_codes_json = []
+            if numeric_check.inconsistent and criterion is not None:
+                candidate = _persist_candidate(
+                    db,
+                    run=run,
+                    check=check,
+                    element=element,
+                    criterion=criterion,
+                    requirements=required,
+                    coverage=coverage,
+                    category="numerical_inconsistency",
+                    claim=(
+                        "Nilai numerik yang dipilih berbeda sebesar "
+                        f"{numeric_check.difference_text}; toleransi yang disetujui "
+                        f"{numeric_check.allowed_difference_text}. Dosen perlu meninjau sumber dan konteksnya."
+                    ),
+                    evidence_ids=numeric_evidence_ids,
+                )
+                candidate.semantic_support = "not_required_deterministic"
+                check.check_status = "finding_candidate"
+                grounding.evaluation_json["candidate_id"] = str(candidate.id)
+            else:
+                check.check_status = "no_issue_detected"
+        else:
+            failure = numeric_reason or "numeric_comparability_unresolved"
+            check.check_status = "unassessable"
+            check.source_coverage_status = "unreadable" if unresolved_count else "partial"
+            check.evidence_relationship = "unclear"
+            check.reason_codes_json = [failure]
+            check.interpretation = "Konteks atau sumber numerik belum cukup untuk perbandingan otomatis."
+            grounding.mechanical_status = "invalid"
+            grounding.semantic_status = "not_run"
+            grounding.semantic_support = "not_run"
+            grounding.status = "insufficient"
+            grounding.decision_basis = None
+            grounding.mechanical_validation_json = {
+                **grounding.mechanical_validation_json,
+                "numeric_gate": "invalid",
+                "reason_code": failure,
+            }
+            grounding.evaluation_json = {
+                "state": "unassessable",
+                "mode": "comparable_numeric",
+                "decision_basis": None,
+                "reason_code": failure,
+                "numeric_check_id": str(numeric_check.id) if numeric_check else None,
+                "semantic_verifier_required": False,
+            }
+            grounding.limitation_codes_json = [failure]
+        check.reason_codes_json = sorted(set(check.reason_codes_json))
+        return
     model_manifest_value = run.manifest_snapshot_json.get("model_manifest_id")
     try:
         model_id = UUID(str(model_manifest_value))
@@ -1097,7 +1402,7 @@ def _persist_element(
                         "coverage_exhaustive": negative_scan_possible,
                         "evidence_count": len(verify_sources),
                     },
-                    guard_snapshot_json={"source_scope_verified": True, "paid_call_guard": "blocked_before_network"},
+                    guard_snapshot_json={"source_scope_verified": True, "paid_call_guard": "ledger_reservation_before_network"},
                     remaining_limits_json={key: max(0, value - counters.get(key, 0))
                                            for key, value in limits.items() if key in counters},
                     policy_manifest_id=routing_manifest_id, outcome="queued", job_id=run.job_id,
@@ -1465,6 +1770,26 @@ def _invoke_provider(
         scope_ids=[source.id],
         max_input_tokens=max(0, limits["max_text_input_tokens"] - counters["input_tokens"]),
         max_output_tokens=max(0, limits["max_text_output_tokens"] - counters["output_tokens"]),
+        logical_call_id=call_id,
+        **provider_finance_context(
+            db,
+            release_id=getattr(run, "release_manifest_id", None),
+            enabled=get_settings().paid_calls_enabled,
+            bounds={
+                "input_tokens": min(
+                    max(0, limits["max_text_input_tokens"] - counters["input_tokens"]),
+                    input_tokens + 2048,
+                ),
+                "output_tokens": min(
+                    max(0, limits["max_text_output_tokens"] - counters["output_tokens"]),
+                    4000,
+                ),
+                "embedding_tokens": 0,
+                "vision_calls": 1 if isinstance(payload.get("image_data_url"), str) else 0,
+                "image_count": 1 if isinstance(payload.get("image_data_url"), str) else 0,
+                "active_ms": min(60_000, limits.get("max_active_seconds", 600) * 1000),
+            },
+        ),
     )
     counters["calls"] += 1
     counters["input_tokens"] += input_tokens
@@ -1585,6 +1910,23 @@ def _invoke_embedding(
         scope_ids=[source.id],
         max_input_tokens=max(0, limits["max_embedding_tokens"] - counters["embedding_tokens"]),
         max_output_tokens=0,
+        logical_call_id=call_id,
+        **provider_finance_context(
+            db,
+            release_id=getattr(run, "release_manifest_id", None),
+            enabled=get_settings().paid_calls_enabled,
+            bounds={
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "embedding_tokens": min(
+                    max(0, limits["max_embedding_tokens"] - counters["embedding_tokens"]),
+                    input_tokens + 512,
+                ),
+                "vision_calls": 0,
+                "image_count": 0,
+                "active_ms": min(60_000, limits.get("max_active_seconds", 600) * 1000),
+            },
+        ),
     )
     counters["embedding_calls"] += 1
     counters["embedding_tokens"] += input_tokens
@@ -1721,7 +2063,7 @@ def _verify_absence_in_batches(
             },
             guard_snapshot_json={
                 "source_scope_verified": True,
-                "paid_call_guard": "blocked_before_network",
+                "paid_call_guard": "ledger_reservation_before_network",
             },
             remaining_limits_json={
                 "calls": max(0, limits["max_calls"] - counters["calls"]),
@@ -1987,7 +2329,8 @@ def execute_analysis_run(analysis_run_id: str) -> dict[str, Any]:
             }
             if settings.openai_api_key:
                 provider = OpenAIResponsesProvider(
-                    settings.openai_api_key.get_secret_value(), model_map
+                    settings.openai_api_key.get_secret_value(), model_map,
+                    paid_call_ledger=WorkerPaidCallLedger(enabled=settings.paid_calls_enabled),
                 )
         index_count = 0
         embedding_count = 0
@@ -2082,7 +2425,7 @@ def execute_analysis_run(analysis_run_id: str) -> dict[str, Any]:
                     selected_role="embedding",
                     reason_code="source_chunk_embedding_required",
                     feature_snapshot_json={"chunk_count": len(missing_chunks), "dimensions": 1536},
-                    guard_snapshot_json={"source_scope_verified": True, "paid_call_guard": "blocked_before_network"},
+                    guard_snapshot_json={"source_scope_verified": True, "paid_call_guard": "ledger_reservation_before_network"},
                     remaining_limits_json={"embedding_tokens": settings_limits["max_embedding_tokens"]},
                     policy_manifest_id=release.routing_policy_manifest_id,
                     outcome="queued",

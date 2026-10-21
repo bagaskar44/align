@@ -5,7 +5,9 @@
   "data_mode": "synthetic",
   "manifests": {
     "parser": "parser.baseline.json",
+    "parser_resource": "parser-resource.baseline.json",
     "model": "model.mock.json",
+    "rates": "model-rates.unverified.json",
     "retrieval": "retrieval.baseline.json",
     "rules": "rules.baseline.json",
     "prompt": "prompt.baseline.json",

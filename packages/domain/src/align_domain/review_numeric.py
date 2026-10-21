@@ -5,6 +5,8 @@ from __future__ import annotations
 from decimal import ROUND_HALF_EVEN, Context, Decimal, InvalidOperation, localcontext
 from typing import Any
 
+from .assignment_contracts import UNIT_REGISTRY
+
 
 class NumericPolicyError(ValueError):
     """A source or policy cannot support an official numeric comparison."""
@@ -50,11 +52,62 @@ def parse_decimal_literal(value: str, number_locale: str) -> Decimal:
     try:
         with localcontext(_PRECISION):
             result = Decimal(normalized)
-            if not result.is_finite() or len(result.as_tuple().digits) > 34:
+            if (
+                not result.is_finite()
+                or len(result.as_tuple().digits) > 34
+                or (result and (result.adjusted() > 33 or result.adjusted() < -34))
+            ):
                 raise NumericPolicyError("numeric_value_out_of_range")
             return result
     except InvalidOperation as exc:
         raise NumericPolicyError("ambiguous_number_format") from exc
+
+
+def parse_numeric_operand(value: str, number_locale: str, expected_unit: str) -> tuple[Decimal, str]:
+    """Parse a native literal and explicit scaling suffix without dropping unit semantics."""
+    text = value.strip().replace("\u00a0", " ")
+    if not text or len(text) > 160:
+        raise NumericPolicyError("ambiguous_number_format")
+    currency_prefix = False
+    if text[:2].casefold() == "rp":
+        currency_prefix = True
+        text = text[2:].strip()
+    if text.endswith("%"):
+        if currency_prefix:
+            raise NumericPolicyError("ambiguous_number_unit")
+        text = text[:-1].strip()
+        source_unit = "percent"
+    else:
+        scale = None
+        for suffix in (
+            "percentage points", "percentage point", "poin persentase", "pp",
+            "million", "juta", "thousand", "ribu",
+        ):
+            if text.casefold().endswith(suffix):
+                scale = (
+                    "percentage_point" if suffix in {"percentage points", "percentage point", "poin persentase", "pp"}
+                    else "million" if suffix in {"million", "juta"}
+                    else "thousand"
+                )
+                text = text[: -len(suffix)].strip()
+                break
+        if scale == "percentage_point":
+            source_unit = "percentage_point"
+        elif scale is None:
+            source_unit = "IDR" if currency_prefix else expected_unit
+        elif expected_unit in {"IDR", "IDR_thousand", "IDR_million"} or currency_prefix:
+            source_unit = "IDR_million" if scale == "million" else "IDR_thousand"
+        elif scale == "thousand" and expected_unit in {"unit", "count_thousand"}:
+            source_unit = "count_thousand"
+        else:
+            raise NumericPolicyError("ambiguous_number_unit")
+    if source_unit not in UNIT_REGISTRY:
+        raise NumericPolicyError("numeric_unit_not_registered")
+    if expected_unit not in UNIT_REGISTRY or UNIT_REGISTRY[source_unit][0] != UNIT_REGISTRY[expected_unit][0]:
+        raise NumericPolicyError("numeric_context_unit_mismatch")
+    if currency_prefix and UNIT_REGISTRY.get(expected_unit, (None,))[0] != "currency:IDR":
+        raise NumericPolicyError("numeric_context_unit_mismatch")
+    return parse_decimal_literal(text, number_locale), source_unit
 
 
 def _decimal(value: Any, reason: str) -> Decimal:
@@ -71,7 +124,12 @@ def _decimal(value: Any, reason: str) -> Decimal:
 
 def _to_unit(value: Decimal, source: str, target: str, conversions: list[dict[str, Any]]) -> Decimal:
     if source == target:
+        if source not in UNIT_REGISTRY:
+            raise NumericPolicyError("numeric_unit_not_registered")
         return value
+    dimensions = {unit: metadata[0] for unit, metadata in UNIT_REGISTRY.items()}
+    if source not in dimensions or target not in dimensions or dimensions[source] != dimensions[target]:
+        raise NumericPolicyError("numeric_units_not_comparable")
     for item in conversions:
         if not isinstance(item, dict) or item.get("kind") != "linear":
             continue
@@ -79,6 +137,10 @@ def _to_unit(value: Decimal, source: str, target: str, conversions: list[dict[st
         factor = _decimal(item.get("factor"), "invalid_conversion_factor")
         if factor <= 0:
             raise NumericPolicyError("invalid_conversion_factor")
+        if origin not in dimensions or destination not in dimensions or dimensions[origin] != dimensions[destination]:
+            raise NumericPolicyError("numeric_units_not_comparable")
+        if factor != UNIT_REGISTRY[origin][1] / UNIT_REGISTRY[destination][1]:
+            raise NumericPolicyError("unapproved_conversion_factor")
         if origin == source and destination == target:
             return value * factor
         if origin == target and destination == source:
@@ -113,7 +175,11 @@ def compare_numeric_policy(policy: dict[str, Any], operands: list[dict[str, Any]
     required_context = policy.get("required_context_fields")
     if not isinstance(required_context, list) or any(field not in _CONTEXT_FIELDS for field in required_context):
         raise NumericPolicyError("invalid_numeric_policy_context")
-    if not isinstance(conversions, list) or not isinstance(canonical_unit, str) or not canonical_unit:
+    if (
+        not isinstance(conversions, list)
+        or not isinstance(canonical_unit, str)
+        or canonical_unit not in UNIT_REGISTRY
+    ):
         raise NumericPolicyError("invalid_numeric_policy")
     if operation == "pairwise":
         expected_roles = {"left", "right"}
@@ -134,6 +200,14 @@ def compare_numeric_policy(policy: dict[str, Any], operands: list[dict[str, Any]
         len(operands) < 2 or roles.count("reported") != 1 or any(role not in expected_roles for role in roles)
     ):
         raise NumericPolicyError("numeric_operand_roles_invalid")
+    if operation == "sum_against_reported":
+        operand_ids = [
+            operand.get("evidence_id") for operand in operands if operand.get("role") == "operand"
+        ]
+        if any(not isinstance(item, str) or not item for item in operand_ids):
+            raise NumericPolicyError("numeric_operand_evidence_missing")
+        if len(set(operand_ids)) != len(operand_ids):
+            raise NumericPolicyError("duplicate_numeric_sum_operand")
     if operation == "ratio_against_reported" and (len(operands) != 3 or set(roles) != expected_roles):
         raise NumericPolicyError("numeric_operand_roles_invalid")
 
@@ -145,18 +219,25 @@ def compare_numeric_policy(policy: dict[str, Any], operands: list[dict[str, Any]
         context = operand.get("context")
         if not isinstance(literal, str) or not isinstance(context, dict):
             raise NumericPolicyError("numeric_operand_invalid")
-        value = parse_decimal_literal(literal, str(locale))
         unit = context.get("unit")
-        if not isinstance(unit, str) or not unit:
+        if not isinstance(unit, str) or unit not in UNIT_REGISTRY:
             raise NumericPolicyError("ambiguous_numeric_context")
-        parsed.append({**operand, "value": value, "unit": unit, "context": context})
+        value, source_unit = parse_numeric_operand(literal, str(locale), unit)
+        parsed_context = {**context, "unit": source_unit}
+        parsed.append({**operand, "value": value, "unit": source_unit, "context": parsed_context})
 
+    if not {"metric", "entity", "definition", "unit"} <= set(required_context):
+        raise NumericPolicyError("invalid_numeric_policy_context")
     context_fields = [field for field in required_context if field != "unit"]
     context_values: dict[str, Any] = {}
     base_context = parsed[0]["context"]
     for field in context_fields:
         base_value = base_context.get(field)
-        if base_value is None:
+        if any(
+            not isinstance(item["context"].get(field), str)
+            or not item["context"][field].strip()
+            for item in parsed
+        ):
             raise NumericPolicyError("ambiguous_numeric_context")
         if any(item["context"].get(field) != base_value for item in parsed[1:]):
             raise NumericPolicyError("numeric_context_not_comparable")

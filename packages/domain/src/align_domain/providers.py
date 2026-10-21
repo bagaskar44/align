@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import time
 import urllib.error
 import urllib.request
 from functools import lru_cache
@@ -110,6 +111,12 @@ class ProviderContext(StrictModel):
     scope_ids: list[UUID]
     max_input_tokens: int = Field(ge=0)
     max_output_tokens: int = Field(ge=0)
+    paid_release_manifest_id: UUID | None = None
+    rate_manifest_id: UUID | None = None
+    logical_call_id: UUID | None = None
+    attempt_no: int = Field(default=1, ge=1)
+    paid_calls_enabled: bool = False
+    billing_bounds: dict[str, int] = Field(default_factory=dict)
 
 
 class ProviderResult(StrictModel):
@@ -156,36 +163,95 @@ class PaidCallBlocked(RuntimeError):
     pass
 
 
-def assert_live_call_guard(context: ProviderContext) -> None:
-    """Fail before a live adapter can perform network I/O until B0's finance guard is complete."""
+class PaidCallLedger(Protocol):
+    """Runtime finance hook. Implementations commit a reservation before I/O."""
+
+    def reserve(self, context: ProviderContext, model_id: str, bounds: dict[str, int]) -> Any: ...
+
+    def settle(
+        self, call_id: UUID, *, provider_request_id: str | None, usage: dict[str, int]
+    ) -> None: ...
+
+    def unknown(self, call_id: UUID, *, provider_request_id: str | None, reason: str) -> None: ...
+
+
+def assert_live_call_guard(context: ProviderContext, ledger: PaidCallLedger | None = None) -> None:
+    """Fail closed unless the caller supplies a complete, enabled financial context."""
     if (
         not context.call_id
         or not context.job_id
         or not context.manifest_id
         or not context.policy_id
+        or not context.rate_manifest_id
+        or not context.paid_calls_enabled
+        or not context.billing_bounds
+        or ledger is None
     ):
         raise PaidCallBlocked("PAID_CALL_GUARD_INCOMPLETE")
-    raise PaidCallBlocked("PAID_CALL_GUARD_INCOMPLETE")
 
 
 class OpenAIResponsesProvider:
-    """Configurable OpenAI Responses/embeddings adapter, fail-closed before I/O.
+    """Configurable OpenAI Responses/embeddings adapter with ledger-before-I/O."""
 
-    B6 owns the financial activation gate. Until that gate supplies a complete
-    reservation/limit/usage/reconciliation proof, ``_post`` cannot reach the
-    network even when an API key and model IDs are configured.
-    """
-
-    def __init__(self, api_key: str, models: dict[str, str], timeout_seconds: float = 60.0) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        models: dict[str, str],
+        timeout_seconds: float = 60.0,
+        paid_call_ledger: PaidCallLedger | None = None,
+    ) -> None:
         if not api_key.strip():
             raise ValueError("OpenAI API key is required")
         self._api_key = api_key
         self._models = dict(models)
         self._timeout_seconds = timeout_seconds
+        self._paid_call_ledger = paid_call_ledger
 
     def _post(self, context: ProviderContext, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        assert_live_call_guard(context)
         encoded = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ledger = self._paid_call_ledger
+        if ledger is None:
+            raise PaidCallBlocked("PAID_CALL_GUARD_INCOMPLETE")
+        assert_live_call_guard(context, ledger)
+        model_id = body.get("model")
+        if not isinstance(model_id, str) or not model_id:
+            raise PaidCallBlocked("PAID_CALL_MODEL_MISSING")
+        bounds = dict(context.billing_bounds)
+        if path == "embeddings":
+            bounds["input_tokens"] = 0
+            bounds["embedding_tokens"] = bounds.get("embedding_tokens", math.ceil(len(encoded) / 4) + 128)
+            bounds["output_tokens"] = 0
+        else:
+            # The base64 image payload is priced as an image unit, not as text tokens.
+            token_body = dict(body)
+            user_input = token_body.get("input")
+            if isinstance(user_input, list):
+                token_body["input"] = [
+                    {key: value for key, value in item.items() if key != "image_url"}
+                    if isinstance(item, dict) and item.get("type") == "input_image" else item
+                    for item in user_input
+                ]
+            body_token_estimate = math.ceil(
+                len(json.dumps(token_body, ensure_ascii=False).encode("utf-8")) / 4
+            )
+            bounds["input_tokens"] = bounds.get("input_tokens", 0)
+            if body_token_estimate > bounds["input_tokens"]:
+                raise PaidCallBlocked("PAID_CALL_INPUT_BOUND_EXCEEDS_REQUEST")
+            bounds["output_tokens"] = int(body.get("max_output_tokens", bounds.get("output_tokens", 0)))
+            bounds.setdefault("embedding_tokens", 0)
+        if bounds["input_tokens"] > context.max_input_tokens:
+            raise PaidCallBlocked("PAID_CALL_INPUT_BOUND_EXCEEDS_JOB_REMAINDER")
+        if path == "embeddings" and bounds["embedding_tokens"] > context.max_input_tokens:
+            raise PaidCallBlocked("PAID_CALL_EMBEDDING_BOUND_EXCEEDS_JOB_REMAINDER")
+        if bounds["output_tokens"] > context.max_output_tokens:
+            raise PaidCallBlocked("PAID_CALL_OUTPUT_BOUND_EXCEEDS_JOB_REMAINDER")
+        try:
+            ledger.reserve(context, model_id, bounds)
+        except PaidCallBlocked:
+            raise
+        except Exception as exc:
+            # Finance guard errors are deliberately reduced to a stable code.
+            raise PaidCallBlocked("PAID_CALL_RESERVATION_REJECTED") from exc
         request = urllib.request.Request(
             f"https://api.openai.com/v1/{path}",
             data=encoded,
@@ -195,16 +261,51 @@ class OpenAIResponsesProvider:
             },
             method="POST",
         )
+        started = time.monotonic()
         try:
             with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310 - fixed https://api.openai.com URL
                 payload = json.loads(response.read())
         except urllib.error.HTTPError as exc:
             # Do not persist error bodies: they can include input snippets.
+            ledger.unknown(context.call_id, provider_request_id=exc.headers.get("x-request-id"), reason=f"http_{exc.code}")
             raise RuntimeError(f"provider_http_{exc.code}") from exc
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            ledger.unknown(context.call_id, provider_request_id=None, reason="transport_or_response_error")
             raise RuntimeError("provider_transport_or_response_error") from exc
         if not isinstance(payload, dict):
+            ledger.unknown(context.call_id, provider_request_id=None, reason="provider_response_invalid")
             raise RuntimeError("provider_response_invalid")
+        raw_usage = payload.get("usage")
+        request_id = payload.get("id")
+        if isinstance(raw_usage, dict):
+            if path == "embeddings":
+                input_tokens = raw_usage.get("prompt_tokens", raw_usage.get("input_tokens"))
+                usage = {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "embedding_tokens": input_tokens if type(input_tokens) is int else -1,
+                    "image_count": 0,
+                    "vision_calls": 0,
+                    "active_ms": max(1, int((time.monotonic() - started) * 1000)),
+                }
+            else:
+                input_tokens = raw_usage.get("input_tokens", raw_usage.get("prompt_tokens"))
+                output_tokens = raw_usage.get("output_tokens", raw_usage.get("completion_tokens", 0))
+                usage = {
+                    "input_tokens": input_tokens if type(input_tokens) is int else -1,
+                    "output_tokens": output_tokens if type(output_tokens) is int else -1,
+                    "embedding_tokens": 0,
+                    "image_count": bounds.get("image_count", 0),
+                    "vision_calls": bounds.get("vision_calls", 0),
+                    "active_ms": max(1, int((time.monotonic() - started) * 1000)),
+                }
+        else:
+            usage = {}
+        ledger.settle(
+            context.call_id,
+            provider_request_id=request_id if isinstance(request_id, str) else None,
+            usage=usage,
+        )
         return payload
 
     def _response(
@@ -250,7 +351,10 @@ class OpenAIResponsesProvider:
                     "schema": schema,
                 }
             },
-            "max_output_tokens": context.max_output_tokens,
+            "max_output_tokens": min(
+                context.max_output_tokens,
+                context.billing_bounds.get("output_tokens", context.max_output_tokens),
+            ),
             "store": False,
         }
         response = self._post(context, "responses", request_body)

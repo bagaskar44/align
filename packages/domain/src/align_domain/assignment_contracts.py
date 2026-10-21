@@ -179,6 +179,7 @@ UNIT_REGISTRY: dict[str, tuple[str, Decimal]] = {
     "IDR_million": ("currency:IDR", Decimal("1000000")),
     "ratio": ("ratio", Decimal("1")),
     "percent": ("ratio", Decimal("0.01")),
+    "percentage_point": ("percentage_point", Decimal("0.01")),
     "unit": ("count", Decimal("1")),
     "count_thousand": ("count", Decimal("1000")),
     "m": ("length", Decimal("1")),
@@ -423,6 +424,34 @@ class Rounding(StrictContract):
         return self
 
 
+class NumericSourceSelector(StrictContract):
+    """Exact source labels used to select values without semantic guesswork."""
+
+    sheet_name: StrictStr | None = Field(default=None, max_length=120)
+    row_label: StrictStr | None = Field(default=None, max_length=240)
+    column_label: StrictStr | None = Field(default=None, max_length=240)
+
+    @model_validator(mode="after")
+    def has_locator(self) -> NumericSourceSelector:
+        if any(
+            not isinstance(value, str) or not value.strip()
+            for value in (self.sheet_name, self.row_label, self.column_label)
+        ):
+            raise ValueError("numeric source selector needs exact sheet, row, and column labels")
+        return self
+
+
+class NumericContext(StrictContract):
+    metric: StrictStr | None = Field(default=None, max_length=240)
+    entity: StrictStr | None = Field(default=None, max_length=240)
+    period: StrictStr | None = Field(default=None, max_length=120)
+    scenario: StrictStr | None = Field(default=None, max_length=240)
+    population: StrictStr | None = Field(default=None, max_length=240)
+    definition: StrictStr | None = Field(default=None, max_length=1000)
+    assumptions: StrictStr | None = Field(default=None, max_length=1000)
+    unit: StrictStr
+
+
 class NumericPolicyPayload(StrictContract):
     metric_definition: StrictStr = Field(min_length=1, max_length=2000)
     required_context_fields: list[
@@ -445,6 +474,8 @@ class NumericPolicyPayload(StrictContract):
     relative_tolerance: StrictStr
     rounding: Rounding
     operand_roles: dict[str, StrictStr]
+    source_selectors: dict[str, NumericSourceSelector | list[NumericSourceSelector]] | None = None
+    context_by_role: dict[str, NumericContext | list[NumericContext]] | None = None
 
     @model_validator(mode="after")
     def validate_policy(self) -> NumericPolicyPayload:
@@ -475,6 +506,32 @@ class NumericPolicyPayload(StrictContract):
         }[self.comparison_mode]
         if set(self.operand_roles) != expected_roles:
             raise ValueError("operand_roles do not match comparison_mode")
+        if (self.source_selectors is None) != (self.context_by_role is None):
+            raise ValueError("numeric selectors and explicit contexts must be configured together")
+        if self.source_selectors is not None and self.context_by_role is not None:
+            if set(self.source_selectors) != expected_roles or set(self.context_by_role) != expected_roles:
+                raise ValueError("numeric selector/context roles do not match comparison_mode")
+            for role in expected_roles:
+                selectors = self.source_selectors[role]
+                contexts = self.context_by_role[role]
+                if role == "operands" and self.comparison_mode == "sum_against_reported":
+                    if not isinstance(selectors, list) or not selectors or not isinstance(contexts, list):
+                        raise ValueError("sum operands require parallel complete selector and context lists")
+                    if len(selectors) != len(contexts):
+                        raise ValueError("sum operand selectors and contexts must have matching lengths")
+                    if len({(item.sheet_name, item.row_label, item.column_label) for item in selectors}) != len(selectors):
+                        raise ValueError("sum operand selectors must be unique")
+                    role_contexts = contexts
+                else:
+                    if isinstance(selectors, list) or isinstance(contexts, list):
+                        raise ValueError("non-sum numeric roles require one selector and one context")
+                    role_contexts = [contexts]
+                for context in role_contexts:
+                    context_values = context.model_dump(exclude_none=True)
+                    if not set(self.required_context_fields) <= set(context_values):
+                        raise ValueError("numeric role context omits a required comparability field")
+                    if context.unit not in UNIT_REGISTRY:
+                        raise ValueError("numeric role context unit is not in the approved unit registry")
         if len({(c.from_unit, c.to_unit) for c in self.allowed_conversions}) != len(
             self.allowed_conversions
         ):

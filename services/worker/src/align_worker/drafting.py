@@ -23,6 +23,7 @@ from align_api.models import (
     MethodManifest,
     Requirement,
 )
+from align_api.paid_calls import parse_manifest_id
 from align_domain.drafting import DraftAssistanceOutput, DraftSourceReference
 from align_domain.providers import (
     MockProvider,
@@ -31,6 +32,7 @@ from align_domain.providers import (
     ProviderContext,
 )
 from align_worker.database import SessionFactory
+from align_worker.finance import WorkerPaidCallLedger
 
 MAX_INPUT_TOKENS = 20_000
 MAX_OUTPUT_TOKENS = 4_000
@@ -191,6 +193,7 @@ def _provider(settings: Any, mode: str) -> Any | None:
     return OpenAIResponsesProvider(
         settings.openai_api_key.get_secret_value(),
         {"efficient": model, "extract_fields": model},
+        paid_call_ledger=WorkerPaidCallLedger(enabled=settings.paid_calls_enabled),
     )
 
 
@@ -204,16 +207,32 @@ def _attempt(job: Job, source: dict[str, Any], allowed_refs: list[dict[str, str]
     input_tokens = max(1, (len(json.dumps(source, ensure_ascii=False).encode("utf-8")) + 3) // 4)
     if input_tokens > MAX_INPUT_TOKENS:
         return {"status": "processing_limit", "provider_mode": mode, "paid_calls": 0}
+    payload = {**source, "json_schema": _strict_schema()}
+    billing_input_tokens = (len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) + 3) // 4 + 256
+    if billing_input_tokens > MAX_INPUT_TOKENS:
+        return {"status": "processing_limit", "provider_mode": mode, "paid_calls": 0}
+    call_id = uuid5(job.id, f"{job.input_fingerprint}:1")
     call = ProviderContext(
-        call_id=uuid5(job.id, f"{job.input_fingerprint}:1"),
+        call_id=call_id,
         job_id=job.id,
         manifest_id=manifest_id,
         policy_id=policy_id,
         scope_ids=[UUID(str(job.scope_json["assignment_version_id"])), UUID(str(job.scope_json["target_id"]))],
         max_input_tokens=MAX_INPUT_TOKENS,
         max_output_tokens=MAX_OUTPUT_TOKENS,
+        paid_release_manifest_id=parse_manifest_id(job.scope_json.get("paid_release_manifest_id")),
+        rate_manifest_id=parse_manifest_id(job.scope_json.get("rate_manifest_id")),
+        logical_call_id=call_id,
+        paid_calls_enabled=bool(job.scope_json.get("paid_calls_enabled") and getattr(settings, "paid_calls_enabled", False)),
+        billing_bounds={
+            "input_tokens": min(MAX_INPUT_TOKENS, billing_input_tokens),
+            "output_tokens": MAX_OUTPUT_TOKENS,
+            "embedding_tokens": 0,
+            "vision_calls": 0,
+            "image_count": 0,
+            "active_ms": min(60_000, getattr(settings, "job_max_active_seconds", 600) * 1000),
+        },
     )
-    payload = {**source, "json_schema": _strict_schema()}
     provider = _provider(settings, mode)
     if provider is None:
         return {"status": "provider_disabled", "provider_mode": mode, "paid_calls": 0}

@@ -5,34 +5,42 @@ import hashlib
 import json
 import sys
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, localcontext
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import select
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session as DbSession
+from sqlalchemy.orm import sessionmaker
 
 from align_api.config import get_settings
 from align_api.db import SessionFactory
 from align_api.models import (
     AuditEvent,
     BudgetAccount,
+    BudgetTopup,
     Course,
     Enrollment,
     MethodManifest,
     Operation,
     OutboxEvent,
+    PolicyValidationReport,
     ReleaseManifest,
+    UsageEntry,
+    UsageReconciliation,
+    UsageReservation,
     User,
 )
 from align_api.security import hash_password, normalize_email
 
 RELEASE_MANIFEST_COLUMNS = {
     "parser": "parser_manifest_id",
+    "parser_resource": "parser_resource_manifest_id",
     "model": "model_manifest_id",
+    "rates": "rate_manifest_id",
     "retrieval": "retrieval_manifest_id",
     "rules": "rules_manifest_id",
     "prompt": "prompt_manifest_id",
@@ -47,6 +55,268 @@ def canonical_json(payload: Any) -> str:
 
 def sha256_json(payload: Any) -> str:
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def sha256_hex(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def release_core_hash(
+    manifests: dict[str, MethodManifest], grounding_registry: str, lint_registry: str
+) -> str:
+    return sha256_json({
+        "methods": {kind: manifests[kind].sha256 for kind in sorted(manifests)},
+        "grounding_registry_version": grounding_registry,
+        "lint_registry_version": lint_registry,
+    })
+
+
+def validate_policy_validation_report(
+    report: dict[str, Any], release: dict[str, Any], manifests: dict[str, dict[str, Any]]
+) -> None:
+    required = {
+        "schema_version", "status", "provider_mode", "data_mode", "data_origin",
+        "candidate_core_hash", "baseline_core_hash", "dataset_sha256", "protocol_sha256",
+        "codebook_sha256", "split_sha256", "sample_count", "scope", "compatibility",
+        "support_by_category", "metrics_by_category", "confidence_intervals_by_category",
+        "actual_cost_usd_per_bundle", "pending_liability_count", "repeats",
+        "critical_invariant_violations", "ledger_refs", "allowed_data_modes", "evaluation_kind",
+    }
+    if not required <= set(report) or report.get("schema_version") != 2:
+        raise SystemExit("PolicyValidationReport schema is incomplete")
+    if report.get("status") not in {"eligible", "ineligible", "incomplete"}:
+        raise SystemExit("PolicyValidationReport status is invalid")
+    if report.get("data_mode") not in {"synthetic", "institutional"}:
+        raise SystemExit("PolicyValidationReport data mode is invalid")
+    if report.get("provider_mode") not in {"mock", "live"}:
+        raise SystemExit("PolicyValidationReport provider mode is invalid")
+    if report.get("data_origin") != report.get("data_mode"):
+        raise SystemExit("PolicyValidationReport data origin does not match data mode")
+    if report["provider_mode"] == "mock" and report["data_mode"] != "synthetic":
+        raise SystemExit("mock policy reports can only use synthetic data")
+    for field in ("candidate_core_hash", "baseline_core_hash", "dataset_sha256", "protocol_sha256", "codebook_sha256", "split_sha256"):
+        value = report.get(field)
+        if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+            raise SystemExit(f"PolicyValidationReport {field} must be a lowercase SHA-256")
+    core_hash = sha256_json({
+        "methods": {kind: sha256_json(value) for kind, value in sorted(manifests.items())},
+        "grounding_registry_version": release.get("grounding_registry_version"),
+        "lint_registry_version": release.get("lint_registry_version"),
+    })
+    if report["candidate_core_hash"] != core_hash:
+        raise SystemExit("PolicyValidationReport candidate core hash does not match registered manifests")
+    if type(report.get("sample_count")) is not int or report["sample_count"] < 0:
+        raise SystemExit("PolicyValidationReport sample_count is invalid")
+    scope = report.get("scope")
+    if not isinstance(scope, dict) or any(
+        key not in scope or not isinstance(scope[key], list) or not scope[key]
+        or any(not isinstance(item, str) or not item.strip() for item in scope[key])
+        or len(set(scope[key])) != len(scope[key])
+        for key in ("task_families", "categories", "modalities")
+    ):
+        raise SystemExit("PolicyValidationReport scope is incomplete")
+    expected_manifest_hashes = {
+        kind: sha256_json(value) for kind, value in sorted(manifests.items())
+    }
+    expected_compatibility = {
+        "method_manifest_sha256": expected_manifest_hashes,
+        "parser_resource_sha256": manifests["parser_resource"].get("resource_manifest_sha256"),
+        "grounding_registry_version": release.get("grounding_registry_version"),
+        "lint_registry_version": release.get("lint_registry_version"),
+    }
+    if report.get("compatibility") != expected_compatibility:
+        raise SystemExit("PolicyValidationReport release compatibility does not match exact manifests")
+    support = report.get("support_by_category")
+    metrics = report.get("metrics_by_category")
+    intervals = report.get("confidence_intervals_by_category")
+    categories = set(scope["categories"])
+    if not isinstance(support, dict) or set(support) != categories:
+        raise SystemExit("PolicyValidationReport category support does not match scope")
+    if not isinstance(metrics, dict) or set(metrics) != categories:
+        raise SystemExit("PolicyValidationReport category metrics do not match scope")
+    if not isinstance(intervals, dict) or (report["status"] == "eligible" and set(intervals) != categories):
+        raise SystemExit("PolicyValidationReport confidence intervals do not match scope")
+    category_values: dict[str, dict[str, dict[str, int]]] = {}
+    for category in scope["categories"]:
+        category_support = support[category]
+        category_metrics = metrics[category]
+        if not isinstance(category_support, dict) or not isinstance(category_metrics, dict):
+            raise SystemExit("PolicyValidationReport per-category evidence is invalid")
+        support_fields = (
+            "gold_positive_applicable_assessable", "applicable_assessable_units",
+            "baseline_predicted_findings", "candidate_predicted_findings", "independent_assignments",
+        )
+        if any(type(category_support.get(key)) is not int or category_support[key] < 0 for key in support_fields):
+            raise SystemExit("PolicyValidationReport category support counts are invalid")
+        if category_support["applicable_assessable_units"] < category_support["gold_positive_applicable_assessable"]:
+            raise SystemExit("PolicyValidationReport category denominator is below positive support")
+        if set(category_metrics) != {"baseline", "candidate"}:
+            raise SystemExit("PolicyValidationReport must compare baseline and candidate metrics")
+        by_arm: dict[str, dict[str, int]] = {}
+        for arm in ("baseline", "candidate"):
+            values = category_metrics[arm]
+            fields = (
+                "tp", "fp", "fn", "evidence_supported_findings", "decisions",
+                "gold_unassessable_violations",
+            )
+            if not isinstance(values, dict) or any(type(values.get(key)) is not int or values[key] < 0 for key in fields):
+                raise SystemExit("PolicyValidationReport metric counts are invalid")
+            predicted = values["tp"] + values["fp"]
+            if values["tp"] + values["fn"] != category_support["gold_positive_applicable_assessable"]:
+                raise SystemExit("PolicyValidationReport recall denominator does not match positive support")
+            if predicted != category_support[f"{arm}_predicted_findings"] or values["evidence_supported_findings"] > predicted:
+                raise SystemExit("PolicyValidationReport predicted finding counts do not match support")
+            if values["decisions"] > category_support["applicable_assessable_units"]:
+                raise SystemExit("PolicyValidationReport decision coverage denominator is invalid")
+            by_arm[arm] = values
+        category_values[category] = by_arm
+        if report["status"] == "eligible":
+            if (
+                category_support["gold_positive_applicable_assessable"] < 20
+                or category_support["baseline_predicted_findings"] < 20
+                or category_support["candidate_predicted_findings"] < 20
+                or category_support["independent_assignments"] < 5
+            ):
+                raise SystemExit("eligible report lacks the required per-category evaluation support")
+            baseline, candidate = by_arm["baseline"], by_arm["candidate"]
+            denominator = Decimal(category_support["applicable_assessable_units"])
+            if denominator == 0 or baseline["tp"] + baseline["fp"] == 0 or candidate["tp"] + candidate["fp"] == 0:
+                raise SystemExit("eligible report contains an undefined metric denominator")
+            with localcontext() as decimal_context:
+                decimal_context.prec = 34
+                baseline_precision = Decimal(baseline["tp"]) / Decimal(baseline["tp"] + baseline["fp"])
+                candidate_precision = Decimal(candidate["tp"]) / Decimal(candidate["tp"] + candidate["fp"])
+                baseline_esr = Decimal(baseline["evidence_supported_findings"]) / Decimal(baseline["tp"] + baseline["fp"])
+                candidate_esr = Decimal(candidate["evidence_supported_findings"]) / Decimal(candidate["tp"] + candidate["fp"])
+                baseline_recall = Decimal(baseline["tp"]) / Decimal(baseline["tp"] + baseline["fn"])
+                candidate_recall = Decimal(candidate["tp"]) / Decimal(candidate["tp"] + candidate["fn"])
+                baseline_coverage = Decimal(baseline["decisions"]) / denominator
+                candidate_coverage = Decimal(candidate["decisions"]) / denominator
+            if candidate_precision < max(Decimal("0.85"), baseline_precision):
+                raise SystemExit("eligible report fails per-category precision gate")
+            if candidate_esr < baseline_esr:
+                raise SystemExit("eligible report fails per-category evidence support gate")
+            if candidate_recall < max(Decimal("0.70"), baseline_recall - Decimal("0.02")):
+                raise SystemExit("eligible report fails per-category end-to-end recall gate")
+            if candidate_coverage < baseline_coverage - Decimal("0.02"):
+                raise SystemExit("eligible report fails per-category selective coverage gate")
+            if candidate["gold_unassessable_violations"] > baseline["gold_unassessable_violations"]:
+                raise SystemExit("eligible report increases gold-unassessable decision violations")
+            category_intervals = intervals.get(category) if isinstance(intervals, dict) else None
+            if not isinstance(category_intervals, dict) or set(category_intervals) != {"baseline", "candidate"}:
+                raise SystemExit("eligible report is missing per-arm confidence intervals")
+            interval_metrics = {"precision", "evidence_support_rate", "end_to_end_recall", "selective_decision_coverage"}
+            point_estimates = {
+                "baseline": {
+                    "precision": baseline_precision,
+                    "evidence_support_rate": baseline_esr,
+                    "end_to_end_recall": baseline_recall,
+                    "selective_decision_coverage": baseline_coverage,
+                },
+                "candidate": {
+                    "precision": candidate_precision,
+                    "evidence_support_rate": candidate_esr,
+                    "end_to_end_recall": candidate_recall,
+                    "selective_decision_coverage": candidate_coverage,
+                },
+            }
+            for arm in ("baseline", "candidate"):
+                arm_intervals = category_intervals[arm]
+                if not isinstance(arm_intervals, dict) or set(arm_intervals) != interval_metrics:
+                    raise SystemExit("eligible report confidence interval metrics are incomplete")
+                for bounds in arm_intervals.values():
+                    if not isinstance(bounds, list) or len(bounds) != 2:
+                        raise SystemExit("eligible report confidence interval is invalid")
+                    try:
+                        lower, upper = Decimal(str(bounds[0])), Decimal(str(bounds[1]))
+                    except InvalidOperation as exc:
+                        raise SystemExit("eligible report confidence interval is invalid") from exc
+                    if not lower.is_finite() or not upper.is_finite() or lower < 0 or upper > 1 or lower > upper:
+                        raise SystemExit("eligible report confidence interval is out of range")
+                for metric, estimate in point_estimates[arm].items():
+                    lower, upper = map(Decimal, map(str, arm_intervals[metric]))
+                    if not lower <= estimate <= upper:
+                        raise SystemExit("eligible report confidence interval excludes its point estimate")
+    if report["status"] == "eligible":
+        repeats = report.get("repeats")
+        if (
+            report["evaluation_kind"] != "empirical"
+            or report["sample_count"] < 1
+            or not isinstance(repeats, dict)
+            or type(repeats.get("count")) is not int
+            or repeats["count"] < 3
+            or repeats.get("subset_preselected") is not True
+            or not isinstance(repeats.get("task_families"), list)
+            or any(not isinstance(item, str) for item in repeats["task_families"])
+            or len(set(repeats["task_families"])) != len(repeats["task_families"])
+            or set(repeats.get("task_families", [])) != set(scope["task_families"])
+            or type(repeats.get("critical_invariant_violations")) is not int
+            or repeats["critical_invariant_violations"] != 0
+            or report.get("critical_invariant_violations") != []
+            or type(report.get("pending_liability_count")) is not int
+            or report["pending_liability_count"] != 0
+            or not isinstance(report.get("ledger_refs"), list)
+            or not report["ledger_refs"]
+            or any(
+                not isinstance(value, str) or not value.startswith("sha256:")
+                or len(value) != 71 or any(char not in "0123456789abcdef" for char in value[7:])
+                for value in report["ledger_refs"]
+            )
+            or not isinstance(report.get("critical_invariant_violations"), list)
+        ):
+            raise SystemExit("eligible report lacks repeats, clean critical gates, or settled ledger evidence")
+        costs = report.get("actual_cost_usd_per_bundle")
+        if not isinstance(costs, dict) or set(costs) != {"baseline", "candidate"}:
+            raise SystemExit("eligible report requires paired actual cost per bundle")
+        try:
+            baseline_cost = Decimal(str(costs["baseline"]))
+            candidate_cost = Decimal(str(costs["candidate"]))
+        except InvalidOperation as exc:
+            raise SystemExit("eligible report contains invalid actual cost") from exc
+        if (
+            not baseline_cost.is_finite() or not candidate_cost.is_finite()
+            or baseline_cost <= 0 or candidate_cost < 0
+            or candidate_cost > baseline_cost * Decimal("0.90")
+        ):
+            raise SystemExit("eligible report fails the paired actual cost reduction gate")
+        if report["data_mode"] == "institutional" and not report.get("institutional_authorization_ref"):
+            raise SystemExit("institutional report requires an authorization reference")
+    if release.get("data_mode") != report.get("data_mode"):
+        raise SystemExit("PolicyValidationReport data mode does not match release")
+    allowed_modes = report.get("allowed_data_modes")
+    if (
+        not isinstance(allowed_modes, list) or not allowed_modes
+        or any(mode not in {"synthetic", "institutional"} for mode in allowed_modes)
+        or len(set(allowed_modes)) != len(allowed_modes)
+        or report["data_mode"] not in allowed_modes
+        or (report["provider_mode"] == "mock" and allowed_modes != ["synthetic"])
+    ):
+        raise SystemExit("PolicyValidationReport allowed data modes are invalid")
+
+
+def require_release_validation_report(
+    *,
+    release_payload: dict[str, Any],
+    routing: dict[str, Any],
+    batching: dict[str, Any],
+    candidate_core_hash: str,
+    report: PolicyValidationReport | None,
+) -> None:
+    batch_size = batching.get("maximum_elements")
+    required = (
+        type(batch_size) is not int
+        or batch_size != 1
+        or routing.get("allow_live") is True
+        or release_payload.get("provider_mode") == "live"
+    )
+    if not required:
+        return
+    if report is None or report.status != "eligible":
+        raise SystemExit("release requires an eligible immutable PolicyValidationReport")
+    if report.candidate_core_hash != candidate_core_hash:
+        raise SystemExit("validation report core hash does not match release methods")
+    if report.data_mode != release_payload.get("data_mode"):
+        raise SystemExit("validation report data mode does not match release")
 
 
 def _operator(db: DbSession) -> User | None:
@@ -71,6 +341,24 @@ def _audit(
             occurred_at=datetime.now(UTC),
         )
     )
+
+
+def ensure_budget_account(db: DbSession) -> None:
+    """Create the seed balance once; reruns never refill or overwrite it."""
+    if db.get_bind().dialect.name == "postgresql":
+        # Serialize the empty-table case; the partial unique index is a second
+        # guard against accidental creation of more than one active account.
+        db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": 1095519559})
+    if db.scalar(select(BudgetAccount.id).where(BudgetAccount.active.is_(True))) is None:
+        db.add(
+            BudgetAccount(
+                currency="USD",
+                confirmed_total=Decimal("25.00000000"),
+                reserve_floor=Decimal("5.00000000"),
+                planned_topup=Decimal("0.00000000"),
+                active=True,
+            )
+        )
 
 
 def run_migrations() -> None:
@@ -169,16 +457,7 @@ def seed_synthetic() -> None:
                 db.add(Enrollment(course_id=courses[code].id, user_id=users[email].id, role=role, active=True))
                 created_memberships += 1
 
-        if db.scalar(select(BudgetAccount.id)) is None:
-            db.add(
-                BudgetAccount(
-                    currency="USD",
-                    confirmed_total=Decimal("25.00000000"),
-                    reserve_floor=Decimal("5.00000000"),
-                    planned_topup=Decimal("0.00000000"),
-                    active=True,
-                )
-            )
+        ensure_budget_account(db)
         _audit(db, "seed.synthetic.ensure", "development_seed", None, _operator(db))
     print(
         json.dumps(
@@ -200,8 +479,16 @@ def seed_synthetic() -> None:
 def register_release(filename: str) -> None:
     manifest_path = Path(filename).resolve()
     release = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if release.get("schema_version") not in {1, 2} or release.get("provider_mode") != "mock" or release.get("data_mode") != "synthetic":
-        raise SystemExit("only schema-1 B0 or schema-2 synthetic mock releases can be registered")
+    if release.get("schema_version") not in {1, 2}:
+        raise SystemExit("unsupported release schema")
+    provider_mode = release.get("provider_mode")
+    data_mode = release.get("data_mode")
+    if (provider_mode == "mock" and data_mode != "synthetic") or (
+        provider_mode == "live" and data_mode != "institutional"
+    ) or provider_mode not in {"mock", "live"}:
+        raise SystemExit("mock releases require synthetic data; live releases require institutional data")
+    if release.get("schema_version") == 1 and provider_mode != "mock":
+        raise SystemExit("schema-1 B0 releases are mock-only")
     manifest_payloads: dict[str, dict[str, Any]] = {}
     for kind, relative_path in release["manifests"].items():
         if kind not in RELEASE_MANIFEST_COLUMNS:
@@ -212,7 +499,54 @@ def register_release(filename: str) -> None:
     for required_kind in RELEASE_MANIFEST_COLUMNS:
         if required_kind not in manifest_payloads:
             raise SystemExit(f"release is missing the {required_kind} manifest")
-    config_hash = sha256_json(release)
+    rate_payload = manifest_payloads["rates"]
+    if rate_payload.get("schema_version") != 1 or rate_payload.get("currency") != "USD":
+        raise SystemExit("rate manifest schema or currency is invalid")
+    rate_verified_at: datetime | None = None
+    if rate_payload.get("status") == "verified":
+        verification = rate_payload.get("verification")
+        rate_models = rate_payload.get("models")
+        if (
+            not isinstance(verification, dict)
+            or not all(isinstance(verification.get(key), str) and verification[key].strip()
+                       for key in ("source_ref", "reviewed_by", "effective_date"))
+            or not isinstance(rate_models, dict)
+            or not rate_models
+        ):
+            raise SystemExit("verified rate manifest requires source, reviewer, effective date and per-model rates")
+        for model_rates in rate_models.values():
+            if not isinstance(model_rates, dict) or not all(
+                key in model_rates for key in ("input_per_million", "output_per_million", "embedding_per_million")
+            ):
+                raise SystemExit("verified rate manifest is missing a billable token rate")
+            try:
+                values = [Decimal(str(model_rates[key])) for key in ("input_per_million", "output_per_million", "embedding_per_million")]
+                if any(not value.is_finite() or value < 0 for value in values):
+                    raise ValueError
+            except (ValueError, ArithmeticError) as exc:
+                raise SystemExit("verified rate manifest has an invalid decimal rate") from exc
+        rate_verified_at = datetime.now(UTC)
+    elif rate_payload.get("status") != "unverified" or rate_payload.get("rates") is not None:
+        raise SystemExit("rate manifest must be explicitly verified or explicitly unverified")
+    resource_payload = manifest_payloads["parser_resource"]
+    resource_file = manifest_path.parent / str(resource_payload.get("resource_manifest", ""))
+    if not resource_file.is_file() or sha256_hex(resource_file.read_bytes()) != resource_payload.get(
+        "resource_manifest_sha256"
+    ):
+        raise SystemExit("parser resource manifest content hash does not match the release")
+    report_payload: dict[str, Any] | None = None
+    model_rate_name = manifest_payloads["model"].get("rates_manifest")
+    rates_path = str(release["manifests"]["rates"])
+    if model_rate_name and Path(str(model_rate_name)).name != Path(rates_path).name:
+        raise SystemExit("model manifest and release rate manifest references disagree")
+    report_path_value = release.get("policy_validation_report")
+    if report_path_value is not None:
+        report_path = (manifest_path.parent / str(report_path_value)).resolve()
+        report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+        validate_policy_validation_report(report_payload, release, manifest_payloads)
+    manifest_hashes = {kind: sha256_json(payload) for kind, payload in sorted(manifest_payloads.items())}
+    stored_release = {**release, "method_manifest_sha256": manifest_hashes}
+    config_hash = sha256_json(stored_release)
     with SessionFactory.begin() as db:
         existing = db.scalar(select(ReleaseManifest).where(ReleaseManifest.config_hash == config_hash))
         if existing is not None:
@@ -228,21 +562,44 @@ def register_release(filename: str) -> None:
                     version_label=str(payload.get("manifest_id", payload.get("policy_id", f"{kind}-baseline-v1"))),
                     content_json=payload,
                     sha256=digest,
+                    verified_at=rate_verified_at if kind == "rates" else None,
                 )
                 db.add(row)
                 db.flush()
             elif row.kind != kind or row.content_json != payload:
                 raise SystemExit("manifest hash is already registered with different immutable content")
+            elif kind == "rates" and rate_payload.get("status") == "verified" and row.verified_at is None:
+                raise SystemExit("an existing immutable rate manifest lacks verification metadata")
             method_rows[kind] = row
         kwargs: dict[str, UUID] = {
             column: method_rows[kind].id for kind, column in RELEASE_MANIFEST_COLUMNS.items()
         }
+        report_row: PolicyValidationReport | None = None
+        if report_payload is not None:
+            report_hash = sha256_json(report_payload)
+            report_row = db.scalar(
+                select(PolicyValidationReport).where(
+                    PolicyValidationReport.report_hash == report_hash
+                )
+            )
+            if report_row is None:
+                report_row = PolicyValidationReport(
+                    report_hash=report_hash,
+                    status=str(report_payload["status"]),
+                    data_mode=str(report_payload["data_mode"]),
+                    candidate_core_hash=str(report_payload["candidate_core_hash"]),
+                    baseline_core_hash=str(report_payload["baseline_core_hash"]),
+                    report_json=report_payload,
+                )
+                db.add(report_row)
+                db.flush()
         release_row = ReleaseManifest(
             version_label=release["version_label"],
             **kwargs,
+            policy_validation_report_id=report_row.id if report_row else None,
             grounding_registry_version=release["grounding_registry_version"],
             lint_registry_version=release["lint_registry_version"],
-            manifest_payload=release,
+            manifest_payload=stored_release,
             config_hash=config_hash,
             state="draft",
         )
@@ -265,13 +622,79 @@ def activate_release(release_id: str) -> None:
         if release.state not in {"draft", "verified"}:
             raise SystemExit("retired releases cannot be activated again")
         payload = release.manifest_payload
+        linked_manifests = {
+            kind: db.get(MethodManifest, getattr(release, column))
+            for kind, column in RELEASE_MANIFEST_COLUMNS.items()
+        }
+        if any(item is None for item in linked_manifests.values()):
+            raise SystemExit("release method manifest links are incomplete")
+        complete_manifests = {
+            kind: item for kind, item in linked_manifests.items() if item is not None
+        }
+        rates = linked_manifests["rates"].content_json  # type: ignore[union-attr]
+        routing = linked_manifests["routing"].content_json  # type: ignore[union-attr]
+        batching = linked_manifests["batching"].content_json  # type: ignore[union-attr]
+        batch_size = batching.get("maximum_elements")
+        report = (
+            db.get(PolicyValidationReport, release.policy_validation_report_id)
+            if release.policy_validation_report_id
+            else None
+        )
+        require_release_validation_report(
+            release_payload=payload,
+            routing=routing,
+            batching=batching,
+            candidate_core_hash=release_core_hash(
+                complete_manifests,
+                release.grounding_registry_version,
+                release.lint_registry_version,
+            ),
+            report=report,
+        )
+        if report is not None and report.status == "eligible":
+            active_baseline = db.scalar(
+                select(ReleaseManifest).where(ReleaseManifest.state == "active").with_for_update()
+            )
+            if active_baseline is None:
+                raise SystemExit("candidate release requires the active baseline it was evaluated against")
+            baseline_manifests = {
+                kind: db.get(MethodManifest, getattr(active_baseline, column))
+                for kind, column in RELEASE_MANIFEST_COLUMNS.items()
+            }
+            if any(item is None for item in baseline_manifests.values()):
+                raise SystemExit("active baseline manifest links are incomplete")
+            complete_baseline = {kind: item for kind, item in baseline_manifests.items() if item is not None}
+            if report.baseline_core_hash != release_core_hash(
+                complete_baseline,
+                active_baseline.grounding_registry_version,
+                active_baseline.lint_registry_version,
+            ):
+                raise SystemExit("validation report baseline core hash does not match the active baseline")
+        if payload.get("provider_mode") == "live" or routing.get("allow_live") is True:
+            if rates.get("status") != "verified" or report is None or report.data_mode != "institutional":
+                raise SystemExit("live release requires verified rates and institutionally eligible validation")
+            if not get_settings().paid_calls_enabled:
+                raise SystemExit("live release requires PAID_CALLS_ENABLED=true after financial guard verification")
+        if release.rate_manifest_id is None or release.parser_resource_manifest_id is None:
+            raise SystemExit("release must bind immutable rates and parser-resource manifests")
         checks = payload.get("activation_checks", {})
         available = set(payload.get("capabilities_available", []))
         unavailable = set(payload.get("capabilities_unavailable", []))
-        if payload.get("provider_mode") != "mock" or payload.get("data_mode") != "synthetic":
-            raise SystemExit("baseline activation requires synthetic mock mode")
+        is_baseline_mock = payload.get("provider_mode") == "mock" and payload.get("data_mode") == "synthetic"
+        if is_baseline_mock:
+            if rates.get("status") != "unverified" or rates.get("rates") is not None:
+                raise SystemExit("synthetic baseline cannot activate a claimed live rate schedule")
+            if linked_manifests["model"].content_json.get("paid_calls") is not False:  # type: ignore[union-attr]
+                raise SystemExit("mock baseline must declare paid calls disabled")
+            if routing.get("allow_live") is not False or routing.get("semantic_batch_size") != 1:
+                raise SystemExit("baseline routing must keep live calls disabled and semantic batch size one")
+            if batch_size != 1 or batching.get("live_batch_optimization") is not False:
+                raise SystemExit("baseline batching must stay at batch size one without empirical optimization")
+        elif payload.get("provider_mode") != "live" or payload.get("data_mode") != "institutional":
+            raise SystemExit("release mode and data mode are incompatible")
         if not {"manual_auth", "mock_provider_schema"}.issubset(available):
             raise SystemExit("required baseline identity/mock capabilities are not available")
+        is_baseline_mock = payload.get("provider_mode") == "mock" and payload.get("data_mode") == "synthetic"
         if payload.get("schema_version") == 1:
             if any(name not in unavailable for name in ("native_parser", "live_provider", "paid_calls")):
                 raise SystemExit("unavailable parser/live/paid capabilities must remain explicit")
@@ -285,16 +708,19 @@ def activate_release(release_id: str) -> None:
                 "paid_calls", "live_semantic_verification", "efficient_semantic_route",
                 "batch3", "batch5", "empirical_quality",
             }
-            if not required.issubset(available) or not unavailable_required.issubset(unavailable):
+            if not required.issubset(available) or (is_baseline_mock and not unavailable_required.issubset(unavailable)):
                 raise SystemExit("B5 executor capability declaration is incomplete")
         else:
             raise SystemExit("unsupported release schema version")
         if not checks.get("mock_schema_contract") or not checks.get("paid_calls_fail_closed"):
             raise SystemExit("release capability checks have not passed")
-        if checks.get("baseline_batch_size") != 1:
-            raise SystemExit("only baseline batch size one may be activated in B0")
-        if checks.get("empirical_verification") is not False:
-            raise SystemExit("synthetic mock release cannot claim empirical verification")
+        if is_baseline_mock:
+            if checks.get("baseline_batch_size") != 1:
+                raise SystemExit("only baseline batch size one may be activated without an eligible report")
+            if checks.get("empirical_verification") is not False:
+                raise SystemExit("synthetic mock release cannot claim empirical verification")
+        elif checks.get("empirical_verification") is not True:
+            raise SystemExit("optimized/live release requires an empirical verification declaration")
         if payload.get("schema_version") == 2 and not all(
             checks.get(name) is True for name in (
                 "deterministic_executor", "source_scope_isolation",
@@ -319,7 +745,11 @@ def activate_release(release_id: str) -> None:
         release.activated_by = actor.id
         release.activated_at = datetime.now(UTC)
         _audit(db, "release.activate", "release_manifest", release.id, actor)
-    print(json.dumps({"release_id": release_id, "state": "active", "empirical_verification": False}))
+    print(json.dumps({
+        "release_id": release_id,
+        "state": "active",
+        "empirical_verification": not is_baseline_mock,
+    }))
 
 
 def enqueue_foundation_smoke(idempotency_key: str) -> None:
@@ -366,6 +796,157 @@ def get_operation(operation_id: str) -> None:
         )
 
 
+def _operator_session_factory() -> tuple[Any, Any]:
+    url = get_settings().operator_database_url
+    if not url:
+        raise SystemExit("OPERATOR_DATABASE_URL is required for budget ledger changes")
+    engine = create_engine(url, pool_pre_ping=True)
+    return engine, sessionmaker(bind=engine, class_=DbSession, autoflush=False, expire_on_commit=False)
+
+
+def confirm_budget_topup(amount: str, confirmation_ref: str, reason: str) -> None:
+    value = Decimal(amount)
+    if not value.is_finite() or value <= 0 or len(amount) > 32:
+        raise SystemExit("top-up amount must be a positive finite decimal USD amount")
+    if not confirmation_ref.strip() or len(confirmation_ref) > 240 or not reason.strip() or len(reason) > 1000:
+        raise SystemExit("confirmed top-up requires a reference and short reason")
+    with SessionFactory() as api_db:
+        actor = _operator(api_db)
+        if actor is None:
+            raise SystemExit("an active admin operator account is required")
+        actor_id = actor.id
+    engine, factory = _operator_session_factory()
+    try:
+        with factory.begin() as db:
+            account = db.scalar(select(BudgetAccount).where(BudgetAccount.active.is_(True)).with_for_update())
+            if account is None:
+                raise SystemExit("active budget account is missing")
+            row = BudgetTopup(
+                budget_account_id=account.id,
+                amount=value,
+                confirmation_ref=confirmation_ref.strip(),
+                actor_user_id=actor_id,
+                reason=reason.strip(),
+            )
+            db.add(row)
+            account.confirmed_total += value
+            account.revision += 1
+            db.add(AuditEvent(
+                actor_user_id=actor_id,
+                action="budget.topup.confirmed",
+                object_type="budget_account",
+                object_id=account.id,
+                old_version_refs_json={"confirmed_total": str(account.confirmed_total - value)},
+                new_version_refs_json={"confirmed_total": str(account.confirmed_total), "confirmation_ref": confirmation_ref.strip()},
+                request_id=uuid4(),
+            ))
+            topup_id = row.id
+    finally:
+        engine.dispose()
+    print(json.dumps({"topup_id": str(topup_id), "status": "confirmed", "amount_usd": str(value)}))
+
+
+def reconcile_usage(
+    usage_entry_id: str,
+    *,
+    resolution: str,
+    amount: str,
+    evidence_ref: str,
+    provider_request_id: str | None,
+) -> None:
+    entry_id = UUID(usage_entry_id)
+    value = Decimal(amount)
+    if resolution not in {"billed", "not_billed"} or not value.is_finite() or value < 0:
+        raise SystemExit("usage reconciliation requires billed/not_billed and a nonnegative decimal")
+    if resolution == "not_billed" and value != 0:
+        raise SystemExit("not_billed reconciliation must record zero actual cost")
+    if not evidence_ref.strip() or len(evidence_ref) > 1000:
+        raise SystemExit("usage reconciliation requires an operator evidence reference")
+    with SessionFactory() as api_db:
+        actor = _operator(api_db)
+        if actor is None:
+            raise SystemExit("an active admin operator account is required")
+        actor_id = actor.id
+    engine, factory = _operator_session_factory()
+    try:
+        with factory.begin() as db:
+            entry = db.scalar(select(UsageEntry).where(UsageEntry.id == entry_id).with_for_update())
+            if entry is None or entry.status != "pending":
+                raise SystemExit("only an unresolved pending usage entry can be reconciled")
+            reservation = db.scalar(select(UsageReservation).where(
+                UsageReservation.call_id == entry.call_id
+            ).with_for_update())
+            if reservation is None or reservation.status != "reconciliation_required":
+                raise SystemExit("pending usage has no reconciliation-required reservation")
+            if entry.provider_request_id and provider_request_id and entry.provider_request_id != provider_request_id:
+                raise SystemExit("provider request ID does not match the pending attempt")
+            reconciliation = UsageReconciliation(
+                usage_entry_id=entry.id,
+                reservation_id=reservation.id,
+                actual_cost=value,
+                resolution=resolution,
+                provider_request_id=provider_request_id or entry.provider_request_id,
+                evidence_ref=evidence_ref.strip(),
+                actor_user_id=actor_id,
+            )
+            db.add(reconciliation)
+            reservation.status = "settled" if resolution == "billed" else "released"
+            if resolution == "billed" and value > reservation.amount_reserved:
+                account = db.scalar(select(BudgetAccount).where(
+                    BudgetAccount.id == reservation.budget_account_id
+                ).with_for_update())
+                if account:
+                    account.spend_frozen = True
+                    account.freeze_reason = "reconciled_cost_exceeded_reserved_bound"
+            db.add(AuditEvent(
+                actor_user_id=actor_id,
+                action="budget.usage.reconciled",
+                object_type="usage_entry",
+                object_id=entry.id,
+                new_version_refs_json={"resolution": resolution, "actual_cost": str(value), "evidence_ref": evidence_ref.strip()},
+                request_id=uuid4(),
+            ))
+    finally:
+        engine.dispose()
+    print(json.dumps({"usage_entry_id": usage_entry_id, "status": "reconciled", "resolution": resolution, "actual_cost_usd": str(value)}))
+
+
+def resume_budget_spending(evidence_ref: str) -> None:
+    if not evidence_ref.strip() or len(evidence_ref) > 1000:
+        raise SystemExit("budget resume requires a reviewed evidence reference")
+    with SessionFactory() as api_db:
+        actor = _operator(api_db)
+        if actor is None:
+            raise SystemExit("an active admin operator account is required")
+        actor_id = actor.id
+    engine, factory = _operator_session_factory()
+    try:
+        with factory.begin() as db:
+            if db.scalar(select(UsageReservation.id).where(
+                UsageReservation.status == "reconciliation_required"
+            ).limit(1)) is not None:
+                raise SystemExit("pending usage liabilities must be reconciled before budget resumes")
+            account = db.scalar(select(BudgetAccount).where(BudgetAccount.active.is_(True)).with_for_update())
+            if account is None:
+                raise SystemExit("active budget account is missing")
+            old_reason = account.freeze_reason
+            account.spend_frozen = False
+            account.freeze_reason = None
+            account.revision += 1
+            db.add(AuditEvent(
+                actor_user_id=actor_id,
+                action="budget.spending.resumed",
+                object_type="budget_account",
+                object_id=account.id,
+                old_version_refs_json={"freeze_reason": old_reason},
+                new_version_refs_json={"evidence_ref": evidence_ref.strip()},
+                request_id=uuid4(),
+            ))
+    finally:
+        engine.dispose()
+    print(json.dumps({"status": "spending_resumed", "evidence_ref": evidence_ref.strip()}))
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="align", description="ALIGN local operator and development CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -388,6 +969,21 @@ def _parser() -> argparse.ArgumentParser:
     register.add_argument("--file", required=True)
     activate = release_sub.add_parser("activate")
     activate.add_argument("release_id")
+
+    budget = subparsers.add_parser("budget", help="operator-confirmed funding and billing reconciliation")
+    budget_sub = budget.add_subparsers(dest="budget_command", required=True)
+    topup = budget_sub.add_parser("topup")
+    topup.add_argument("amount_usd")
+    topup.add_argument("--confirmation-ref", required=True)
+    topup.add_argument("--reason", required=True)
+    reconcile = budget_sub.add_parser("reconcile")
+    reconcile.add_argument("usage_entry_id")
+    reconcile.add_argument("--resolution", choices=("billed", "not_billed"), required=True)
+    reconcile.add_argument("--amount-usd", required=True)
+    reconcile.add_argument("--evidence-ref", required=True)
+    reconcile.add_argument("--provider-request-id")
+    resume_budget = budget_sub.add_parser("resume")
+    resume_budget.add_argument("--evidence-ref", required=True)
 
     operations = subparsers.add_parser("operations", help="non-academic worker operations")
     operation_sub = operations.add_subparsers(dest="operations_command", required=True)
@@ -417,6 +1013,18 @@ def main() -> None:
         register_release(args.file)
     elif args.command == "release" and args.release_command == "activate":
         activate_release(args.release_id)
+    elif args.command == "budget" and args.budget_command == "topup":
+        confirm_budget_topup(args.amount_usd, args.confirmation_ref, args.reason)
+    elif args.command == "budget" and args.budget_command == "reconcile":
+        reconcile_usage(
+            args.usage_entry_id,
+            resolution=args.resolution,
+            amount=args.amount_usd,
+            evidence_ref=args.evidence_ref,
+            provider_request_id=args.provider_request_id,
+        )
+    elif args.command == "budget" and args.budget_command == "resume":
+        resume_budget_spending(args.evidence_ref)
     elif args.command == "operations" and args.operations_command == "smoke":
         enqueue_foundation_smoke(args.idempotency_key or str(uuid4()))
     elif args.command == "operations" and args.operations_command == "status":
