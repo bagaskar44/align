@@ -1,0 +1,14 @@
+{
+  "case_id": "b2-exact-quote-is-not-semantic-support",
+  "source_kind": "instruction",
+  "instruction_original": "Buat ringkasan umum tentang biaya operasional. Jika membahas inflasi, jelaskan dampaknya terhadap biaya operasional.",
+  "official_requirement": "Jika membahas inflasi, jelaskan dampaknya terhadap biaya operasional.",
+  "mechanically_exact_but_irrelevant_quote": "Buat ringkasan umum tentang biaya operasional.",
+  "quote_codepoint_span": {
+    "start": 0,
+    "end": 46
+  },
+  "decision_question": "Apakah bukti menjawab requirement jika kondisi yang disebutkan berlaku?",
+  "expected_mechanical_validation": "valid exact quote and source hash",
+  "expected_semantic_disposition": "not established by anchor; lecturer fidelity review is required"
+}

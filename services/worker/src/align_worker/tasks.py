@@ -117,7 +117,7 @@ def reap_expired_leases() -> dict[str, int]:
             .limit(100)
         ).all()
         for job in jobs:
-            if job.type == "context_draft":
+            if job.type in {"context_draft", "rubric_draft"}:
                 reservations = db.scalars(
                     select(ProcessingTimeReservation)
                     .where(ProcessingTimeReservation.job_id == job.id, ProcessingTimeReservation.state == "held")
@@ -148,7 +148,13 @@ def reap_expired_leases() -> dict[str, int]:
             job.lease_fence += 1
             db.add(
                 OutboxEvent(
-                    event_type="job.parse_context" if job.type == "context_draft" else "job.execute",
+                    event_type=(
+                        "job.parse_context"
+                        if job.type == "context_draft"
+                        else "job.parse_rubric"
+                        if job.type == "rubric_draft"
+                        else "job.execute"
+                    ),
                     subject_id=job.id,
                     payload_json={"job_id": str(job.id)},
                     next_attempt_at=now,
@@ -221,6 +227,10 @@ def execute_job(self: Any, job_id: str) -> dict[str, object]:
         from align_worker.context_parser import execute_context_job
 
         return execute_context_job(parsed_id, fence, fingerprint)
+    if stage_name == "parse_rubric" and job.type == "rubric_draft":
+        from align_worker.context_parser import execute_rubric_job
+
+        return execute_rubric_job(parsed_id, fence, fingerprint)
 
     # Do not let an unavailable B0 capability become a fabricated academic result.
     failure_code = "STAGE_HANDLER_UNAVAILABLE_B0"
@@ -278,5 +288,16 @@ def execute_job(self: Any, job_id: str) -> dict[str, object]:
 def parse_context(job_id: str) -> dict[str, object]:
     # The coordinator can run several bounded children; each child retains the
     # 120/150-second guard and all attempts share the 600-second reservation cap.
+    return execute_job.run(job_id)  # type: ignore[no-any-return]
+
+
+@shared_task(
+    name="align.parse_rubric",
+    soft_time_limit=int(os.environ.get("JOB_MAX_ACTIVE_SECONDS", "600")) + 30,
+    time_limit=int(os.environ.get("JOB_MAX_ACTIVE_SECONDS", "600")) + 60,
+    max_retries=5,
+    autoretry_for=(OperationalError,), retry_backoff=True, retry_jitter=True,
+)
+def parse_rubric(job_id: str) -> dict[str, object]:
     return execute_job.run(job_id)  # type: ignore[no-any-return]
 

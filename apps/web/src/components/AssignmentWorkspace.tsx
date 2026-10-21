@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useMemo, useState, type ChangeEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { CriteriaStructuredEditor, NumericPolicyStructuredEditor, SpecificationStructuredEditor } from "./AssignmentStructuredEditors";
 
 type ContextSummary = { id: string; version_no: number; state: string; content_hash: string | null };
 type AssignmentSummary = {
@@ -76,6 +77,31 @@ type AssignmentDetail = {
   version: AssignmentVersion | null;
 };
 type UploadedRubric = RubricSource & { purpose: "rubric" };
+type RubricEvidence = {
+  id: string;
+  type: string;
+  anchor: Record<string, unknown>;
+  text: string;
+  text_truncated: boolean;
+  source_sha256: string;
+  parse_status: string;
+  limitations: Array<Record<string, unknown>>;
+};
+type RubricParse = {
+  assignment_version_id: string;
+  status: string;
+  job_id: string | null;
+  files: Array<{
+    id: string;
+    name: string;
+    sha256: string;
+    parse_status: string;
+    limitations: Array<Record<string, unknown>>;
+    evidence_count: number;
+    evidence_truncated: boolean;
+    evidence: RubricEvidence[];
+  }>;
+};
 type CriteriaProposal = {
   proposal_code: string;
   source_kind: "instruction";
@@ -87,6 +113,21 @@ type CriteriaProposal = {
   status: "needs_lecturer_decision";
 };
 type IssueEnvelope = { error?: { message?: string; field_errors?: Array<{ field: string }> } };
+type PublicPreview = {
+  title: string;
+  version: {
+    version_no: number;
+    instruction_original: string;
+    instruction_summary: string | null;
+    instruction_summary_label: string | null;
+    mode: string;
+    opens_at: string;
+    due_at: string;
+    late_policy: string;
+    criteria: Array<{ code: string; title: string; descriptor: string; requirements: Array<{ code: string; text: string; mandatory: boolean }> }>;
+    accepted_evidence: Array<{ criterion_code: string | null; accepted_evidence_types: string[] }>;
+  };
+};
 
 async function apiRequest<T>(
   path: string,
@@ -243,7 +284,9 @@ export function AssignmentWorkspace({
   const [criteriaProposals, setCriteriaProposals] = useState<CriteriaProposal[]>([]);
   const [specJson, setSpecJson] = useState("");
   const [rubricFiles, setRubricFiles] = useState<UploadedRubric[]>([]);
+  const [rubricParse, setRubricParse] = useState<RubricParse | null>(null);
   const [selectedRubricIds, setSelectedRubricIds] = useState<string[]>([]);
+  const [publishPreview, setPublishPreview] = useState<PublicPreview | null>(null);
   const [numericKey, setNumericKey] = useState("numeric-comparison");
   const [numericJson, setNumericJson] = useState(JSON.stringify({
     metric_definition: "Besaran yang harus dibandingkan dalam tugas ini.",
@@ -266,6 +309,59 @@ export function AssignmentWorkspace({
   const latestLint = specification?.lint ?? null;
   const editable = version?.state === "draft";
   const hasApprovedContext = approvedContexts.length > 0;
+  const criteriaDraft = useMemo(() => {
+    try {
+      const value = JSON.parse(criteriaJson) as unknown;
+      return Array.isArray(value) ? value as Array<Record<string, unknown>> : [];
+    } catch {
+      return [];
+    }
+  }, [criteriaJson]);
+  const specDraft = useMemo(() => {
+    try {
+      const value = JSON.parse(specJson) as unknown;
+      return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+    } catch {
+      return {};
+    }
+  }, [specJson]);
+  const numericDraft = useMemo(() => {
+    try {
+      const value = JSON.parse(numericJson) as unknown;
+      return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+    } catch {
+      return {};
+    }
+  }, [numericJson]);
+
+  useEffect(() => {
+    const versionId = version?.id;
+    if (!versionId) {
+      return;
+    }
+    let active = true;
+    let timer: number | undefined;
+    async function refresh() {
+      try {
+        const result = await apiRequest<RubricParse>(
+          `/assignment-versions/${versionId}/rubric-parse`, csrfToken, { method: "GET" },
+        );
+        if (active) {
+          setRubricParse(result);
+          if (editable && (result.status === "queued" || result.status === "running" || result.status === "blocked")) {
+            timer = window.setTimeout(() => void refresh(), 1500);
+          }
+        }
+      } catch {
+        if (active) setRubricParse(null);
+      }
+    }
+    void refresh();
+    return () => {
+      active = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [version?.id, editable, csrfToken, rubricParse?.status]);
 
   const refreshAssignments = useCallback(async () => {
     const response = await apiRequest<{ items: AssignmentSummary[] }>(
@@ -277,6 +373,8 @@ export function AssignmentWorkspace({
   const loadAssignment = useCallback(async (assignmentId: string) => {
     setError("");
     setMessage("");
+    setRubricParse(null);
+    setPublishPreview(null);
     const loaded = await apiRequest<AssignmentDetail>(
       `/assignments/${assignmentId}`, csrfToken, { method: "GET" },
     );
@@ -370,6 +468,10 @@ export function AssignmentWorkspace({
       { method: "POST", idempotency: true, body: { rubric_file_ids: selectedRubricIds, generate_from_instruction: generateExtractiveProposals } },
     );
     setCriteriaProposals(response.generation.proposals);
+    const parsedRubrics = await apiRequest<RubricParse>(
+      `/assignment-versions/${version.id}/rubric-parse`, csrfToken, { method: "GET" },
+    );
+    setRubricParse(parsedRubrics);
     setDetail((current) => current?.version ? {
       ...current,
       version: {
@@ -393,6 +495,16 @@ export function AssignmentWorkspace({
       }], outcome_ids: [],
     }], null, 2));
   }, "Draft criteria siap diedit. Setiap kutipan usulan tetap menunggu keputusan dosen.");
+
+  const copyRubricReference = async (item: RubricEvidence) => {
+    const reference = {
+      source_kind: "rubric_evidence",
+      source_id: item.id,
+      span: { start: 0, end: Array.from(item.text).length },
+    };
+    await navigator.clipboard.writeText(JSON.stringify(reference));
+    setMessage("Rujukan excerpt rubrik disalin dengan offset code point. Tinjau kutipannya sebelum menyimpan requirement.");
+  };
 
   const saveCriteria = () => execute(async () => {
     if (!version || !criterionSet) return;
@@ -503,6 +615,12 @@ export function AssignmentWorkspace({
     await loadAssignment(detail!.id);
   }, "AssignmentVersion diterbitkan sebagai snapshot immutable.");
 
+  const loadPublishPreview = () => execute(async () => {
+    if (!version) return;
+    const preview = await apiRequest<PublicPreview>(`/assignment-versions/${version.id}/publish-preview`, csrfToken, { method: "GET" });
+    setPublishPreview(preview);
+  }, "Preview mahasiswa dimuat dari serializer publik.");
+
   const newVersion = () => execute(async () => {
     if (!detail?.active_version_id) return;
     const created = await apiRequest<{ id: string }>(`/assignments/${detail.id}/new-version`, csrfToken, {
@@ -552,9 +670,10 @@ export function AssignmentWorkspace({
         </div>
         <section className="assignment-step" aria-labelledby="rubric-title">
           <h3 id="rubric-title">Rubrik opsional</h3>
-          <p className="help-text">File asli dipertahankan. Jalur parser rubrik belum tersedia; salin hanya descriptor resmi yang sudah ditinjau. Bobot/level file tidak menjadi field penilaian ALIGN.</p>
+          <p className="help-text">File asli dipertahankan. Parser memakai pipeline B1 dan ekstraksi hanya menjadi sumber untuk ditinjau dosen. Bobot/level file tidak menjadi field penilaian ALIGN.</p>
           {editable && <label className="field"><span>Unggah PDF, DOCX, XLSX, JPG, JPEG, atau PNG</span><input type="file" accept=".pdf,.docx,.xlsx,.jpg,.jpeg,.png" onChange={uploadRubric} /></label>}
           {[...new Map([...rubricFiles, ...(version.rubric_sources ?? []).map((item) => ({ ...item, purpose: "rubric" as const }))].map((item) => [item.id, item])).values()].map((item) => <label className="check-row" key={item.id}><input type="checkbox" checked={selectedRubricIds.includes(item.id)} disabled={!editable} onChange={(event) => setSelectedRubricIds((current) => event.target.checked ? [...new Set([...current, item.id])] : current.filter((id) => id !== item.id))} /><span>{item.name} <a href={`/api/v1/rubric-files/${item.id}/download`}>Unduh asli</a></span></label>)}
+          {rubricParse && rubricParse.files.length > 0 && <div className="lint-panel" aria-live="polite"><h4>Hasil parser rubrik · {rubricParse.status}</h4><p className="help-text">Ekstraksi bukan kriteria resmi. Dosen memilih kutipan dan menetapkan teks/mandatory secara eksplisit. Offset citation memakai Unicode code point.</p>{rubricParse.files.map((file) => <section className="rubric-parse-file" key={file.id}><h5>{file.name} · {file.parse_status} · {file.evidence_count} unit bukti</h5>{file.limitations.map((item, index) => <p className="help-text" key={index}>{String(item.message ?? item.code ?? "Batas parsing")}</p>)}{file.evidence_truncated && <p className="notice">Daftar unit dibatasi untuk tampilan; total tetap {file.evidence_count}.</p>}{file.evidence.map((item) => <article className="rubric-evidence" key={item.id}><div className="workspace-subheading"><strong>{item.type} · {item.parse_status}</strong><small>SHA source {item.source_sha256.slice(0, 12)} · {JSON.stringify(item.anchor)}</small></div><pre>{item.text || "Tidak ada teks yang diekstrak; tinjau file asli."}</pre>{item.text_truncated && <p className="notice">Excerpt dipotong pada batas respons. Gunakan file asli untuk kutipan lengkap.</p>}{item.text && !item.text_truncated && <button type="button" className="button button-quiet" disabled={busy} onClick={() => void copyRubricReference(item)}>Salin citation seluruh excerpt</button>}</article>)}</section>)}</div>}
         </section>
         <section className="assignment-step" aria-labelledby="criteria-title">
           <div className="workspace-subheading"><div><h3 id="criteria-title">Criteria dan requirements</h3><p className="help-text">Satu criterion dapat terkait beberapa requirement. Requirement source span memakai code point Unicode pada instruksi/descriptor; hash dan kutipan dibuat backend.</p></div>
@@ -566,7 +685,14 @@ export function AssignmentWorkspace({
           {criteriaProposals.length > 0 && <div className="lint-panel" aria-live="polite"><h4>Usulan kutipan · keputusan dosen diperlukan</h4><p className="help-text">Usulan ini hanya potongan persis dari instruksi dengan offset code point. Status wajib/opsional dan arti akademik tidak ditebak.</p>{criteriaProposals.map((proposal) => <blockquote className="proposal-quote" key={proposal.proposal_code}><p>{proposal.quote}</p><footer>{proposal.proposal_code} · code point {proposal.source_span.start}–{proposal.source_span.end} · sha256 {proposal.source_hash.slice(0, 12)} · belum disahkan</footer></blockquote>)}</div>}
           {criterionSet && <>
             <p className="help-text">Paket: {criterionSet.state} · revision {criterionSet.revision}{criterionSet.content_hash ? ` · hash ${criterionSet.content_hash}` : ""}</p>
-            <label className="field"><span>Data criteria (JSON; tidak menerima score/weight)</span><textarea className="code-editor" value={criteriaJson} rows={16} disabled={!editable || criterionSet.state !== "draft"} onChange={(event) => setCriteriaJson(event.target.value)} /></label>
+            <CriteriaStructuredEditor
+              criteria={criteriaDraft}
+              onChange={(next) => setCriteriaJson(JSON.stringify(next, null, 2))}
+              instructionId={version.id}
+              instruction={instruction}
+              files={rubricParse?.files ?? []}
+              disabled={!editable || criterionSet.state !== "draft"}
+            />
             {editable && criterionSet.state === "draft" && <div className="button-row"><button type="button" className="button button-quiet" disabled={busy} onClick={saveCriteria}>Simpan criteria</button><button type="button" className="button button-primary" disabled={busy || !criterionSet.criteria.length} onClick={approvePackage}>Sahkan paket normatif</button></div>}
             {criterionSet.state === "approved" && <p className="notice">Paket disahkan. Perubahan berikutnya harus dilakukan pada draf versi baru.</p>}
           </>}
@@ -577,7 +703,7 @@ export function AssignmentWorkspace({
           <p className="help-text">Policy bertipe, toleransi wajib eksplisit, dan hanya memakai unit dalam registry yang disetujui. Elemen numerik harus merujuk policy yang sudah disahkan.</p>
           {editable && <>
             <label className="field"><span>Kunci policy</span><input value={numericKey} onChange={(event) => setNumericKey(event.target.value)} /></label>
-            <label className="field"><span>Payload NumericPolicy</span><textarea className="code-editor" value={numericJson} rows={12} onChange={(event) => setNumericJson(event.target.value)} /></label>
+            <NumericPolicyStructuredEditor payload={numericDraft} onChange={(next) => setNumericJson(JSON.stringify(next, null, 2))} disabled={!editable} />
             <button type="button" className="button button-quiet" disabled={busy || !detail} onClick={createNumericPolicy}>Buat NumericPolicy draft</button>
           </>}
           {version.numeric_policies.map((policy) => <div className="list-row" key={String(policy.id)}><span>{String(policy.policy_key)} v{String(policy.version_no)} · {String(policy.state)} · {String(policy.id)}</span>{editable && policy.state === "draft" && <button type="button" className="button button-quiet" disabled={busy} onClick={() => approveNumericPolicy(policy)}>Sahkan</button>}</div>)}
@@ -590,7 +716,16 @@ export function AssignmentWorkspace({
             <p className="help-text">Spec v{specification.version_no} · schema {specification.schema_version} · revision {specification.revision} · lint: <strong>{effectiveStatus}</strong></p>
             {editable && specification.state === "draft" && <>
               <button type="button" className="button button-quiet" onClick={() => setSpecJson(JSON.stringify(requiredSpecTemplate(criterionSet.criteria), null, 2))}>Buat template human_only</button>
-              <label className="field"><span>Specification payload</span><textarea className="code-editor" value={specJson} rows={22} onChange={(event) => setSpecJson(event.target.value)} /></label>
+              <SpecificationStructuredEditor
+                payload={specDraft}
+                onChange={(next) => setSpecJson(JSON.stringify(next, null, 2))}
+                criteria={criterionSet.criteria}
+                policies={version.numeric_policies}
+                instructionId={version.id}
+                instruction={instruction}
+                files={rubricParse?.files ?? []}
+                disabled={!editable || specification.state !== "draft"}
+              />
               <button type="button" className="button button-quiet" disabled={busy} onClick={saveSpec}>Simpan spec dan jalankan lint</button>
             </>}
             {latestLint && <div className="lint-panel" aria-live="polite"><h4>Lint report · {latestLint.effective_status}</h4>
@@ -604,7 +739,7 @@ export function AssignmentWorkspace({
             {editable && specification.state === "draft" && <button type="button" className="button button-primary" disabled={busy || effectiveStatus !== "passed"} onClick={approveSpec}>Sahkan spec dengan konfirmasi fidelity</button>}
           </>}
         </section>}
-        {editable && specification?.state === "approved" && <section className="assignment-step"><h3>Publikasi</h3><p className="help-text">Preview mahasiswa memuat instruksi asli, criteria, requirements, dan bentuk bukti yang diterima; DSL internal tidak dikirim.</p><button type="button" className="button button-primary" disabled={busy} onClick={publish}>Terbitkan versi</button></section>}
+        {editable && specification?.state === "approved" && <section className="assignment-step" aria-labelledby="publish-title"><h3 id="publish-title">Publikasi</h3><p className="help-text">Pratinjau berikut memakai serializer publik mahasiswa yang sama. Periksa instruksi, criteria, requirements, bentuk bukti, jadwal dan kebijakan sebelum menerbitkan.</p><div className="button-row"><button type="button" className="button button-quiet" disabled={busy} onClick={loadPublishPreview}>Tampilkan preview mahasiswa</button><button type="button" className="button button-primary" disabled={busy} onClick={publish}>Terbitkan versi</button></div>{publishPreview && <article className="student-task-preview" aria-label="Preview paket publik mahasiswa"><p className="eyebrow">{publishPreview.title} · VERSI {publishPreview.version.version_no}</p><h4>Instruksi tugas</h4><pre className="instruction-preview">{publishPreview.version.instruction_original}</pre>{publishPreview.version.instruction_summary && <p className="notice"><strong>{publishPreview.version.instruction_summary_label}</strong><br />{publishPreview.version.instruction_summary}</p>}<h4>Criteria dan requirements</h4>{publishPreview.version.criteria.map((criterion) => <section className="criterion-card" key={criterion.code}><h5>{criterion.code} · {criterion.title}</h5><p>{criterion.descriptor}</p>{criterion.requirements.length > 0 && <ul>{criterion.requirements.map((requirement) => <li key={requirement.code}>{requirement.text}{requirement.mandatory ? " (wajib)" : " (opsional)"}</li>)}</ul>}</section>)}<h4>Bentuk bukti yang diterima</h4><ul>{publishPreview.version.accepted_evidence.map((item, index) => <li key={`${item.criterion_code}-${index}`}>{item.criterion_code}: {item.accepted_evidence_types.join(", ")}</li>)}</ul><p className="help-text">Mode: {publishPreview.version.mode} · Dibuka: {new Date(publishPreview.version.opens_at).toLocaleString("id-ID")} · Tenggat: {new Date(publishPreview.version.due_at).toLocaleString("id-ID")} · Kebijakan terlambat: {publishPreview.version.late_policy}.</p></article>}</section>}
       </>}
     </section>
   );

@@ -554,7 +554,14 @@ class ParseArtifact(TimestampMixin, Base):
     context_version_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("context_versions.id", ondelete="RESTRICT")
     )
-    assignment_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    assignment_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(
+            "assignment_versions.id",
+            ondelete="RESTRICT",
+            use_alter=True,
+            name="fk_parse_artifacts_assignment_version",
+        )
+    )
     parser_manifest_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("method_manifests.id"))
     parser_resource_manifest_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("method_manifests.id")
@@ -692,7 +699,14 @@ class EvidenceItem(TimestampMixin, Base):
     context_version_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("context_versions.id", ondelete="RESTRICT")
     )
-    assignment_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    assignment_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(
+            "assignment_versions.id",
+            ondelete="RESTRICT",
+            use_alter=True,
+            name="fk_evidence_items_assignment_version",
+        )
+    )
     file_asset_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("file_assets.id", ondelete="RESTRICT"), nullable=False
     )

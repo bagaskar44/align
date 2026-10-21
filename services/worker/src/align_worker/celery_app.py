@@ -23,6 +23,7 @@ celery_app.conf.update(
         "align.foundation_smoke": {"queue": general_queue},
         "align.execute_job": {"queue": general_queue},
         "align.parse_context": {"queue": parser_queue},
+        "align.parse_rubric": {"queue": parser_queue},
         "align.reap_expired_leases": {"queue": general_queue},
     },
     task_acks_late=True,

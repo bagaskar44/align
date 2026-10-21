@@ -4,18 +4,30 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from align_api.config import get_settings
 from align_api.db import SessionFactory
 from align_api.main import create_app
-from align_api.models import ContextVersion, Course, Enrollment, SpecificationVersion, User
+from align_api.models import (
+    ContextVersion,
+    Course,
+    Enrollment,
+    EvidenceItem,
+    ParseArtifact,
+    SpecificationVersion,
+    User,
+)
 from align_api.security import hash_password
 from align_domain.assignment_contracts import canonical_hash
 
@@ -39,7 +51,7 @@ def b2_scenario():
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
     suffix = uuid4().hex
-    lecturer, student_a, student_b, outsider = [
+    lecturer, lecturer_b, student_a, student_b, outsider = [
         User(
             normalized_email=f"b2-{role}-{suffix}@example.test",
             display_name=f"B2 {role}",
@@ -48,14 +60,14 @@ def b2_scenario():
             active=True,
             must_change_password=False,
         )
-        for role in ("lecturer", "student-a", "student-b", "outsider")
+        for role in ("lecturer", "lecturer-b", "student-a", "student-b", "outsider")
     ]
     course = Course(code=f"B2-{suffix[:12]}", title="Synthetic B2 course", active=True)
     outsider_course = Course(
         code=f"B2-X-{suffix[:10]}", title="Synthetic outside course", active=True
     )
     with SessionFactory.begin() as db:
-        db.add_all([lecturer, student_a, student_b, outsider, course, outsider_course])
+        db.add_all([lecturer, lecturer_b, student_a, student_b, outsider, course, outsider_course])
         db.flush()
         now = datetime.now(UTC)
         context = ContextVersion(
@@ -79,6 +91,7 @@ def b2_scenario():
         db.add_all(
             [
                 Enrollment(course_id=course.id, user_id=lecturer.id, role="lecturer", active=True),
+                Enrollment(course_id=course.id, user_id=lecturer_b.id, role="lecturer", active=True),
                 Enrollment(course_id=course.id, user_id=student_a.id, role="student", active=True),
                 Enrollment(course_id=course.id, user_id=student_b.id, role="student", active=True),
                 Enrollment(
@@ -92,14 +105,15 @@ def b2_scenario():
     with ExitStack() as stack:
         clients = {
             "lecturer": stack.enter_context(TestClient(app)),
+            "lecturer_b": stack.enter_context(TestClient(app)),
             "student_a": stack.enter_context(TestClient(app)),
             "student_b": stack.enter_context(TestClient(app)),
             "outsider": stack.enter_context(TestClient(app)),
         }
         tokens = {}
         for role, user in zip(
-            ("lecturer", "student_a", "student_b", "outsider"),
-            (lecturer, student_a, student_b, outsider),
+            ("lecturer", "lecturer_b", "student_a", "student_b", "outsider"),
+            (lecturer, lecturer_b, student_a, student_b, outsider),
             strict=True,
         ):
             response = clients[role].post(
@@ -115,11 +129,11 @@ def b2_scenario():
             "tokens": tokens,
             "course": course,
             "context": context,
-            "users": {"lecturer": lecturer, "student_a": student_a, "student_b": student_b},
+            "users": {"lecturer": lecturer, "lecturer_b": lecturer_b, "student_a": student_a, "student_b": student_b},
             "settings": settings,
         }
     with SessionFactory.begin() as db:
-        for user in (lecturer, student_a, student_b, outsider):
+        for user in (lecturer, lecturer_b, student_a, student_b, outsider):
             current = db.get(User, user.id)
             if current is not None:
                 current.active = False
@@ -134,6 +148,52 @@ def headers(token: str, key: str | None = None) -> dict[str, str]:
         "Origin": "http://testserver",
         "X-CSRF-Token": token,
         "Idempotency-Key": key or str(uuid4()),
+    }
+
+
+def create_assignment_draft(client: TestClient, token: str, course: Course, context: ContextVersion, title: str, instruction: str) -> tuple[dict[str, object], dict[str, object]]:
+    created = client.post(
+        "/api/v1/assignments",
+        headers=headers(token),
+        json={"course_id": str(course.id), "title": title, "context_version_id": str(context.id)},
+    )
+    assert created.status_code == 201, created.text
+    assignment = created.json()
+    version = assignment["version"]
+    now = datetime.now(UTC)
+    updated = client.put(
+        f"/api/v1/assignment-versions/{version['id']}",
+        headers=headers(token),
+        json={
+            "expected_revision": version["revision"],
+            "instruction_original": instruction,
+            "instruction_summary": None,
+            "mode": "individual",
+            "opens_at": (now - timedelta(hours=1)).isoformat(),
+            "due_at": (now + timedelta(days=7)).isoformat(),
+            "late_policy": "accept_with_label",
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    return assignment, updated.json()
+
+
+def specification_envelope(elements: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "schema_version": 2,
+        "elements": elements,
+        "operator_registry_version": "operators-v1",
+        "predicate_registry_version": "predicates-v1",
+        "grounding_registry_version": "grounding-v1",
+        "lint_registry_version": "lint-v1",
+        "task_facts": [],
+        "limits": {
+            "draft_max_cost_usd": "0.05",
+            "max_text_calls": 3,
+            "max_vision_calls": 2,
+            "max_input_tokens": 20000,
+            "max_output_tokens": 4000,
+        },
     }
 
 
@@ -429,6 +489,8 @@ def test_assignment_spec_publish_group_and_student_visibility(b2_scenario):
     )
     assert spec_draft.status_code == 201, spec_draft.text
     specification = spec_draft.json()
+    assert specification["state"] == "draft"
+    assert specification["content_hash"]
     common = {
         "instruction_id": version_id,
         "criterion_id": criterion["id"],
@@ -532,6 +594,14 @@ def test_assignment_spec_publish_group_and_student_visibility(b2_scenario):
     assert approved.status_code == 200, approved.text
     assert approved.json()["fidelity_confirmation"] is True
     assert approved.json()["state"] == "approved"
+
+    preview = lecturer.get(f"/api/v1/assignment-versions/{version_id}/publish-preview")
+    assert preview.status_code == 200, preview.text
+    public_preview = preview.json()
+    assert public_preview["version"]["instruction_original"] == instruction
+    assert public_preview["version"]["criteria"][0]["requirements"][0]["text"] == requirement["text"]
+    assert "specification" not in public_preview["version"]
+    assert "grounding_contract" not in json.dumps(public_preview)
 
     current_version = lecturer.get(f"/api/v1/assignment-versions/{version_id}").json()
     published = lecturer.post(
@@ -668,3 +738,341 @@ def test_assignment_spec_publish_group_and_student_visibility(b2_scenario):
         ).status_code
         == 409
     )
+
+
+def test_b2_rubric_uses_shared_parser_and_hash_bound_evidence(b2_scenario):
+    lecturer = b2_scenario["clients"]["lecturer"]
+    csrf = b2_scenario["tokens"]["lecturer"]
+    assignment, version = create_assignment_draft(
+        lecturer,
+        csrf,
+        b2_scenario["course"],
+        b2_scenario["context"],
+        "Rubrik parser B2",
+        "Gunakan excerpt rubrik yang ditinjau dosen.",
+    )
+    fixture = Path(__file__).parents[2] / "apps/web/e2e/fixtures/kk_context.docx"
+    upload = lecturer.post(
+        f"/api/v1/assignments/{assignment['id']}/rubric-files",
+        headers=headers(csrf),
+        files={
+            "file": (
+                "rubrik-sintetis.docx",
+                fixture.read_bytes(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+    assert upload.status_code == 201, upload.text
+    asset = upload.json()["asset"]
+    opened = lecturer.post(
+        f"/api/v1/assignment-versions/{version['id']}/criteria-drafts",
+        headers=headers(csrf),
+        json={"rubric_file_ids": [asset["id"]], "generate_from_instruction": False},
+    )
+    assert opened.status_code == 201, opened.text
+    generation = opened.json()["generation"]
+    assert generation["rubric_parser_status"] == "queued"
+    job_id = generation["rubric_parser_job_id"]
+    assert job_id
+
+    result = None
+    for _ in range(120):
+        parsed = lecturer.get(f"/api/v1/assignment-versions/{version['id']}/rubric-parse")
+        assert parsed.status_code == 200, parsed.text
+        result = parsed.json()
+        if result["status"] == "ready_for_review":
+            break
+        time.sleep(1)
+    assert result is not None and result["status"] == "ready_for_review", result
+    assert result["status"] == "ready_for_review"
+    file_result = result["files"][0]
+    assert file_result["parse_status"] in {"parsed", "partially_parsed"}
+    evidence = next(item for item in file_result["evidence"] if item["text"])
+    assert evidence["source_sha256"] == asset["sha256"]
+    assert evidence["anchor"]
+
+    with SessionFactory() as db:
+        artifact = db.scalar(
+            select(ParseArtifact).where(
+                ParseArtifact.file_asset_id == UUID(asset["id"]),
+                ParseArtifact.assignment_version_id == UUID(version["id"]),
+            )
+        )
+        assert artifact is not None and artifact.parser_manifest_id and artifact.parser_resource_manifest_id
+        assert artifact.context_version_id is None
+        parsed_evidence = db.scalar(
+            select(EvidenceItem).where(EvidenceItem.id == UUID(evidence["id"]))
+        )
+        assert parsed_evidence is not None
+        assert parsed_evidence.assignment_version_id == UUID(version["id"])
+        assert parsed_evidence.context_version_id is None
+
+    text = evidence["text"]
+    size = len(text)
+    criterion_set = opened.json()["criterion_set_version_id"]
+    criteria_saved = lecturer.put(
+        f"/api/v1/criterion-set-versions/{criterion_set}",
+        headers=headers(csrf),
+        json={
+            "expected_revision": opened.json()["revision"],
+            "criteria": [
+                {
+                    "code": "C-RUBRIC",
+                    "title": "Kriteria dari excerpt",
+                    "descriptor": "Excerpt parser hanya menjadi sumber kutipan untuk keputusan dosen.",
+                    "display_order": 0,
+                    "outcome_ids": [],
+                    "requirements": [
+                        {
+                            "code": "R-RUBRIC",
+                            "text": text,
+                            "mandatory": False,
+                            "obligation_key": "rubric.reviewed_excerpt",
+                            "normative_source_refs": [
+                                {
+                                    "source_kind": "rubric_evidence",
+                                    "source_id": evidence["id"],
+                                    "span": {"start": 0, "end": size},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    assert criteria_saved.status_code == 200, criteria_saved.text
+    projection = criteria_saved.json()["criteria"][0]["requirements"][0]["normative_source_refs"][0]
+    assert projection["quote"] == text
+    assert projection["source_sha256"] == asset["sha256"]
+    assert projection["anchor"] == evidence["anchor"]
+    approved = lecturer.post(
+        f"/api/v1/assignment-versions/{version['id']}/approve-package",
+        headers=headers(csrf),
+        json={
+            "criterion_set_version_id": criterion_set,
+            "expected_revision": lecturer.get(f"/api/v1/assignment-versions/{version['id']}").json()["revision"],
+        },
+    )
+    assert approved.status_code == 200, approved.text
+
+
+def test_semantic_negative_exact_but_irrelevant_quote_requires_fidelity_review(b2_scenario):
+    lecturer = b2_scenario["clients"]["lecturer"]
+    csrf = b2_scenario["tokens"]["lecturer"]
+    fixture = json.loads(
+        (Path(__file__).parents[2] / "fixtures/synthetic/b2-semantic-negative.json").read_text()
+    )
+    instruction = fixture["instruction_original"]
+    assignment, version = create_assignment_draft(
+        lecturer,
+        csrf,
+        b2_scenario["course"],
+        b2_scenario["context"],
+        "Fixture semantic-negative B2",
+        instruction,
+    )
+    opened = lecturer.post(
+        f"/api/v1/assignment-versions/{version['id']}/criteria-drafts",
+        headers=headers(csrf),
+        json={"rubric_file_ids": [], "generate_from_instruction": False},
+    )
+    assert opened.status_code == 201, opened.text
+    criterion_set = opened.json()["criterion_set_version_id"]
+    official = fixture["official_requirement"]
+    official_start = instruction.index(official)
+    criteria_saved = lecturer.put(
+        f"/api/v1/criterion-set-versions/{criterion_set}",
+        headers=headers(csrf),
+        json={
+            "expected_revision": opened.json()["revision"],
+            "criteria": [
+                {
+                    "code": "C-SEMANTIC-NEGATIVE",
+                    "title": "Kewajiban bersyarat",
+                    "descriptor": "Makna dan cakupan harus ditelaah manusia.",
+                    "display_order": 0,
+                    "outcome_ids": [],
+                    "requirements": [
+                        {
+                            "code": "R-SEMANTIC-NEGATIVE",
+                            "text": official,
+                            "mandatory": True,
+                            "obligation_key": "inflation.operational_cost.conditional",
+                            "normative_source_refs": [
+                                {
+                                    "source_kind": "instruction",
+                                    "source_id": version["id"],
+                                    "span": {"start": official_start, "end": official_start + len(official)},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    assert criteria_saved.status_code == 200, criteria_saved.text
+    criterion = criteria_saved.json()["criteria"][0]
+    requirement = criterion["requirements"][0]
+    package = lecturer.post(
+        f"/api/v1/assignment-versions/{version['id']}/approve-package",
+        headers=headers(csrf),
+        json={"criterion_set_version_id": criterion_set, "expected_revision": lecturer.get(f"/api/v1/assignment-versions/{version['id']}").json()["revision"]},
+    )
+    assert package.status_code == 200, package.text
+    draft = lecturer.post(
+        f"/api/v1/assignment-versions/{version['id']}/specification-drafts",
+        headers=headers(csrf),
+        json={"criterion_set_version_id": criterion_set},
+    )
+    assert draft.status_code == 201, draft.text
+    irrelevant_quote = fixture["mechanically_exact_but_irrelevant_quote"]
+    span = fixture["quote_codepoint_span"]
+    assert instruction[span["start"]:span["end"]] == irrelevant_quote
+    element = element_template(
+        element_id=str(uuid4()),
+        element_code="EL-SEMANTIC-NEGATIVE",
+        criterion_id=criterion["id"],
+        obligation_key=requirement["obligation_key"],
+        target_kind="requirement",
+        requirement_ids=[requirement["id"]],
+        derivation_refs=[
+            {"source_kind": "requirement", "source_id": requirement["id"], "span": None},
+            {"source_kind": "instruction", "source_id": version["id"], "span": span},
+        ],
+        grounding={"schema_version": 1, "mode": "human_only", "absence_support": None},
+        operators=["locate_evidence", "expand_context", "inspect_source_coverage", "request_human_review"],
+        question=fixture["decision_question"],
+    )
+    updated = lecturer.put(
+        f"/api/v1/specification-versions/{draft.json()['id']}",
+        headers=headers(csrf),
+        json={"expected_revision": draft.json()["revision"], "specification": specification_envelope([element])},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["effective_status"] == "needs_review"
+    report = lecturer.get(f"/api/v1/spec-lint-reports/{updated.json()['lint_report_id']}")
+    assert report.status_code == 200, report.text
+    issue = next(item for item in report.json()["issues"] if item["rule_code"] == "condition_fidelity_review")
+    assert issue["severity"] == "review"
+    assert issue["source_refs"][-1]["span"] == span
+    unreviewed = lecturer.post(
+        f"/api/v1/specification-versions/{draft.json()['id']}/approve",
+        headers=headers(csrf),
+        json={
+            "expected_revision": updated.json()["revision"],
+            "lint_report_id": updated.json()["lint_report_id"],
+            "expected_report_revision": updated.json()["resolution_revision"],
+            "fidelity_confirmation": True,
+        },
+    )
+    assert unreviewed.status_code == 422
+
+
+def test_two_lecturers_race_package_specification_and_publish_approvals(b2_scenario):
+    first = b2_scenario["clients"]["lecturer"]
+    second = b2_scenario["clients"]["lecturer_b"]
+    first_token = b2_scenario["tokens"]["lecturer"]
+    second_token = b2_scenario["tokens"]["lecturer_b"]
+    assignment, version = create_assignment_draft(
+        first,
+        first_token,
+        b2_scenario["course"],
+        b2_scenario["context"],
+        "Race approval B2",
+        "Jelaskan alasan pemilihan metode.",
+    )
+    opened = first.post(
+        f"/api/v1/assignment-versions/{version['id']}/criteria-drafts",
+        headers=headers(first_token),
+        json={"rubric_file_ids": [], "generate_from_instruction": False},
+    )
+    assert opened.status_code == 201, opened.text
+    criterion_set = opened.json()["criterion_set_version_id"]
+    criterion_body = {
+        "expected_revision": opened.json()["revision"],
+        "criteria": [
+            {
+                "code": "C-RACE",
+                "title": "Penjelasan metode",
+                "descriptor": "Jelaskan alasan pemilihan metode.",
+                "display_order": 0,
+                "outcome_ids": [],
+                "requirements": [
+                    {
+                        "code": "R-RACE",
+                        "text": "Jelaskan alasan pemilihan metode.",
+                        "mandatory": True,
+                        "obligation_key": "method.selection.rationale",
+                        "normative_source_refs": [
+                            {"source_kind": "instruction", "source_id": version["id"], "span": {"start": 0, "end": len(version["instruction_original"])}},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    saved = first.put(f"/api/v1/criterion-set-versions/{criterion_set}", headers=headers(first_token), json=criterion_body)
+    assert saved.status_code == 200, saved.text
+    criterion = saved.json()["criteria"][0]
+    requirement = criterion["requirements"][0]
+
+    def race_post(path: str, body: dict[str, object]) -> list[int]:
+        barrier = Barrier(2)
+
+        def call(client: TestClient, token: str) -> int:
+            barrier.wait(timeout=10)
+            return client.post(path, headers=headers(token), json=body).status_code
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(call, first, first_token),
+                pool.submit(call, second, second_token),
+            ]
+            return sorted(future.result(timeout=20) for future in futures)
+
+    current = first.get(f"/api/v1/assignment-versions/{version['id']}").json()
+    package_body = {"criterion_set_version_id": criterion_set, "expected_revision": current["revision"]}
+    assert race_post(f"/api/v1/assignment-versions/{version['id']}/approve-package", package_body) == [200, 409]
+
+    specification = first.post(
+        f"/api/v1/assignment-versions/{version['id']}/specification-drafts",
+        headers=headers(first_token),
+        json={"criterion_set_version_id": criterion_set},
+    )
+    assert specification.status_code == 201, specification.text
+    element = element_template(
+        element_id=str(uuid4()),
+        element_code="EL-METHOD-RATIONALE",
+        criterion_id=criterion["id"],
+        obligation_key=requirement["obligation_key"],
+        target_kind="requirement",
+        requirement_ids=[requirement["id"]],
+        derivation_refs=[{"source_kind": "requirement", "source_id": requirement["id"], "span": None}],
+        grounding={"schema_version": 1, "mode": "human_only", "absence_support": None},
+        operators=["locate_evidence", "expand_context", "inspect_source_coverage", "request_human_review"],
+    )
+    saved_spec = first.put(
+        f"/api/v1/specification-versions/{specification.json()['id']}",
+        headers=headers(first_token),
+        json={"expected_revision": 1, "specification": specification_envelope([element])},
+    )
+    assert saved_spec.status_code == 200, saved_spec.text
+    assert saved_spec.json()["effective_status"] == "passed"
+    spec_body = {
+        "expected_revision": saved_spec.json()["revision"],
+        "lint_report_id": saved_spec.json()["lint_report_id"],
+        "expected_report_revision": saved_spec.json()["resolution_revision"],
+        "fidelity_confirmation": True,
+    }
+    assert race_post(f"/api/v1/specification-versions/{specification.json()['id']}/approve", spec_body) == [200, 409]
+
+    latest = first.get(f"/api/v1/assignment-versions/{version['id']}").json()
+    assert race_post(
+        f"/api/v1/assignment-versions/{version['id']}/publish",
+        {"expected_revision": latest["revision"]},
+    ) == [200, 409]
+    published = first.get(f"/api/v1/assignment-versions/{version['id']}")
+    assert published.status_code == 200 and published.json()["state"] == "published"

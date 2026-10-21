@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
@@ -26,6 +27,7 @@ from align_api.auth import (
     require_password_change_completed,
     require_verified_active_identity,
 )
+from align_api.config import Settings, get_settings
 from align_api.db import get_db
 from align_api.idempotency import replay_or_lock, store_response
 from align_api.models import (
@@ -42,17 +44,24 @@ from align_api.models import (
     CriterionSetVersion,
     ElementRequirementLink,
     Enrollment,
+    EvidenceItem,
     FileAsset,
     GroupMembership,
+    Job,
+    JobStage,
     LearningOutcome,
     NormativeFileLink,
     NumericPolicyVersion,
+    OutboxEvent,
+    ParseArtifact,
     Requirement,
+    SourceUnit,
     SpecificationVersion,
     SpecLintReport,
     SpecLintResolution,
     User,
 )
+from align_api.parser_profiles import profile_payload, register_manifest
 from align_domain.assignment_contracts import (
     NumericPolicyPayload,
     SpecificationPayload,
@@ -125,7 +134,7 @@ class SourceSpan(StrictRequest):
 
 
 class NormativeSourceRef(StrictRequest):
-    source_kind: Literal["instruction", "criterion_descriptor"]
+    source_kind: Literal["instruction", "criterion_descriptor", "rubric_evidence"]
     source_id: UUIDInput
     span: SourceSpan
 
@@ -298,6 +307,143 @@ def _version(
     ):
         raise HTTPException(status_code=404, detail="assignment version not found")
     return version, assignment, role
+
+
+def _queue_rubric_parse_job(
+    db: DbSession,
+    version: AssignmentVersion,
+    assets: Sequence[FileAsset],
+    settings: Settings,
+) -> dict[str, Any] | None:
+    if not assets:
+        return None
+    profiles = {
+        str(asset.id): str(
+            asset.preflight_json.get("parser_profile", settings.parser_profile_document)
+        )
+        for asset in assets
+    }
+    allowed_profiles = {settings.parser_profile_native, settings.parser_profile_document}
+    if any(profile not in allowed_profiles for profile in profiles.values()):
+        raise HTTPException(status_code=409, detail="rubric parser profile is unavailable")
+    resources = {
+        profile: register_manifest(db, "parser_resource", profile_payload(settings, profile))
+        for profile in set(profiles.values())
+    }
+    parser_manifest = register_manifest(
+        db,
+        "parser",
+        {
+            "schema_version": 1,
+            "manifest_id": "b1-shared-source-parser-v1",
+            "namespace": "assignment_rubric",
+            "routes": {
+                key: {"id": str(value.id), "sha256": value.sha256}
+                for key, value in resources.items()
+            },
+        },
+    )
+    fingerprint = canonical_hash(
+        {
+            "assignment_version_id": str(version.id),
+            "sources": sorted(
+                (str(asset.id), asset.sha256, profiles[str(asset.id)]) for asset in assets
+            ),
+            "parser_manifest_sha256": parser_manifest.sha256,
+        }
+    )
+    existing_job = db.scalar(
+        select(Job).where(Job.type == "rubric_draft", Job.input_fingerprint == fingerprint)
+    )
+    if existing_job is not None:
+        return {"job_id": str(existing_job.id), "status": existing_job.status}
+
+    parse_artifact_ids: list[str] = []
+    for asset in assets:
+        profile = profiles[str(asset.id)]
+        resource = resources[profile]
+        artifact_fingerprint = canonical_hash(
+            {
+                "sha256": asset.sha256,
+                "parser_manifest": parser_manifest.sha256,
+                "resource": resource.sha256,
+            }
+        )
+        artifact = db.scalar(
+            select(ParseArtifact).where(
+                ParseArtifact.assignment_version_id == version.id,
+                ParseArtifact.file_asset_id == asset.id,
+                ParseArtifact.fingerprint == artifact_fingerprint,
+            )
+        )
+        if artifact is None:
+            artifact = ParseArtifact(
+                file_asset_id=asset.id,
+                assignment_version_id=version.id,
+                fingerprint=artifact_fingerprint,
+                owner_scope_hash=canonical_hash(
+                    {"assignment_version_id": str(version.id), "file_id": str(asset.id)}
+                ),
+                parser_manifest_id=parser_manifest.id,
+                parser_resource_manifest_id=resource.id,
+                status="queued",
+                limitations_json=[],
+            )
+            db.add(artifact)
+            db.flush()
+        parse_artifact_ids.append(str(artifact.id))
+
+    job_id = uuid4()
+    db.add(
+        Job(
+            id=job_id,
+            type="rubric_draft",
+            subject_id=version.id,
+            scope_json={
+                "assignment_version_id": str(version.id),
+                "file_ids": [str(asset.id) for asset in assets],
+                "parse_artifact_ids": parse_artifact_ids,
+                "parser_profiles": profiles,
+                "parser_manifest_id": str(parser_manifest.id),
+                "parser_resources": {
+                    key: {"id": str(value.id), "sha256": value.sha256}
+                    for key, value in resources.items()
+                },
+                "provider_mode": "off",
+            },
+            input_fingerprint=fingerprint,
+            status="queued",
+            stage="parse_rubric",
+            job_limits_json={
+                "max_active_seconds": settings.job_max_active_seconds,
+                "max_calls": 0,
+                "max_vision_calls": 0,
+                "max_text_input_tokens": 0,
+                "max_text_output_tokens": 0,
+                "budget_usd": "0",
+            },
+        )
+    )
+    db.flush()
+    stage_hash = hashlib.sha256(f"{fingerprint}:parse_rubric".encode("ascii")).hexdigest()
+    db.add(
+        JobStage(
+            job_id=job_id,
+            stage_name="parse_rubric",
+            input_hash=stage_hash,
+            status="queued",
+            output_refs_json={},
+            attempt_count=0,
+        )
+    )
+    db.add(
+        OutboxEvent(
+            event_type="job.parse_rubric",
+            subject_id=job_id,
+            payload_json={"job_id": str(job_id)},
+        )
+    )
+    return {"job_id": str(job_id), "status": "queued"}
 
 
 def _criterion_payload(db: DbSession, set_id: UUID) -> list[dict[str, Any]]:
@@ -969,6 +1115,43 @@ def get_assignment_version(
     return _staff_version(db, version)
 
 
+@router.get("/assignment-versions/{version_id}/publish-preview")
+def get_assignment_publish_preview(
+    version_id: UUID,
+    identity: Annotated[Identity, Depends(require_password_change_completed)],
+    db: Annotated[DbSession, Depends(get_db)],
+) -> dict[str, Any]:
+    version, assignment, role = _version(db, version_id, identity)
+    if role == "student" or version.state != "draft":
+        raise HTTPException(status_code=404, detail="assignment preview not found")
+    criterion_set = (
+        db.get(CriterionSetVersion, version.criterion_set_version_id)
+        if version.criterion_set_version_id
+        else None
+    )
+    spec = (
+        db.get(SpecificationVersion, version.specification_version_id)
+        if version.specification_version_id
+        else None
+    )
+    context = db.get(ContextVersion, version.context_version_id)
+    if (
+        context is None
+        or context.state != "approved"
+        or criterion_set is None
+        or criterion_set.state != "approved"
+        or criterion_set.instruction_hash != version.instruction_hash
+        or spec is None
+        or spec.schema_version != 2
+        or spec.state != "approved"
+        or spec.criterion_set_version_id != criterion_set.id
+        or spec.context_version_id != version.context_version_id
+        or spec.instruction_hash != version.instruction_hash
+    ):
+        raise HTTPException(status_code=409, detail="approved package and specification are required for preview")
+    return _public_version(db, version, assignment)
+
+
 @router.put("/assignment-versions/{version_id}")
 def update_assignment_version(
     version_id: UUID,
@@ -1316,23 +1499,56 @@ def update_criterion_set(
             for ref in req.normative_source_refs:
                 try:
                     kind, source_id = ref.source_kind, ref.source_id
+                    evidence: EvidenceItem | None = None
+                    source_text: str
                     if kind == "instruction":
-                        source = current_version.instruction_original
+                        source_text = current_version.instruction_original
                         if source_id != current_version.id:
                             raise ValueError
                     elif kind == "criterion_descriptor":
                         projected_source = descriptor_by_criterion.get(source_id)
                         if projected_source is None:
                             raise ValueError
-                        source = projected_source
+                        source_text = projected_source
+                    elif kind == "rubric_evidence":
+                        evidence = db.scalar(
+                            select(EvidenceItem)
+                            .join(FileAsset, FileAsset.id == EvidenceItem.file_asset_id)
+                            .join(NormativeFileLink, NormativeFileLink.file_asset_id == FileAsset.id)
+                            .where(
+                                EvidenceItem.id == source_id,
+                                FileAsset.assignment_id == assignment.id,
+                                FileAsset.purpose == "rubric",
+                                EvidenceItem.source_sha256 == FileAsset.sha256,
+                                NormativeFileLink.assignment_version_id == current_version.id,
+                                NormativeFileLink.source_role == "rubric",
+                            )
+                        )
+                        evidence_content = evidence.content_original_json if evidence else None
+                        evidence_text = evidence_content.get("text") if isinstance(evidence_content, dict) else None
+                        if not isinstance(evidence_text, str):
+                            raise ValueError
+                        source_text = evidence_text
                     else:
                         raise ValueError
                     span = ref.span
-                    if span.end > len(source):
+                    if span.end > len(source_text):
                         raise ValueError
                     projection = ref.model_dump(mode="json")
-                    projection["source_hash"] = hashlib.sha256(source.encode("utf-8")).hexdigest()
-                    projection["quote"] = source[span.start : span.end]
+                    projection["source_hash"] = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+                    projection["quote"] = source_text[span.start : span.end]
+                    if kind == "rubric_evidence":
+                        assert evidence is not None
+                        projection.update(
+                            {
+                                "file_id": str(evidence.file_asset_id),
+                                "source_sha256": evidence.source_sha256,
+                                "parser_manifest_id": str(evidence.parser_manifest_id)
+                                if evidence.parser_manifest_id
+                                else None,
+                                "anchor": evidence.anchor_json,
+                            }
+                        )
                     projected.append(projection)
                 except (KeyError, TypeError, ValueError):
                     raise HTTPException(
@@ -1451,6 +1667,7 @@ def create_criteria_draft(
     request: Request,
     identity: Annotated[Identity, Depends(require_verified_active_identity)],
     db: Annotated[DbSession, Depends(get_db)],
+    settings: Annotated[Settings, Depends(get_settings)],
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ) -> dict[str, Any]:
     version = db.scalar(
@@ -1474,7 +1691,7 @@ def create_criteria_draft(
                 FileAsset.assignment_id == version.assignment_id,
                 FileAsset.purpose == "rubric",
                 FileAsset.validation_state == "validated",
-            )
+            ).order_by(FileAsset.id)
         ).all()
         if body.rubric_file_ids
         else []
@@ -1532,6 +1749,7 @@ def create_criteria_draft(
             )
     if desired_file_ids != existing_file_ids:
         version.revision += 1
+    rubric_parser_job = _queue_rubric_parse_job(db, version, assets, settings)
     proposals, proposals_truncated = (
         _extractive_instruction_proposals(version)
         if body.generate_from_instruction
@@ -1560,7 +1778,8 @@ def create_criteria_draft(
             "cost_usd": "0",
             "proposals": proposals,
             "proposals_truncated": proposals_truncated,
-            "rubric_parser_status": "pending_shared_parser" if assets else "not_requested",
+            "rubric_parser_status": rubric_parser_job["status"] if rubric_parser_job else "not_requested",
+            "rubric_parser_job_id": rubric_parser_job["job_id"] if rubric_parser_job else None,
             "message": (
                 "Usulan hanya kutipan persis dari instruksi; dosen tetap menetapkan makna dan kewajiban."
                 if proposals
@@ -1581,6 +1800,97 @@ def create_criteria_draft(
     return response
 
 
+@router.get("/assignment-versions/{version_id}/rubric-parse")
+def get_rubric_parse(
+    version_id: UUID,
+    identity: Annotated[Identity, Depends(require_password_change_completed)],
+    db: Annotated[DbSession, Depends(get_db)],
+) -> dict[str, Any]:
+    version = db.get(AssignmentVersion, version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail="assignment version not found")
+    _lecturer_assignment(db, version.assignment_id, identity)
+    files = db.execute(
+        select(FileAsset)
+        .join(NormativeFileLink, NormativeFileLink.file_asset_id == FileAsset.id)
+        .where(
+            NormativeFileLink.assignment_version_id == version.id,
+            NormativeFileLink.source_role == "rubric",
+            FileAsset.purpose == "rubric",
+            FileAsset.validation_state == "validated",
+        )
+        .order_by(FileAsset.original_name, FileAsset.id)
+    ).scalars().all()
+    artifacts = db.scalars(
+        select(ParseArtifact).where(ParseArtifact.assignment_version_id == version.id)
+    ).all()
+    artifacts_by_file = {item.file_asset_id: item for item in artifacts}
+    job = db.scalar(
+        select(Job)
+        .where(Job.type == "rubric_draft", Job.subject_id == version.id)
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .limit(1)
+    )
+    result_files: list[dict[str, Any]] = []
+    for asset in files:
+        artifact = artifacts_by_file.get(asset.id)
+        evidence_count = (
+            db.scalar(
+                select(func.count(EvidenceItem.id)).where(
+                    EvidenceItem.assignment_version_id == version.id,
+                    EvidenceItem.file_asset_id == asset.id,
+                )
+            )
+            or 0
+        )
+        rows = db.execute(
+            select(EvidenceItem, SourceUnit.source_order)
+            .join(SourceUnit, SourceUnit.id == EvidenceItem.source_unit_id)
+            .where(
+                EvidenceItem.assignment_version_id == version.id,
+                EvidenceItem.file_asset_id == asset.id,
+            )
+            .order_by(SourceUnit.source_order, EvidenceItem.id)
+            .limit(501)
+        ).all()
+        evidence: list[dict[str, Any]] = []
+        for item, _source_order in rows[:500]:
+            content = item.content_original_json
+            text = content.get("text", "") if isinstance(content, dict) else ""
+            if not isinstance(text, str):
+                text = ""
+            evidence.append(
+                {
+                    "id": str(item.id),
+                    "type": item.type,
+                    "anchor": item.anchor_json,
+                    "text": text[:6000],
+                    "text_truncated": len(text) > 6000,
+                    "source_sha256": item.source_sha256,
+                    "parse_status": item.parse_status,
+                    "limitations": item.limitations_json,
+                }
+            )
+        result_files.append(
+            {
+                "id": str(asset.id),
+                "name": asset.original_name,
+                "sha256": asset.sha256,
+                "parse_status": artifact.status if artifact else "not_requested",
+                "limitations": artifact.limitations_json if artifact else [],
+                "evidence_count": evidence_count,
+                "evidence_truncated": evidence_count > len(evidence),
+                "evidence": evidence,
+            }
+        )
+    return {
+        "assignment_version_id": str(version.id),
+        "status": job.status if job else ("not_requested" if not files else "queued"),
+        "job_id": str(job.id) if job else None,
+        "files": result_files,
+    }
+
+
 @router.post("/assignment-versions/{version_id}/approve-package")
 def approve_package(
     version_id: UUID,
@@ -1595,7 +1905,7 @@ def approve_package(
     )
     if version is None:
         raise HTTPException(status_code=404, detail="assignment version not found")
-    _lecturer_assignment(db, version.assignment_id, identity, lock=True)
+    assignment = _lecturer_assignment(db, version.assignment_id, identity, lock=True)
     route = f"/api/v1/assignment-versions/{version_id}/approve-package"
     cached = _mutate_cached(db, identity, route, idempotency_key, body.model_dump(mode="json"))
     if cached is not None:
@@ -1652,7 +1962,7 @@ def approve_package(
                 kind = ref["source_kind"]
                 source_id = UUID(ref["source_id"])
                 if kind == "instruction" and source_id == version.id:
-                    source = version.instruction_original
+                    source_text = version.instruction_original
                 elif kind == "criterion_descriptor":
                     criterion = db.scalar(
                         select(Criterion).where(
@@ -1669,15 +1979,39 @@ def approve_package(
                     )
                     if criterion is None or linked is None:
                         raise ValueError
-                    source = criterion.descriptor
+                    source_text = criterion.descriptor
+                elif kind == "rubric_evidence":
+                    evidence = db.scalar(
+                        select(EvidenceItem)
+                        .join(FileAsset, FileAsset.id == EvidenceItem.file_asset_id)
+                        .join(NormativeFileLink, NormativeFileLink.file_asset_id == FileAsset.id)
+                        .where(
+                            EvidenceItem.id == source_id,
+                            FileAsset.assignment_id == assignment.id,
+                            FileAsset.purpose == "rubric",
+                            FileAsset.sha256 == ref["source_sha256"],
+                            EvidenceItem.source_sha256 == FileAsset.sha256,
+                            EvidenceItem.file_asset_id == UUID(ref["file_id"]),
+                            EvidenceItem.parser_manifest_id == UUID(ref["parser_manifest_id"]),
+                            NormativeFileLink.assignment_version_id == version.id,
+                            NormativeFileLink.source_role == "rubric",
+                        )
+                    )
+                    if evidence is None:
+                        raise ValueError
+                    evidence_content = evidence.content_original_json
+                    evidence_text = evidence_content.get("text") if isinstance(evidence_content, dict) else None
+                    if not isinstance(evidence_text, str) or evidence.anchor_json != ref["anchor"]:
+                        raise ValueError
+                    source_text = evidence_text
                 else:
                     raise ValueError
                 if (
-                    ref["source_hash"] != hashlib.sha256(source.encode("utf-8")).hexdigest()
-                    or ref["quote"] != source[span["start"] : span["end"]]
+                    ref["source_hash"] != hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+                    or ref["quote"] != source_text[span["start"] : span["end"]]
                     or span["start"] < 0
                     or span["end"] <= span["start"]
-                    or span["end"] > len(source)
+                    or span["end"] > len(source_text)
                 ):
                     raise ValueError
             except (KeyError, TypeError, ValueError):
@@ -1809,6 +2143,8 @@ def create_spec_draft(
         "version_no": spec_no,
         "revision": spec.revision,
         "schema_version": 2,
+        "state": spec.state,
+        "content_hash": spec.content_hash,
         "payload": empty,
         "lint": None,
     }

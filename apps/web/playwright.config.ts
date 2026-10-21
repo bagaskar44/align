@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { defineConfig, devices } from "@playwright/test";
 
 const envPath = resolve(process.cwd(), "../../.env");
+const chromiumExecutable = process.env.ALIGN_PLAYWRIGHT_CHROMIUM_EXECUTABLE;
 if (existsSync(envPath)) {
   for (const line of readFileSync(envPath, "utf8").split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -24,6 +25,7 @@ export default defineConfig({
     baseURL: process.env.ALIGN_WEB_BASE_URL ?? "http://localhost:3000",
     trace: "retain-on-failure",
     ...devices["Desktop Chrome"],
+    ...(chromiumExecutable ? { launchOptions: { executablePath: chromiumExecutable } } : {}),
   },
   webServer: {
     command: "corepack pnpm start",

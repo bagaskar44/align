@@ -22,6 +22,7 @@ from align_api.config import Settings, get_settings
 from align_api.context_provider_profiles import context_provider_payload
 from align_api.idempotency import canonical_hash
 from align_api.models import (
+    AssignmentVersion,
     AuditEvent,
     ContextConflict,
     ContextVersion,
@@ -341,7 +342,8 @@ def _insert_evidence(
     db: Any,
     artifact: ParseArtifact,
     asset: FileAsset,
-    context_id: UUID,
+    namespace_id: UUID,
+    namespace_kind: str,
     unit_ids: dict[str, UUID],
     result: dict[str, Any],
 ) -> int:
@@ -369,10 +371,14 @@ def _insert_evidence(
         )
         if exists is not None:
             continue
+        namespace = (
+            {"context_version_id": namespace_id}
+            if namespace_kind == "context"
+            else {"assignment_version_id": namespace_id}
+        )
         db.add(
             EvidenceItem(
                 source_unit_id=unit_id,
-                context_version_id=context_id,
                 file_asset_id=asset.id,
                 source_sha256=asset.sha256,
                 type=kind,
@@ -382,6 +388,7 @@ def _insert_evidence(
                 parse_status=str(item.get("parse_status", "parsed")),
                 limitations_json=item.get("limitations", []),
                 parser_manifest_id=artifact.parser_manifest_id,
+                **namespace,
             )
         )
         inserted += 1
@@ -566,7 +573,8 @@ def _finish_checkpoint(
     result: dict[str, Any] | None,
     failure_code: str | None,
     process_exit: str | None,
-    context_id: UUID,
+    namespace_id: UUID,
+    namespace_kind: str,
     reservation: ProcessingTimeReservation,
     started: float,
     request_id: UUID,
@@ -599,7 +607,9 @@ def _finish_checkpoint(
         if not isinstance(result_units, list):
             result_units = []
         unit_ids = _create_or_update_units(db, artifact, result_units)
-        evidence_count = _insert_evidence(db, artifact, asset, context_id, unit_ids, result)
+        evidence_count = _insert_evidence(
+            db, artifact, asset, namespace_id, namespace_kind, unit_ids, result
+        )
         artifact_status = result.get("parse_status", "parsed")
         artifact.status = artifact_status if artifact_status in {"parsed", "partially_parsed", "unreadable", "unsupported", "failed"} else "partially_parsed"
         artifact.limitations_json = limitations
@@ -643,38 +653,61 @@ def _finish_checkpoint(
     return evidence_count, limitations
 
 
-def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint: str) -> dict[str, Any]:
+def _execute_parser_job(
+    job_id: UUID,
+    expected_fence: int,
+    expected_fingerprint: str,
+    namespace_kind: str,
+) -> dict[str, Any]:
     settings = get_settings()
+    expected_job_type = "context_draft" if namespace_kind == "context" else "rubric_draft"
+    stage_name = "parse_context" if namespace_kind == "context" else "parse_rubric"
     with SessionFactory() as db:
         job = db.get(Job, job_id)
-        if job is None or job.type != "context_draft":
+        if job is None or job.type != expected_job_type:
             return {"status": "missing"}
         if job.lease_fence != expected_fence or job.input_fingerprint != expected_fingerprint:
             return {"status": "stale", "fenced": True}
-        context_id = job.subject_id
+        namespace_id = job.subject_id
         source_ids = job.scope_json.get("file_ids", [])
         parse_ids = job.scope_json.get("parse_artifact_ids", [])
         if not isinstance(source_ids, list) or not isinstance(parse_ids, list) or len(source_ids) != len(parse_ids):
-            return {"status": "failed", "reason": "CONTEXT_SOURCE_SCOPE_INVALID"}
-        rows = db.execute(
+            return {"status": "failed", "reason": "PARSER_SOURCE_SCOPE_INVALID"}
+        query = (
             select(FileAsset, NormativeFileLink, ParseArtifact)
             .join(NormativeFileLink, NormativeFileLink.file_asset_id == FileAsset.id)
             .join(ParseArtifact, ParseArtifact.file_asset_id == FileAsset.id)
-            .where(
-                NormativeFileLink.context_version_id == context_id,
-                ParseArtifact.context_version_id == context_id,
+        )
+        if namespace_kind == "context":
+            query = query.where(
+                NormativeFileLink.context_version_id == namespace_id,
+                ParseArtifact.context_version_id == namespace_id,
+                FileAsset.purpose == "context",
+            )
+        else:
+            query = query.where(
+                NormativeFileLink.assignment_version_id == namespace_id,
+                ParseArtifact.assignment_version_id == namespace_id,
+                NormativeFileLink.source_role == "rubric",
+                FileAsset.purpose == "rubric",
+            )
+        rows = db.execute(
+            query.where(
                 FileAsset.id.in_([UUID(item) for item in source_ids]),
                 ParseArtifact.id.in_([UUID(item) for item in parse_ids]),
-            )
-            .order_by(FileAsset.id)
+            ).order_by(FileAsset.id)
         ).all()
         if len(rows) != len(source_ids):
-            return {"status": "failed", "reason": "CONTEXT_SOURCE_SCOPE_INVALID"}
-        stage = db.scalar(select(JobStage).where(JobStage.job_id == job.id, JobStage.stage_name == "parse_context").with_for_update())
+            return {"status": "failed", "reason": "PARSER_SOURCE_SCOPE_INVALID"}
+        stage = db.scalar(select(JobStage).where(JobStage.job_id == job.id, JobStage.stage_name == stage_name).with_for_update())
         if stage is None:
-            return {"status": "failed", "reason": "CONTEXT_PARSE_STAGE_MISSING"}
-        context = db.get(ContextVersion, context_id)
-        context_revision = context.revision if context is not None else 0
+            return {"status": "failed", "reason": "PARSER_STAGE_MISSING"}
+        if namespace_kind == "context":
+            context_namespace = db.get(ContextVersion, namespace_id)
+            namespace_revision = context_namespace.revision if context_namespace is not None else 0
+        else:
+            assignment_namespace = db.get(AssignmentVersion, namespace_id)
+            namespace_revision = assignment_namespace.revision if assignment_namespace is not None else 0
         request_id = job.id
 
     retryable_failure = False
@@ -697,7 +730,7 @@ def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint:
             resource_matches = resource is not None and resource.kind == "parser_resource" and resource.sha256 == canonical_hash(profile_payload(settings, profile))
         task_key = canonical_hash(
             {
-                "context_version_id": str(context_id),
+                f"{namespace_kind}_version_id": str(namespace_id),
                 "file_sha256": asset.sha256,
                 "parser_profile": profile,
                 "parser_resource_manifest_id": str(artifact.parser_resource_manifest_id),
@@ -710,12 +743,25 @@ def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint:
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
             if job is None or job.lease_fence != expected_fence or job.input_fingerprint != expected_fingerprint:
                 return {"status": "stale", "fenced": True}
-            active_context = db.scalar(select(ContextVersion).where(ContextVersion.id == context_id).with_for_update())
-            if active_context is None or active_context.state != "draft":
+            if namespace_kind == "context":
+                active_context = db.scalar(
+                    select(ContextVersion)
+                    .where(ContextVersion.id == namespace_id)
+                    .with_for_update()
+                )
+                namespace_is_draft = active_context is not None and active_context.state == "draft"
+            else:
+                active_assignment = db.scalar(
+                    select(AssignmentVersion)
+                    .where(AssignmentVersion.id == namespace_id)
+                    .with_for_update()
+                )
+                namespace_is_draft = active_assignment is not None and active_assignment.state == "draft"
+            if not namespace_is_draft:
                 job.status = "ready_for_review"
                 job.completion_kind = "completed_with_limits"
                 job.lease_until = None
-                return {"status": "ready_for_review", "reason": "context_already_approved"}
+                return {"status": "ready_for_review", "reason": "source_version_not_draft"}
             checkpoint = db.scalar(
                 select(ParserCheckpoint)
                 .where(ParserCheckpoint.parse_artifact_id == artifact.id, ParserCheckpoint.task_key == task_key)
@@ -779,7 +825,7 @@ def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint:
                     parse_artifact_id=artifact.id,
                     task_key=task_key,
                     file_hash=asset.sha256,
-                    namespace_version_id=context_id,
+                    namespace_version_id=namespace_id,
                     parser_resource_manifest_id=artifact.parser_resource_manifest_id,
                     canonical_unit_locator_json={"format": "pdf", "page": page} if page else {"format": "file", "locator_note": asset.original_name},
                     stage="parse_source_units",
@@ -850,7 +896,8 @@ def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint:
                     result,
                     failure_code,
                     process_exit,
-                    context_id,
+                    namespace_id,
+                    namespace_kind,
                     reservation_row,
                     started,
                     request_id,
@@ -879,7 +926,11 @@ def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint:
                 db.add(
                     AuditEvent(
                         worker_id="align-parser",
-                        action="context.file.parsed" if artifact_row.status not in {"blocked", "failed", "unsupported"} else "context.file.parse_limited",
+                        action=(
+                            ("context.file.parsed" if artifact_row.status not in {"blocked", "failed", "unsupported"} else "context.file.parse_limited")
+                            if namespace_kind == "context"
+                            else ("assignment.rubric.parsed" if artifact_row.status not in {"blocked", "failed", "unsupported"} else "assignment.rubric.parse_limited")
+                        ),
                         object_type="file_asset",
                         object_id=asset.id,
                         old_version_refs_json={"sha256": asset.sha256},
@@ -899,28 +950,30 @@ def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint:
             return {"status": "stale", "fenced": True}
         stage = db.scalar(
             select(JobStage)
-            .where(JobStage.job_id == job_id, JobStage.stage_name == "parse_context")
+            .where(JobStage.job_id == job_id, JobStage.stage_name == stage_name)
             .with_for_update()
         )
         if stage is None:
             job.status = "failed"
-            job.last_error_code = "CONTEXT_PARSE_STAGE_MISSING"
+            job.last_error_code = "PARSER_STAGE_MISSING"
             job.lease_until = None
-            return {"status": "failed", "reason": "CONTEXT_PARSE_STAGE_MISSING"}
+            return {"status": "failed", "reason": "PARSER_STAGE_MISSING"}
         provider_config = job.scope_json.get("context_provider", {})
         proposals: list[dict[str, Any]]
-        provider_manifest = db.get(MethodManifest, UUID(provider_config["manifest_id"])) if provider_config.get("manifest_id") else None
-        provider_policy = db.get(MethodManifest, UUID(provider_config["policy_id"])) if provider_config.get("policy_id") else None
-        if (provider_manifest is None or provider_policy is None
+        provider_manifest = db.get(MethodManifest, UUID(provider_config["manifest_id"])) if namespace_kind == "context" and provider_config.get("manifest_id") else None
+        provider_policy = db.get(MethodManifest, UUID(provider_config["policy_id"])) if namespace_kind == "context" and provider_config.get("policy_id") else None
+        if namespace_kind != "context":
+            proposals, provider_outcome = [], {"status": "not_requested", "paid_calls": 0}
+        elif (provider_manifest is None or provider_policy is None
                 or provider_manifest.kind != "model" or provider_policy.kind != "routing"
                 or provider_manifest.sha256 != provider_config.get("manifest_sha256")
                 or provider_policy.sha256 != provider_config.get("policy_sha256")
                 or provider_manifest.sha256 != canonical_hash(context_provider_payload(settings))):
             proposals, provider_outcome = [], {"status": "provider_disabled", "simulated": False}
         else:
-            proposals, provider_outcome = propose_context_fields(job_id, context_id, job.scope_json, all_candidates)
+            proposals, provider_outcome = propose_context_fields(job_id, namespace_id, job.scope_json, all_candidates)
         if proposals:
-            _merge_field_candidates(db, context_id, proposals, request_id)
+            _merge_field_candidates(db, namespace_id, proposals, request_id)
         if provider_outcome["status"] != "mocked":
             terminal_limits.append({"code": provider_outcome["status"],
                                    "message": "Usulan model tidak tersedia atau tidak sah; konteks dapat dilengkapi manual."})
@@ -958,7 +1011,7 @@ def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint:
             stage.output_refs_json = {"evidence_count": evidence_total, "limitations": terminal_limits, "provider": provider_outcome}
             db.add(
                 OutboxEvent(
-                    event_type="job.parse_context",
+                    event_type="job.parse_context" if namespace_kind == "context" else "job.parse_rubric",
                     subject_id=job.id,
                     payload_json={"job_id": str(job.id)},
                     next_attempt_at=datetime.now(UTC) + timedelta(seconds=60),
@@ -979,8 +1032,16 @@ def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint:
         return {
             "status": result_status,
             "job_id": str(job_id),
-            "context_version_id": str(context_id),
+            f"{namespace_kind}_version_id": str(namespace_id),
             "evidence_count": evidence_total,
             "limitations": terminal_limits,
-            "context_revision_at_start": context_revision,
+            "namespace_revision_at_start": namespace_revision,
         }
+
+
+def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint: str) -> dict[str, Any]:
+    return _execute_parser_job(job_id, expected_fence, expected_fingerprint, "context")
+
+
+def execute_rubric_job(job_id: UUID, expected_fence: int, expected_fingerprint: str) -> dict[str, Any]:
+    return _execute_parser_job(job_id, expected_fence, expected_fingerprint, "assignment")
