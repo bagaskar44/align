@@ -19,6 +19,7 @@ from align_api.contexts import router as contexts_router
 from align_api.courses import router as courses_router
 from align_api.db import engine
 from align_api.errors import install_error_handlers
+from align_api.request_limits import RequestBodyLimit
 
 settings = get_settings()
 logging.basicConfig(level=settings.app_log_level)
@@ -34,6 +35,7 @@ def create_app() -> FastAPI:
         openapi_url="/api/v1/openapi.json" if settings.app_env != "production" else None,
     )
     install_error_handlers(app)
+    app.add_middleware(RequestBodyLimit, upload_bytes=settings.max_file_bytes)
 
     @app.middleware("http")
     async def request_context(request: Request, call_next: Any) -> Any:
@@ -91,6 +93,8 @@ def create_app() -> FastAPI:
 
     @app.get("/health/providers", tags=["internal"], include_in_schema=False)
     def providers() -> dict[str, object]:
+        if settings.provider_mode == "off":
+            return {"mode": "off", "status": "disabled", "paid_calls": "disabled"}
         if settings.provider_mode == "mock":
             return {
                 "mode": "mock",

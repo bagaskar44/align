@@ -7,7 +7,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session as DbSession
 
 from align_api.models import IdempotencyRecord
@@ -31,6 +31,12 @@ def replay_or_lock(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="idempotency key must be a UUID") from exc
     body_hash = canonical_hash(body)
+    # Lock the key even when its record does not exist yet. A row lock alone
+    # allows concurrent first deliveries to race on the unique constraint.
+    lock_key = int.from_bytes(hashlib.sha256(
+        f"{actor_id}:{method}:{route}:{key}".encode()
+    ).digest()[:8], byteorder="big", signed=True)
+    db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
     record = db.scalar(
         select(IdempotencyRecord)
         .where(

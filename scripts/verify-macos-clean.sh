@@ -53,4 +53,4 @@ if [ "${ALIGN_KEEP_TEST_RUNNING:-0}" != 1 ]; then
   bash scripts/dev-macos.sh stop
 fi
 echo "Clean setup verification passed. Evidence, toolchain and test volumes retained: $test_root"
-echo 'Parsing and the complete B1 gate remain pending.'
+echo 'Parser runtime coverage is documented separately in docs/handover/B1.md.'

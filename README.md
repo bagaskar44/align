@@ -1,14 +1,14 @@
 # ALIGN
 
-ALIGN is a course-scoped workspace for reviewing student work with traceable evidence and instructor-controlled feedback. This repository currently implements the B0 foundation only. Academic assignment, submission, review, and analysis flows remain future stages.
+ALIGN is a course-scoped workspace for reviewing student work with traceable evidence and instructor-controlled feedback. This repository implements the B0 foundation and B1 identity/course-context workflows in mock/synthetic mode. Academic assignment, submission, review, and analysis flows remain future stages.
 
 ## Local development
 
 For macOS, start with `bash scripts/macos-toolchain.sh`, then
 `source scripts/macos-env.sh`. The complete clean-checkout procedure, private
-environment bootstrap, and isolated verification are in
-[`docs/handover/macos-local-setup.md`](docs/handover/macos-local-setup.md).
-The initial macOS manual/mock setup verified login with parsing disabled.
+environment bootstrap, isolated verification, and separate parser limitations are
+in [`docs/handover/macos-local-setup.md`](docs/handover/macos-local-setup.md).
+The initial macOS manual/mock setup verified login with parsing disabled; later B1 runtime results are recorded in the [B1 handover](docs/handover/B1.md).
 
 Prerequisites: Python 3.12, Node.js 22 or newer, `uv 0.8.22`, Corepack-enabled Node, and Docker Desktop with the Linux engine running. The Compose stack binds only to `127.0.0.1:3000`; PostgreSQL, Redis, and S3-compatible storage have no host-published ports.
 

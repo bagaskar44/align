@@ -29,7 +29,10 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     task_acks_on_failure_or_timeout=False,
     worker_prefetch_multiplier=1,
-    broker_transport_options={"visibility_timeout": 300, "global_keyprefix": f"{queue_prefix}:"},
+    broker_transport_options={
+        "visibility_timeout": max(300, int(os.environ.get("JOB_MAX_ACTIVE_SECONDS", "600")) + 120),
+        "global_keyprefix": f"{queue_prefix}:",
+    },
     task_soft_time_limit=int(os.environ.get("STAGE_SOFT_SECONDS", "120")),
     task_time_limit=int(os.environ.get("STAGE_HARD_SECONDS", "150")),
     result_backend=None,

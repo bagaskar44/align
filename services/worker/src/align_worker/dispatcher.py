@@ -61,7 +61,7 @@ def _task_for_event(event_type: str) -> tuple[str | None, str, str]:
     mapping = {
         "operation.foundation_smoke": ("align.foundation_smoke", "operation_id", general_queue),
         "job.execute": ("align.execute_job", "job_id", general_queue),
-        "job.parse_context": ("align.execute_job", "job_id", parser_queue),
+        "job.parse_context": ("align.parse_context", "job_id", parser_queue),
     }
     return mapping.get(event_type, (None, "", general_queue))
 

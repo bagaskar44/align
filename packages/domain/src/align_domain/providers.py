@@ -89,7 +89,12 @@ class MockProvider:
         if not isinstance(fixture_response, dict):
             raise RuntimeError(f"synthetic fixture entry {name} is invalid")
         result_payload = dict(fixture_response.get("payload", {}))
-        result_payload["payload_hash"] = digest
+        if name == "extract_fields" and payload.get("task_type") == "context_fields":
+            # A simulation echoes only source-bound, labeled parser candidates.
+            # It does not pretend to infer unlabelled semantics from documents.
+            result_payload = {"schema_version": 1, "candidates": payload.get("candidates", [])}
+        else:
+            result_payload["payload_hash"] = digest
         if name == "embed":
             dimensions = int(result_payload["dimensions"])
             if dimensions != 1536:

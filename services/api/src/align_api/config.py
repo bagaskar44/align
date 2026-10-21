@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     s3_use_path_style: bool = True
 
     csrf_server_secret: SecretStr = SecretStr("development-only-csrf-secret-change-me")
-    provider_mode: Literal["mock", "live"] = "mock"
+    provider_mode: Literal["mock", "off", "live"] = "mock"
     openai_api_key: SecretStr | None = None
     model_efficient: str | None = None
     model_complex: str | None = None
@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     login_account_limit: int = 5
     login_ip_limit: int = 20
     login_window_seconds: int = 900
-    max_password_bytes: int = 128
+    max_password_bytes: int = 512
 
     @field_validator(
         "budget_confirmed_usd",

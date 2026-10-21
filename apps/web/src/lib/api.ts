@@ -79,12 +79,12 @@ export function getAdminCourses(): Promise<ApiResult<{ items: Course[]; next_cur
   return requestServer("/admin/courses");
 }
 
-export async function getProviderMode(): Promise<"mock" | "live" | "unknown"> {
+export async function getProviderMode(): Promise<"mock" | "off" | "live" | "unknown"> {
   try {
     const response = await fetch(`${apiOrigin()}/health/providers`, { cache: "no-store" });
     if (!response.ok) return "unknown";
     const value = (await response.json()) as { mode?: string };
-    return value.mode === "mock" || value.mode === "live" ? value.mode : "unknown";
+    return value.mode === "mock" || value.mode === "off" || value.mode === "live" ? value.mode : "unknown";
   } catch {
     return "unknown";
   }

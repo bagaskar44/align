@@ -45,3 +45,13 @@ def test_argon2_password_hash_verifies_and_rejects_out_of_range_lengths() -> Non
     with pytest.raises(ValueError):
         hash_password("x" * 129)
 
+
+def test_password_limits_are_characters_and_allow_bounded_utf8() -> None:
+    candidate = "雪" * 128
+    encoded = hash_password(candidate)
+    assert verify_password(candidate, encoded)
+    with pytest.raises(ValueError):
+        hash_password("雪" * 4)
+    with pytest.raises(ValueError):
+        hash_password("雪" * 129)
+

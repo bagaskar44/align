@@ -173,6 +173,8 @@ test("lecturer parses KK and RPP locally, resolves a sourced conflict, then appr
   const versions = (await versionsResponse.json()) as { items: Array<{ id: string }> };
   const contextId = versions.items[0]?.id;
   expect(contextId).toBeTruthy();
+  const unsavedDescription = "Perubahan lokal yang belum disimpan.";
+  await page.locator(".context-form").getByLabel("Deskripsi konteks", { exact: true }).fill(unsavedDescription);
 
   await expect.poll(async () => {
     const response = await page.request.get(`/api/v1/context-versions/${contextId}`);
@@ -190,7 +192,9 @@ test("lecturer parses KK and RPP locally, resolves a sourced conflict, then appr
       : context.parse_artifacts.map((artifact) => artifact.status).join(",");
   }, { timeout: 120_000, intervals: [1000, 2000, 5000] }).toBe("parsed-conflict-ready");
 
-  await page.getByLabel("Pilih versi").selectOption(contextId!);
+  await expect(page.locator(".context-form").getByLabel("Deskripsi konteks", { exact: true })).toHaveValue(unsavedDescription);
+  await expect(page.getByRole("button", { name: "Muat revisi terbaru" })).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("button", { name: "Muat revisi terbaru" }).click();
   await expect(page.getByRole("heading", { name: "Usulan yang berkonflik" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Bukti dan anchor" })).toBeVisible();
   const unresolvedApprovalPromise = page.waitForResponse(
@@ -199,7 +203,7 @@ test("lecturer parses KK and RPP locally, resolves a sourced conflict, then appr
   await page.getByRole("button", { name: "Sahkan versi ini" }).click();
   const unresolvedApproval = await unresolvedApprovalPromise;
   expect(unresolvedApproval.status()).toBe(422);
-  await expect(page.locator(".workspace-message.form-error")).toContainText("Permintaan gagal (422).");
+  await expect(page.locator(".workspace-message.form-error")).toContainText("Selesaikan konflik sumber");
   const codeConflict = page.locator(".conflict-card").filter({ has: page.getByRole("heading", { name: "Kode mata kuliah" }) });
   await codeConflict.getByLabel("Nilai yang dipilih").selectOption("IF999");
   await codeConflict.getByLabel("Alasan keputusan").fill("RPP sintetis menjadi sumber yang dipilih untuk uji konflik.");
@@ -254,5 +258,24 @@ test("admin provisions an account and sees the one-time temporary password", asy
   const temporaryPassword = await page.locator(".credential-box code").textContent();
   expect(temporaryPassword).toBeTruthy();
   expect(temporaryPassword?.length).toBeGreaterThanOrEqual(20);
+  const temporaryContext = await page.context().browser()!.newContext();
+  try {
+    const temporaryPage = await temporaryContext.newPage();
+    await temporaryPage.goto(new URL("/login", page.url()).href);
+    await temporaryPage.getByLabel("Email").fill(email);
+    await temporaryPage.getByLabel("Kata sandi", { exact: true }).fill(temporaryPassword!);
+    await temporaryPage.getByRole("button", { name: "Masuk" }).click();
+    await expect(temporaryPage).toHaveURL(/\/change-password$/);
+    expect((await temporaryPage.request.get("/api/v1/courses")).status()).toBe(403);
+    const newPassword = `Synthetic-B1-password-${Date.now()}`;
+    await temporaryPage.getByLabel("Kata sandi sementara", { exact: true }).fill(temporaryPassword!);
+    await temporaryPage.getByLabel(/^Kata sandi baru/).fill(newPassword);
+    await temporaryPage.getByLabel("Ulangi kata sandi baru", { exact: true }).fill(newPassword);
+    await temporaryPage.getByRole("button", { name: "Simpan kata sandi" }).click();
+    await expect(temporaryPage).toHaveURL(new URL("/", page.url()).href);
+    const profile = await temporaryPage.request.get("/api/v1/me");
+    expect(profile.status()).toBe(200);
+    expect((await profile.json()).user.must_change_password).toBe(false);
+  } finally { await temporaryContext.close(); }
 });
 

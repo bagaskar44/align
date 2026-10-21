@@ -4,11 +4,13 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -17,6 +19,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 
 from align_api.config import Settings, get_settings
+from align_api.context_provider_profiles import context_provider_payload
 from align_api.idempotency import canonical_hash
 from align_api.models import (
     AuditEvent,
@@ -26,6 +29,7 @@ from align_api.models import (
     FileAsset,
     Job,
     JobStage,
+    MethodManifest,
     NormativeFileLink,
     OutboxEvent,
     ParseArtifact,
@@ -33,9 +37,16 @@ from align_api.models import (
     ProcessingTimeReservation,
     SourceUnit,
 )
+from align_api.parser_profiles import profile_payload
 from align_api.storage import storage_client
+from align_worker.context_provider import propose_context_fields
 from align_worker.database import SessionFactory
-from align_worker.parser_admission import AdmissionLease, acquire_parser_lease, release_parser_lease
+from align_worker.parser_admission import (
+    AdmissionLease,
+    acquire_parser_lease,
+    release_parser_lease,
+    renew_parser_lease,
+)
 
 MAX_CHILD_RESULT_BYTES = 64 * 1024 * 1024
 
@@ -49,6 +60,9 @@ def _safe_limitation(code: str) -> dict[str, str]:
         "parser_failed": "Parser gagal membaca sebagian atau seluruh isi; sumber asli tetap tersedia.",
         "parser_storage_unavailable": "Penyimpanan sumber sementara tidak tersedia; coba lagi setelah layanan pulih.",
         "processing_limit": "Batas waktu aktif konteks tercapai; unit berikutnya belum diproses.",
+        "parser_pending": "Unit sumber terinventaris; ekstraksi belum selesai.",
+        "source_integrity_failed": "Hash atau ukuran sumber tidak cocok; unggah ulang berkas pada draft baru.",
+        "parser_lease_lost": "Lease parser tidak lagi sah; hasil belum dapat digunakan.",
     }
     return {"code": code, "message": messages.get(code, "Parser belum menghasilkan ekstraksi yang dapat diverifikasi.")}
 
@@ -145,11 +159,13 @@ def _safe_environment(temp_dir: str) -> dict[str, str]:
     return {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "HOME": temp_dir,
+        "TMPDIR": temp_dir,
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "HF_HUB_OFFLINE": "1",
         "HF_HUB_DISABLE_TELEMETRY": "1",
         "DOCLING_ARTIFACTS_PATH": os.environ.get("DOCLING_ARTIFACTS_PATH", "/opt/docling-models"),
+        "ALIGN_PARSER_RESOURCE_CONFIG": "/app/config/parser-context-resources.json",
         "TOKENIZERS_PARALLELISM": "false",
         "OMP_NUM_THREADS": "1",
         "MKL_NUM_THREADS": "1",
@@ -157,26 +173,38 @@ def _safe_environment(temp_dir: str) -> dict[str, str]:
 
 
 def _preexec_limits(memory_bytes: int, cpu_seconds: int) -> Any:
+    parent_pid = os.getpid()
     def apply() -> None:
+        if sys.platform == "win32":
+            raise RuntimeError("POSIX parser isolation is required")
         import resource
 
-        resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))  # type: ignore[attr-defined]
-        resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))  # type: ignore[attr-defined]
-        resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_CHILD_RESULT_BYTES, MAX_CHILD_RESULT_BYTES))  # type: ignore[attr-defined]
-        resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))  # type: ignore[attr-defined]
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))  # type: ignore[attr-defined]
+        if sys.platform == "linux":
+            import ctypes
+            # Kill the direct child on an abrupt worker death. The admission
+            # reservation remains held if cleanup cannot confirm descendants.
+            if ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL) != 0:
+                os._exit(125)
+            if os.getppid() != parent_pid:
+                os._exit(125)
+
+        resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))
+        resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_CHILD_RESULT_BYTES, MAX_CHILD_RESULT_BYTES))
+        resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
     return apply
 
 
-def _run_child(path: str, filename: str, output_path: str, memory_bytes: int, soft_seconds: int, hard_seconds: int) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    if os.name != "posix":
+def _run_child(path: str, filename: str, output_path: str, memory_bytes: int, soft_seconds: int, hard_seconds: int, heartbeat: Callable[[], bool] | None = None, page: int | None = None) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    if sys.platform == "win32" or os.name != "posix":
         return None, "parser_isolation_unavailable", None
     with tempfile.TemporaryDirectory(prefix="align-parser-") as temp_dir:
         try:
             # Fixed Python module invocation; all untrusted filenames are positional arguments and no shell is used.
             process = subprocess.Popen(  # noqa: S603
-                [sys.executable, "-m", "align_worker.parser_child", path, filename, output_path],
+                [sys.executable, "-m", "align_worker.parser_child", path, filename, output_path, *([str(page)] if page else [])],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -186,24 +214,42 @@ def _run_child(path: str, filename: str, output_path: str, memory_bytes: int, so
                 start_new_session=True,
                 preexec_fn=_preexec_limits(memory_bytes, hard_seconds),
             )
-        except OSError:
+        except (OSError, subprocess.SubprocessError):
             return None, "parser_resource_unavailable", None
+        deadline = time.monotonic() + max(1, min(soft_seconds, hard_seconds))
+        failure: str | None = None
         try:
-            process.wait(timeout=max(1, min(soft_seconds, hard_seconds)))
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)  # type: ignore[attr-defined]
-            except ProcessLookupError:
-                pass
-            try:
-                process.wait(timeout=max(1, hard_seconds - soft_seconds))
-            except subprocess.TimeoutExpired:
+            while process.poll() is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    failure = "parser_timeout"
+                    break
+                if heartbeat is not None and not heartbeat():
+                    failure = "parser_lease_lost"
+                    break
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)  # type: ignore[attr-defined]
+                    process.wait(timeout=min(10, remaining))
+                except subprocess.TimeoutExpired:
+                    pass
+            if failure:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
-                process.wait()
-            return None, "parser_timeout", None
+                try:
+                    process.wait(timeout=max(1, hard_seconds - soft_seconds))
+                except subprocess.TimeoutExpired:
+                    pass
+        finally:
+            # Also terminate descendants after a successful parent exit. Release
+            # the admission lease only after this process-group cleanup returns.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+        if failure:
+            return None, failure, str(process.returncode)
         if not Path(output_path).is_file():
             return None, "parser_failed", str(process.returncode)
         output = Path(output_path)
@@ -231,6 +277,7 @@ def _create_or_update_units(db: Any, artifact: ParseArtifact, result_units: list
         anchor = item.get("anchor")
         if not isinstance(key, str) or not isinstance(anchor, dict):
             continue
+        source_order = 0 if item.get("unit_type") == "root" else int(anchor.get("page", 0)) * 100_000 + index
         existing = db.scalar(
             select(SourceUnit).where(SourceUnit.parse_artifact_id == artifact.id, SourceUnit.locator_key == key).with_for_update()
         )
@@ -239,7 +286,7 @@ def _create_or_update_units(db: Any, artifact: ParseArtifact, result_units: list
                 parse_artifact_id=artifact.id,
                 locator_key=key,
                 unit_type=str(item.get("unit_type", "unsupported"))[:24],
-                source_order=index,
+                source_order=source_order,
                 anchor_json=anchor,
                 parse_status=str(item.get("parse_status", "partially_parsed")),
                 limitations_json=item.get("limitations", []),
@@ -248,7 +295,7 @@ def _create_or_update_units(db: Any, artifact: ParseArtifact, result_units: list
             db.flush()
         else:
             existing.unit_type = str(item.get("unit_type", "unsupported"))[:24]
-            existing.source_order = min(existing.source_order, index)
+            existing.source_order = min(existing.source_order, source_order)
             existing.anchor_json = anchor
             existing.parse_status = str(item.get("parse_status", "partially_parsed"))
             existing.limitations_json = item.get("limitations", [])
@@ -334,7 +381,7 @@ def _insert_evidence(
                 content_normalized_json=content,
                 parse_status=str(item.get("parse_status", "parsed")),
                 limitations_json=item.get("limitations", []),
-                parser_manifest_id=None,
+                parser_manifest_id=artifact.parser_manifest_id,
             )
         )
         inserted += 1
@@ -375,7 +422,7 @@ def _merge_field_candidates(db: Any, context_id: UUID, candidates: list[dict[str
             "value": current_value,
             "source_ref": {"kind": "course_catalog"} if key in {"course_code", "course_title"} else None,
         }
-        differs = any(value != current_value.casefold() for value in normalized_values)
+        differs = bool(current_value) and any(value != current_value.casefold() for value in normalized_values)
         multiple_sources = len(normalized_values) > 1
         conflict = db.scalar(
             select(ContextConflict)
@@ -484,7 +531,8 @@ def _merge_field_candidates(db: Any, context_id: UUID, candidates: list[dict[str
     return True
 
 
-def _download_and_run(asset: FileAsset, settings: Settings, lease: AdmissionLease, soft_seconds: int, hard_seconds: int) -> tuple[dict[str, Any] | None, str | None, str | None]:
+def _download_and_run(asset: FileAsset, settings: Settings, lease: AdmissionLease, soft_seconds: int, hard_seconds: int, heartbeat: Callable[[], bool] | None = None, page: int | None = None) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    started = time.monotonic()
     suffix = Path(asset.original_name).suffix.lower()
     with tempfile.TemporaryDirectory(prefix="align-source-") as temp_dir:
         source_path = str(Path(temp_dir) / f"source{suffix}")
@@ -493,7 +541,20 @@ def _download_and_run(asset: FileAsset, settings: Settings, lease: AdmissionLeas
             storage_client(settings).download_file(settings.s3_bucket, asset.object_key, source_path)
         except Exception:
             return None, "parser_storage_unavailable", None
-        return _run_child(source_path, asset.original_name, output_path, lease.memory_bytes, soft_seconds, hard_seconds)
+        digest = hashlib.sha256()
+        size = 0
+        with open(source_path, "rb") as source:
+            while chunk := source.read(64 * 1024):
+                size += len(chunk)
+                if size > settings.max_file_bytes:
+                    return None, "source_integrity_failed", None
+                digest.update(chunk)
+        if size != asset.size_bytes or digest.hexdigest() != asset.sha256:
+            return None, "source_integrity_failed", None
+        elapsed = int(time.monotonic() - started)
+        if elapsed >= hard_seconds:
+            return None, "parser_timeout", None
+        return _run_child(source_path, asset.original_name, output_path, lease.memory_bytes, max(1, soft_seconds - elapsed), hard_seconds - elapsed, heartbeat, page)
 
 
 def _finish_checkpoint(
@@ -509,9 +570,10 @@ def _finish_checkpoint(
     reservation: ProcessingTimeReservation,
     started: float,
     request_id: UUID,
+    page: int | None = None,
 ) -> tuple[int, list[dict[str, Any]]]:
     elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
-    reservation.actual_active_ms = min(elapsed_ms, reservation.reserved_active_ms)
+    reservation.actual_active_ms = elapsed_ms
     reservation.state = "settled"
     reservation.finished_at = datetime.now(UTC)
     if result is not None and result.get("failure_code"):
@@ -522,6 +584,8 @@ def _finish_checkpoint(
     if failure_code:
         limitations = [*limitations, _safe_limitation(failure_code)]
         result_units = _fallback_inventory(asset, failure_code)
+        if page is not None:
+            result_units = [item for item in result_units if item["unit_type"] == "root" or item["anchor"].get("page") == page]
         unit_ids = _create_or_update_units(db, artifact, result_units)
         evidence_count = 0
         artifact.status = "blocked" if failure_code in {"parser_capacity_unavailable", "parser_storage_unavailable"} else "unsupported" if failure_code in {"parser_resource_unavailable", "parser_isolation_unavailable"} else "failed"
@@ -548,6 +612,10 @@ def _finish_checkpoint(
             "unit_count": len(unit_ids),
             "evidence_count": evidence_count,
             "parser": result.get("parser", "unknown"),
+            "transforms": result.get("transforms", []),
+            "covered_stages": result.get("covered_stages", []),
+            "ocr_decision": result.get("ocr_decision"),
+            "has_tables": any(item.get("type") == "table" for item in result.get("evidence", [])),
         }
         raw_candidates = result.get("candidate_fields", [])
         if isinstance(raw_candidates, list):
@@ -613,24 +681,41 @@ def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint:
     all_candidates: list[dict[str, Any]] = []
     evidence_total = 0
     terminal_limits: list[dict[str, Any]] = []
-    for asset, link, artifact in rows:
+    # PDF pages are independent checkpoint tasks. A retry never reparses pages
+    # whose source/profile-bound checkpoint has already committed successfully.
+    tasks = [(asset, link, artifact, page) for asset, link, artifact in rows
+             for page in (range(1, int(asset.preflight_json["pages"]) + 1) if asset.mime == "application/pdf" else [None])]
+    for asset, link, artifact, page in tasks:
         profile = str(asset.preflight_json.get("parser_profile", settings.parser_profile_document))
         heavy = profile == settings.parser_profile_document
         parser_module = "docling" if heavy else "docx"
-        missing_dependency = importlib.util.find_spec(parser_module) is None
+        missing_dependency = importlib.util.find_spec(parser_module) is None or (
+            heavy and (importlib.util.find_spec("rtree") is None or shutil.which("tesseract") is None)
+        )
+        with SessionFactory() as manifest_db:
+            resource = manifest_db.get(MethodManifest, artifact.parser_resource_manifest_id) if artifact.parser_resource_manifest_id else None
+            resource_matches = resource is not None and resource.kind == "parser_resource" and resource.sha256 == canonical_hash(profile_payload(settings, profile))
         task_key = canonical_hash(
             {
                 "context_version_id": str(context_id),
                 "file_sha256": asset.sha256,
                 "parser_profile": profile,
+                "parser_resource_manifest_id": str(artifact.parser_resource_manifest_id),
+                "parser_manifest_id": str(artifact.parser_manifest_id),
                 "stage": "parse_source_units",
-                "unit_locator": {"format": "file", "locator_note": asset.original_name},
+                "unit_locator": {"format": "pdf", "page": page} if page else {"format": "file", "locator_note": asset.original_name},
             }
         )
         with SessionFactory.begin() as db:
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
             if job is None or job.lease_fence != expected_fence or job.input_fingerprint != expected_fingerprint:
                 return {"status": "stale", "fenced": True}
+            active_context = db.scalar(select(ContextVersion).where(ContextVersion.id == context_id).with_for_update())
+            if active_context is None or active_context.state != "draft":
+                job.status = "ready_for_review"
+                job.completion_kind = "completed_with_limits"
+                job.lease_until = None
+                return {"status": "ready_for_review", "reason": "context_already_approved"}
             checkpoint = db.scalar(
                 select(ParserCheckpoint)
                 .where(ParserCheckpoint.parse_artifact_id == artifact.id, ParserCheckpoint.task_key == task_key)
@@ -670,7 +755,7 @@ def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint:
             if remaining_ms <= 0:
                 failure_code = "processing_limit"
                 lease = None
-            elif missing_dependency:
+            elif missing_dependency or not resource_matches:
                 failure_code = "parser_resource_unavailable"
                 lease = None
             else:
@@ -682,7 +767,7 @@ def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint:
                 job_id=job_id,
                 task_key=task_key,
                 attempt_no=attempt_no,
-                reserved_active_ms=max(0, min(soft_seconds, remaining_ms // 1000 if remaining_ms > 0 else 0) * 1000),
+                reserved_active_ms=max(0, min(hard_seconds, remaining_ms // 1000 if remaining_ms > 0 else 0) * 1000),
                 state="held",
                 started_at=datetime.now(UTC),
             )
@@ -695,7 +780,8 @@ def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint:
                     task_key=task_key,
                     file_hash=asset.sha256,
                     namespace_version_id=context_id,
-                    canonical_unit_locator_json={"format": "file", "locator_note": asset.original_name},
+                    parser_resource_manifest_id=artifact.parser_resource_manifest_id,
+                    canonical_unit_locator_json={"format": "pdf", "page": page} if page else {"format": "file", "locator_note": asset.original_name},
                     stage="parse_source_units",
                     status="running",
                     output_refs_json={},
@@ -717,12 +803,25 @@ def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint:
             artifact_row = db.scalar(select(ParseArtifact).where(ParseArtifact.id == artifact.id).with_for_update())
             if artifact_row is not None:
                 artifact_row.status = "running"
+                if db.scalar(select(SourceUnit.id).where(SourceUnit.parse_artifact_id == artifact.id).limit(1)) is None:
+                    _create_or_update_units(db, artifact_row, _fallback_inventory(asset, "parser_pending"))
         started = time.monotonic()
         result: dict[str, Any] | None = None
         process_exit: str | None = None
         if failure_code is None and lease is not None:
-            result, failure_code, process_exit = _download_and_run(asset, settings, lease, soft_seconds, hard_seconds)
+            def heartbeat(lease: AdmissionLease | None = lease) -> bool:
+                if lease is None or not renew_parser_lease(settings, lease):
+                    return False
+                with SessionFactory.begin() as heartbeat_db:
+                    running = heartbeat_db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+                    if running is None or running.lease_fence != expected_fence or running.input_fingerprint != expected_fingerprint:
+                        return False
+                    running.lease_until = datetime.now(UTC) + timedelta(seconds=settings.worker_lease_seconds)
+                return True
+            result, failure_code, process_exit = _download_and_run(asset, settings, lease, soft_seconds, hard_seconds, heartbeat, page)
         try:
+            if lease is not None and not renew_parser_lease(settings, lease):
+                result, failure_code = None, "parser_lease_lost"
             with SessionFactory.begin() as db:
                 current_job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
                 if current_job is None or current_job.lease_fence != expected_fence or current_job.input_fingerprint != expected_fingerprint:
@@ -755,6 +854,7 @@ def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint:
                     reservation_row,
                     started,
                     request_id,
+                    page,
                 )
                 evidence_total += count
                 terminal_limits.extend(limitations)
@@ -807,8 +907,41 @@ def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint:
             job.last_error_code = "CONTEXT_PARSE_STAGE_MISSING"
             job.lease_until = None
             return {"status": "failed", "reason": "CONTEXT_PARSE_STAGE_MISSING"}
-        if all_candidates:
-            _merge_field_candidates(db, context_id, all_candidates, request_id)
+        provider_config = job.scope_json.get("context_provider", {})
+        proposals: list[dict[str, Any]]
+        provider_manifest = db.get(MethodManifest, UUID(provider_config["manifest_id"])) if provider_config.get("manifest_id") else None
+        provider_policy = db.get(MethodManifest, UUID(provider_config["policy_id"])) if provider_config.get("policy_id") else None
+        if (provider_manifest is None or provider_policy is None
+                or provider_manifest.kind != "model" or provider_policy.kind != "routing"
+                or provider_manifest.sha256 != provider_config.get("manifest_sha256")
+                or provider_policy.sha256 != provider_config.get("policy_sha256")
+                or provider_manifest.sha256 != canonical_hash(context_provider_payload(settings))):
+            proposals, provider_outcome = [], {"status": "provider_disabled", "simulated": False}
+        else:
+            proposals, provider_outcome = propose_context_fields(job_id, context_id, job.scope_json, all_candidates)
+        if proposals:
+            _merge_field_candidates(db, context_id, proposals, request_id)
+        if provider_outcome["status"] != "mocked":
+            terminal_limits.append({"code": provider_outcome["status"],
+                                   "message": "Usulan model tidak tersedia atau tidak sah; konteks dapat dilengkapi manual."})
+        # Reflect every page's outcome, including failures before the last page.
+        for _asset, _link, parsed_artifact in rows:
+            aggregate = db.get(ParseArtifact, parsed_artifact.id)
+            checkpoints = db.scalars(select(ParserCheckpoint).where(
+                ParserCheckpoint.parse_artifact_id == parsed_artifact.id,
+            )).all()
+            if aggregate is not None and checkpoints:
+                limits = [item for cp in checkpoints for item in cp.limitations_json]
+                if _asset.mime == "application/pdf" and int(_asset.preflight_json.get("pages", 0)) > 1 and any(cp.output_refs_json.get("has_tables") for cp in checkpoints):
+                    limits.append({"code": "cross_page_table_relations_unverified", "message": "Fragmen tabel per halaman tersedia; hubungan tabel lintas halaman belum diverifikasi."})
+                aggregate.limitations_json = limits
+                aggregate.status = "blocked" if any(cp.status == "blocked" for cp in checkpoints) else "partially_parsed" if limits else "parsed"
+                root = db.scalar(select(SourceUnit).where(
+                    SourceUnit.parse_artifact_id == aggregate.id, SourceUnit.unit_type == "root",
+                ))
+                if root is not None:
+                    root.parse_status = "partially_parsed" if limits else "parsed"
+                    root.limitations_json = limits
         if retryable_failure:
             job.status = "blocked"
             retry_code = next(
@@ -822,7 +955,7 @@ def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint:
             job.last_error_code = retry_code
             stage.status = "blocked"
             stage.failure_code = retry_code
-            stage.output_refs_json = {"evidence_count": evidence_total, "limitations": terminal_limits}
+            stage.output_refs_json = {"evidence_count": evidence_total, "limitations": terminal_limits, "provider": provider_outcome}
             db.add(
                 OutboxEvent(
                     event_type="job.parse_context",
@@ -838,7 +971,7 @@ def execute_context_job(job_id: UUID, expected_fence: int, expected_fingerprint:
             job.last_error_code = None
             stage.status = "succeeded"
             stage.failure_code = None
-            stage.output_refs_json = {"evidence_count": evidence_total, "limitations": terminal_limits}
+            stage.output_refs_json = {"evidence_count": evidence_total, "limitations": terminal_limits, "provider": provider_outcome}
             result_status = "ready_for_review"
         job.lease_until = None
         stage.finished_at = datetime.now(UTC)

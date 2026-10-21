@@ -14,7 +14,9 @@ COPY services/api/pyproject.toml services/api/pyproject.toml
 COPY services/api/src services/api/src
 COPY services/worker/pyproject.toml services/worker/pyproject.toml
 COPY services/worker/src services/worker/src
-RUN uv sync --frozen --package align-worker --no-dev --no-editable
+COPY config config
+COPY fixtures fixtures
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --package align-worker --no-dev --no-editable
 RUN useradd --create-home --uid 10001 align && chown -R align:align /app/.venv
 
 ENV PATH="/app/.venv/bin:$PATH"

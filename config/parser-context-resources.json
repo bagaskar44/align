@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "models": [
+    {
+      "repo_id": "docling-project/docling-layout-heron",
+      "revision": "8f39ad3c0b4c58e9c2d2c84a38465abf757272d8",
+      "files": [
+        {
+          "path": "README.md",
+          "sha256": "175700839bc7808eac6af1d0c23e4f483606ab2276fe01122f4093e61a1a65b6",
+          "size_bytes": 3219
+        },
+        {
+          "path": "config.json",
+          "sha256": "fdea30805ce2f5666b147fca941dcdd27ad468e27d6ed21902207d3da056a97d",
+          "size_bytes": 3268
+        },
+        {
+          "path": "docling_heron_400.png",
+          "sha256": "e7f78610372b32a7938e480d2c7fa1c3037ee170bd82282a5bd026232f6e6f9e",
+          "size_bytes": 96925
+        },
+        {
+          "path": "model.safetensors",
+          "sha256": "00333a43451945aaf89db8ca9c0a17e75d1537c17db60fdb91aa95f4c7929e0c",
+          "size_bytes": 171658996
+        },
+        {
+          "path": "preprocessor_config.json",
+          "sha256": "cd38cd59999e7a95d68e487fbe5132df3d4e5c32a0836add57e6126ba0c4eaf1",
+          "size_bytes": 444
+        }
+      ]
+    },
+    {
+      "repo_id": "docling-project/docling-models",
+      "revision": "fc0f2d45e2218ea24bce5045f58a389aed16dc23",
+      "files": [
+        {
+          "path": "model_artifacts/tableformer/accurate/tableformer_accurate.safetensors",
+          "sha256": "2a7d6c924b3cd12fb99a09280ca9c33a89c5d60b93253617d2e088c1a40374d9",
+          "size_bytes": 212758388
+        },
+        {
+          "path": "model_artifacts/tableformer/accurate/tm_config.json",
+          "sha256": "984e122ceb8ccf84d84c9d2882f6f2302a44b4f1e577babd6289892c36f3cffd",
+          "size_bytes": 7060
+        }
+      ]
+    }
+  ],
+  "ocr": {
+    "engine": "tesseract",
+    "languages": [
+      "ind",
+      "eng"
+    ],
+    "artifacts": [
+      {
+        "path": "/usr/share/tesseract-ocr/5/tessdata/ind.traineddata",
+        "sha256": "69786901da87ab8766c1ea7fbb10b28f2110c14da3f6c8f2735df131fba95d88"
+      },
+      {
+        "path": "/usr/share/tesseract-ocr/5/tessdata/eng.traineddata",
+        "sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2"
+      }
+    ],
+    "version": "5.5.0"
+  },
+  "options": {
+    "layout": "layout_heron",
+    "table_mode": "accurate",
+    "ocr_mode": "native_text_or_full_page",
+    "remote_services": false
+  },
+  "version_no": 1
+}

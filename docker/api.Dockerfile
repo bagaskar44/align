@@ -18,7 +18,7 @@ COPY migrations migrations
 COPY alembic.ini ./
 COPY config config
 COPY fixtures fixtures
-RUN uv sync --frozen --package align-api --no-dev --no-editable
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --package align-api --no-dev --no-editable
 RUN useradd --create-home --uid 10001 align && chown -R align:align /app/.venv
 
 ENV PATH="/app/.venv/bin:$PATH"

@@ -267,3 +267,16 @@ def execute_job(self: Any, job_id: str) -> dict[str, object]:
         job.last_error_code = failure_code
     return {"status": "blocked", "reason": failure_code, "academic_result": False}
 
+
+@shared_task(
+    name="align.parse_context",
+    soft_time_limit=int(os.environ.get("JOB_MAX_ACTIVE_SECONDS", "600")) + 30,
+    time_limit=int(os.environ.get("JOB_MAX_ACTIVE_SECONDS", "600")) + 60,
+    max_retries=5,
+    autoretry_for=(OperationalError,), retry_backoff=True, retry_jitter=True,
+)
+def parse_context(job_id: str) -> dict[str, object]:
+    # The coordinator can run several bounded children; each child retains the
+    # 120/150-second guard and all attempts share the 600-second reservation cap.
+    return execute_job.run(job_id)  # type: ignore[no-any-return]
+

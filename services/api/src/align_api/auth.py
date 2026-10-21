@@ -41,7 +41,7 @@ class LoginRequest(StrictRequest):
     @field_validator("password")
     @classmethod
     def check_password_bytes(cls, value: str) -> str:
-        if len(value.encode("utf-8")) > 128:
+        if len(value.encode("utf-8")) > 512:
             raise ValueError("password is too long")
         return value
 
@@ -50,10 +50,10 @@ class PasswordChangeRequest(StrictRequest):
     current_password: StrictStr = Field(min_length=1, max_length=128)
     new_password: StrictStr = Field(min_length=12, max_length=128)
 
-    @field_validator("new_password")
+    @field_validator("current_password", "new_password")
     @classmethod
     def check_new_password_bytes(cls, value: str) -> str:
-        if len(value.encode("utf-8")) > 128:
+        if len(value.encode("utf-8")) > 512:
             raise ValueError("password is too long")
         return value
 
@@ -135,7 +135,7 @@ def login(
     ip_key = f"{redis_prefix}:login:ip:{hashlib.sha256(ip.encode()).hexdigest()}"
     _check_login_limit(settings, email_key, ip_key)
 
-    user = db.scalar(select(User).where(User.normalized_email == normalized_email))
+    user = db.scalar(select(User).where(User.normalized_email == normalized_email).with_for_update())
     valid = verify_password(body.password, user.password_hash if user and user.active else None)
     if user is None or not user.active or not valid:
         _record_login_failure(settings, email_key, ip_key)
@@ -313,7 +313,15 @@ def change_password(
     db: Annotated[DbSession, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings)],
     request: Request,
+    response: Response,
 ) -> Response:
+    # Serialize with administrator reset/deactivation and concurrent password
+    # changes, then recheck the bearer after obtaining the account lock.
+    expected_token_hash = identity.session.token_hash
+    user = db.scalar(select(User).where(User.id == identity.user.id).with_for_update().execution_options(populate_existing=True))
+    session = db.scalar(select(LoginSession).where(LoginSession.id == identity.session.id).with_for_update().execution_options(populate_existing=True))
+    if user is None or not user.active or session is None or session.revoked_at is not None or session.token_hash != expected_token_hash:
+        raise HTTPException(status_code=401, detail="invalid session")
     if not verify_password(body.current_password, identity.user.password_hash):
         raise HTTPException(status_code=401, detail="current password rejected")
     try:
@@ -328,7 +336,19 @@ def change_password(
         .where(LoginSession.user_id == identity.user.id, LoginSession.id != identity.session.id)
         .values(revoked_at=datetime.now(UTC))
     )
-    identity.session.revoked_at = datetime.now(UTC)
+    # Rotate the bearer and CSRF binding in the current session. The old bearer
+    # immediately stops matching, while the caller remains signed in.
+    now = datetime.now(UTC)
+    raw_token = new_session_token()
+    identity.session.token_hash = token_digest(raw_token)
+    identity.session.csrf_hash = csrf_digest(new_csrf_token(
+        settings.csrf_secret_bytes, str(identity.session.id), identity.session.token_hash,
+    ))
+    identity.session.last_seen_at = now
+    identity.session.absolute_expires_at = now + timedelta(hours=settings.session_absolute_hours)
+    identity.session.expires_at = min(
+        now + timedelta(hours=settings.session_idle_hours), identity.session.absolute_expires_at,
+    )
     db.add(
         AuditEvent(
             actor_user_id=identity.user.id,
@@ -339,14 +359,16 @@ def change_password(
         )
     )
     db.commit()
-    response = Response(status_code=204)
-    response.delete_cookie(
+    response.set_cookie(
         SESSION_COOKIE,
+        raw_token,
         path="/",
         secure=settings.app_origin.startswith("https://"),
         httponly=True,
         samesite="lax",
+        max_age=settings.session_absolute_hours * 60 * 60,
     )
+    response.status_code = 204
     response.headers["Cache-Control"] = "private, no-store"
     return response
 

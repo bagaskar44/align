@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,27 @@ _FIELD_PATTERNS = {
 def _anchor_key(anchor: dict[str, Any]) -> str:
     encoded = json.dumps(anchor, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _file_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(64 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_docling_resources() -> None:
+    config = json.loads(Path(os.environ.get("ALIGN_PARSER_RESOURCE_CONFIG", "/app/config/parser-context-resources.json")).read_text())
+    root = Path(os.environ.get("DOCLING_ARTIFACTS_PATH", "/opt/docling-models"))
+    for model in config["models"]:
+        for item in model["files"]:
+            path = root / model["repo_id"].replace("/", "--") / item["path"]
+            if not path.is_file() or _file_hash(path) != item["sha256"]:
+                raise ModuleNotFoundError("pinned parser model resource unavailable")
+    for item in config["ocr"].get("artifacts", []):
+        if _file_hash(Path(item["path"])) != item["sha256"]:
+            raise ModuleNotFoundError("pinned OCR resource unavailable")
 
 
 def _make_unit(unit_type: str, anchor: dict[str, Any], status: str = "parsed", limitations: list[dict[str, str]] | None = None) -> dict[str, Any]:
@@ -177,9 +199,10 @@ def _parse_docx(path: Path) -> dict[str, Any]:
     }
 
 
-def _parse_docling(path: Path, suffix: str) -> dict[str, Any]:
+def _parse_docling(path: Path, suffix: str, page: int | None = None) -> dict[str, Any]:
+    _verify_docling_resources()
     from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.datamodel.pipeline_options import PdfPipelineOptions, TesseractCliOcrOptions
     from docling.document_converter import DocumentConverter, ImageFormatOption, PdfFormatOption
 
     root_format = "pdf" if suffix == ".pdf" else "image"
@@ -189,53 +212,75 @@ def _parse_docling(path: Path, suffix: str) -> dict[str, Any]:
     evidence: list[dict[str, Any]] = []
     limitations: list[dict[str, str]] = []
     original_dimensions: tuple[int, int] | None = None
+    orientation = 1
+    ocr_required = True
+    transforms: list[dict[str, Any]] = []
     if suffix == ".pdf":
         from pypdf import PdfReader
 
         with path.open("rb") as source:
-            page_count = len(PdfReader(source, strict=True).pages)
-        for page_no in range(1, page_count + 1):
+            reader = PdfReader(source, strict=True)
+            page_count = len(reader.pages)
+            if page:
+                ocr_required = not bool((reader.pages[page - 1].extract_text() or "").strip())
+        if page is not None and not 1 <= page <= page_count:
+            raise ValueError("PDF page outside validated inventory")
+        selected_pages = [page] if page else list(range(1, page_count + 1))
+        for page_no in selected_pages:
             units.append(_make_unit("page", {"format": "pdf", "page": page_no, "locator_note": "Page inventory; exact geometry populated after parsing"}, "parsed"))
         allowed = [InputFormat.PDF]
     else:
-        from PIL import Image
+        from PIL import Image, ImageOps
+        from PIL import __version__ as pillow_version
 
         with Image.open(path) as image:
             width, height = image.size
+            orientation = int(image.getexif().get(274, 1))
+            if orientation not in range(1, 9):
+                raise ValueError("invalid image orientation")
+            if orientation != 1:
+                transform = {"parent_sha256": _file_hash(path), "orientation": orientation,
+                             "tool": "Pillow", "version": pillow_version, "operation": "exif_transpose"}
+                transform["id"] = _anchor_key(transform)
+                transforms.append(transform)
+                with ImageOps.exif_transpose(image) as oriented:
+                    derivative = Path(tempfile.gettempdir()) / f"align-oriented-{transform['id']}.png"
+                    oriented.save(derivative)
+                    transform["derivative_sha256"] = _file_hash(derivative)
+                path = derivative
         original_dimensions = (width, height)
         units.append(_make_unit("image", {"format": "image", "width": width, "height": height, "bbox": [0, 0, width, height], "coordinate_system": "original_pixels_top_left", "transform_id": None}, "parsed"))
         page_count = 1
         allowed = [InputFormat.IMAGE]
     artifacts_path = os.environ.get("DOCLING_ARTIFACTS_PATH", "/opt/docling-models")
     pipeline_options = PdfPipelineOptions(artifacts_path=artifacts_path, allow_external_plugins=False, enable_remote_services=False)
-    pipeline_options.do_ocr = True
+    pipeline_options.do_ocr = ocr_required
+    pipeline_options.ocr_options = TesseractCliOcrOptions(lang=["ind", "eng"], force_full_page_ocr=ocr_required)
     format_options: dict[Any, Any] = {}
     if suffix == ".pdf":
         format_options[InputFormat.PDF] = PdfFormatOption(pipeline_options=pipeline_options)
     else:
         format_options[InputFormat.IMAGE] = ImageFormatOption(pipeline_options=pipeline_options)
     converter = DocumentConverter(allowed_formats=allowed, format_options=format_options or None)
-    result = converter.convert(str(path))
+    result = converter.convert(str(path), **({"page_range": (page, page)} if page else {}))
     document = result.document
     if document is None:
         raise ValueError("Docling did not produce a document")
     pages = document.pages
-    page_success: dict[int, bool] = {number: False for number in range(1, page_count + 1)}
+    page_success: dict[int, bool] = {number: False for number in (selected_pages if suffix == ".pdf" else [1])}
     page_sizes: dict[int, tuple[float, float]] = {}
-    for number, page in pages.items():
-        size = page.size
+    for number, source_page in pages.items():
+        size = source_page.size
         page_sizes[int(number)] = (float(size.width), float(size.height))
-        if int(number) in page_success:
-            page_success[int(number)] = True
 
-    items: list[tuple[Any, str]] = [(item, "paragraph") for item in document.texts]
+    items: list[tuple[Any, str]] = [(item, "image_text" if ocr_required else "paragraph") for item in document.texts]
     items.extend((item, "table") for item in document.tables)
     items.extend((item, "diagram") for item in document.pictures)
     for index, (item, kind) in enumerate(items, start=1):
         content: dict[str, Any]
-        if kind == "paragraph":
+        if kind in {"paragraph", "image_text"}:
             text = str(getattr(item, "text", ""))
-            content = {"text": text}
+            content = {"text": text, "ocr_unverified": ocr_required}
         elif kind == "table":
             text = str(item.export_to_markdown(document))
             content = {"text": text, "format": "markdown"}
@@ -255,7 +300,7 @@ def _parse_docling(path: Path, suffix: str) -> dict[str, Any]:
             if page_size is not None:
                 bbox = bbox.to_top_left_origin(page_height=page_size[1])
             left, top, right, bottom = (float(value) for value in bbox.as_tuple())
-            if not all(map(lambda value: value == value and abs(value) != float("inf"), (left, top, right, bottom))) or left < 0 or top < 0 or right < left or bottom < top:
+            if not all(map(lambda value: value == value and abs(value) != float("inf"), (left, top, right, bottom))) or left < 0 or top < 0 or right < left or bottom < top or page_size is None or right > page_size[0] + 0.1 or bottom > page_size[1] + 0.1:
                 locator = {"format": "file", "locator_note": f"Docling item {index} page {page_no}; geometry outside verified bounds"}
                 limitation = {"code": "source_geometry_invalid", "message": "The reported parser geometry is outside the validated source bounds."}
                 unit = _make_unit(kind, locator, "partially_parsed", [limitation])
@@ -266,7 +311,8 @@ def _parse_docling(path: Path, suffix: str) -> dict[str, Any]:
                 unit = _make_unit(kind, locator)
             else:
                 assert original_dimensions is not None
-                if page_size != original_dimensions or right > original_dimensions[0] or bottom > original_dimensions[1]:
+                expected_size = original_dimensions[::-1] if orientation in {5, 6, 7, 8} else original_dimensions
+                if page_size != expected_size:
                     locator = {
                         "format": "image",
                         "width": original_dimensions[0],
@@ -279,11 +325,22 @@ def _parse_docling(path: Path, suffix: str) -> dict[str, Any]:
                     unit = _make_unit(kind, locator, "partially_parsed", [limitation])
                     limitations.append(limitation)
                 else:
-                    locator = {"format": "image", "width": original_dimensions[0], "height": original_dimensions[1], "bbox": [left, top, right, bottom], "coordinate_system": "original_pixels_top_left", "transform_id": None}
+                    w, h = original_dimensions
+                    def original_point(x: float, y: float, w: int = w, h: int = h) -> tuple[float, float]:
+                        return {1: (x, y), 2: (w-x, y), 3: (w-x, h-y), 4: (x, h-y),
+                                5: (y, x), 6: (y, h-x), 7: (w-y, h-x), 8: (w-y, x)}[orientation]
+                    corners = [original_point(x, y) for x, y in ((left, top), (right, bottom), (left, bottom), (right, top))]
+                    original_box = [min(x for x, _ in corners), min(y for _, y in corners), max(x for x, _ in corners), max(y for _, y in corners)]
+                    locator = {"format": "image", "width": w, "height": h, "bbox": original_box, "coordinate_system": "original_pixels_top_left", "transform_id": transforms[0]["id"] if transforms else None}
                     unit = _make_unit(kind, locator)
             if page_no in page_success:
                 page_success[page_no] = True
         units.append(unit)
+        if kind == "diagram" and not text.strip():
+            limitation = {"code": "visual_content_not_interpreted", "message": "Region visual tercatat; isi visual memerlukan peninjauan manual."}
+            unit["parse_status"] = "partially_parsed"
+            unit["limitations"].append(limitation)
+            limitations.append(limitation)
         evidence.append(_make_evidence(unit, kind, content, unit["parse_status"]))
     if suffix == ".pdf":
         for unit in units[1:]:
@@ -291,8 +348,8 @@ def _parse_docling(path: Path, suffix: str) -> dict[str, Any]:
                 unit["parse_status"] = "partially_parsed"
                 unit["limitations"].append({"code": "page_without_extracted_items", "message": "The page is inventoried but no parser item was returned."})
         parsed_pages = sum(page_success.values())
-        if parsed_pages < page_count:
-            limitations.append({"code": "unresolved_pages", "message": f"{page_count - parsed_pages} source pages have no extracted item."})
+        if parsed_pages < len(page_success):
+            limitations.append({"code": "unresolved_pages", "message": f"{len(page_success) - parsed_pages} source pages have no extracted item."})
     if len(evidence) > MAX_EVIDENCE_ITEMS:
         raise ValueError("document node limit exceeded")
     if limitations:
@@ -306,24 +363,27 @@ def _parse_docling(path: Path, suffix: str) -> dict[str, Any]:
         "candidate_fields": _field_candidates(evidence),
         "limitations": limitations,
         "parser": "docling",
+        "transforms": transforms,
+        "covered_stages": ["metadata_inventory", "render", "layout", "text", "ocr" if ocr_required else "native_text", "table_extraction", "assembly_page"],
+        "ocr_decision": {"rule": "native_text_nonempty_or_full_page_v1", "full_page_ocr": ocr_required},
     }
 
 
-def parse_file(path: str, filename: str) -> dict[str, Any]:
+def parse_file(path: str, filename: str, page: int | None = None) -> dict[str, Any]:
     source = Path(path)
     suffix = Path(filename).suffix.lower()
     if suffix == ".docx":
         return _parse_docx(source)
     if suffix in {".pdf", ".jpg", ".jpeg", ".png"}:
-        return _parse_docling(source, suffix)
+        return _parse_docling(source, suffix, page)
     raise ValueError("unsupported file format")
 
 
 def main() -> None:
-    if len(sys.argv) != 4:
-        raise SystemExit("usage: parser_child PATH FILENAME OUTPUT_JSON")
+    if len(sys.argv) not in {4, 5}:
+        raise SystemExit("usage: parser_child PATH FILENAME OUTPUT_JSON [PDF_PAGE]")
     try:
-        result = parse_file(sys.argv[1], sys.argv[2])
+        result = parse_file(sys.argv[1], sys.argv[2], int(sys.argv[4]) if len(sys.argv) == 5 else None)
     except Exception as exc:
         module_name = type(exc).__module__
         is_resource_error = isinstance(exc, ModuleNotFoundError) or module_name.startswith(

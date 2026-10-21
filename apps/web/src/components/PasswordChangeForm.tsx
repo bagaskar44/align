@@ -31,7 +31,7 @@ export function PasswordChangeForm({ csrfToken }: { csrfToken: string }) {
         setMessage("Perubahan kata sandi gagal. Pastikan kata sandi saat ini benar dan kata sandi baru memenuhi ketentuan.");
         return;
       }
-      router.replace("/login?changed=1");
+      router.replace("/");
       router.refresh();
     } catch {
       setMessage("Layanan sementara tidak tersedia. Coba kembali beberapa saat lagi.");

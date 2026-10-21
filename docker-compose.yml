@@ -158,7 +158,9 @@ services:
       context: .
       dockerfile: docker/test.Dockerfile
     env_file: .env.tests
-    command: ["uv", "run", "--no-sync", "pytest", "tests/integration/test_postgres_foundation.py"]
+    environment:
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+    command: ["uv", "run", "--no-sync", "pytest", "tests/integration"]
     depends_on:
       migrate:
         condition: service_completed_successfully

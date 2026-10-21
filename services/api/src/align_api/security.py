@@ -16,9 +16,9 @@ def normalize_email(email: str) -> str:
     return email.strip().casefold()
 
 
-def hash_password(password: str, maximum_bytes: int = 128) -> str:
+def hash_password(password: str, maximum_bytes: int = 512) -> str:
     encoded = password.encode("utf-8")
-    if len(encoded) < 12 or len(encoded) > maximum_bytes:
+    if not 12 <= len(password) <= 128 or len(encoded) > maximum_bytes:
         raise ValueError("password length is outside the allowed range")
     return _hasher.hash(password)
 

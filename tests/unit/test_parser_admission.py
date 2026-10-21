@@ -28,6 +28,7 @@ class _RedisStub:
         (9 * 1024**3 - 1, 8 * 1024**3),
         (9 * 1024**3, 8 * 1024**3 - 1),
         (None, None),
+        (None, 8 * 1024**3),
     ],
 )
 def test_document_profile_fails_closed_without_required_capacity(
@@ -73,3 +74,20 @@ def test_document_profile_acquires_lease_only_after_capacity_check(monkeypatch: 
     assert lease.fence == 42
     assert redis_stub.closed is True
     assert len(redis_stub.eval_calls) == 1
+
+
+def test_cgroup_capacity_credits_only_clean_inactive_file_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    contents = {
+        "/proc/meminfo": "MemAvailable: 10000000 kB\n",
+        "/sys/fs/cgroup/memory.max": str(9 * 1024**3),
+        "/sys/fs/cgroup/memory.current": str(2 * 1024**3),
+        "/sys/fs/cgroup/memory.stat": f"inactive_file {1024**3}\nfile_dirty 1024\nfile_writeback 2048\nanon {1024**3}\n",
+    }
+    def read(path, **_kwargs):
+        return contents[str(path)]
+    monkeypatch.setattr(parser_admission.Path, "read_text", read)
+    host, container = parser_admission._memory_sources()
+    assert host == 10_000_000 * 1024
+    assert container == 8 * 1024**3 - 3072
+    contents["/sys/fs/cgroup/memory.stat"] = "malformed"
+    assert parser_admission._memory_sources()[1] == 7 * 1024**3

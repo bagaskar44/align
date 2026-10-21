@@ -1,7 +1,7 @@
 # Setup macOS dari checkout bersih
 
 Tanggal: 20 Oktober 2026 (Asia/Jakarta). Cakupan: setup source B0/B1 yang sudah
-ada untuk runtime manual/mock. Hasil parsing pada setup awal tetap historis.
+ada untuk runtime manual/mock. Hasil parsing pada setup awal tetap historis; pembuktian B1 lanjutan 21 Oktober dicatat di [handover B1](B1.md).
 
 ## Prasyarat mesin
 
@@ -239,3 +239,20 @@ native berbeda. Prosedur ini tidak memisahkan/mengaktifkan worker native dan
 tidak mengklaim parsing tersedia. Tidak ada limit diturunkan, bypass admission,
 atau fallback light otomatis. Full B1 gate memerlukan pekerjaan/verifikasi
 terpisah sesuai handover B1.
+
+## Tambahan setelah penyelesaian kandidat B1 (21 Oktober)
+
+Laporan clean setup di atas tetap merupakan bukti revision 739b77a + patch setup pada waktu itu, bukan klaim bahwa harness penuh sudah diulang setelah seluruh perubahan B1. Pada checkout uji B1 terpisah, migration 0003, build API/worker/web/parser, seed idempotent, integrasi dan login/browser diuji kembali. Hasil dan batas aktual ada di [handover B1](B1.md).
+
+Parser tidak dimulai oleh command `up`; langkah eksplisit berikut tersedia:
+
+```sh
+bash scripts/dev-macos.sh parser-up
+bash scripts/dev-macos.sh parser-integration
+```
+
+Build parser memerlukan jaringan untuk paket OS dan dua model pinned; revision/ukuran/checksum dalam `config/parser-context-resources.json` diverifikasi. Runtime memakai model lokal/offline. Perubahan dependency minimal extra `convert-core` (rtree/scipy) disetujui pengguna setelah Docling nyata gagal karena rtree tidak terpasang. Versi paket lama tetap; frozen install memakai lockfile kandidat baru.
+
+Pada Mac ini pengguna mengizinkan Docker Desktop dialokasikan 12 GiB. Heavy tetap membutuhkan 9 GiB host tersedia serta 8 GiB container tersedia; angka alokasi saja tidak membuktikan admission cukup. Dua stack lengkap dapat saling berebut RAM. Saat uji terisolasi, worker/scheduler development yang idle dijeda dengan izin pengguna lalu dipulihkan; jangan menganggap ini tindakan otomatis yang boleh dilakukan pada mesin lain. Tidak ada limit parser diturunkan.
+
+Untuk provider-off pilih `PROVIDER_MODE=off` pada env service privat yang relevan (API dan worker), lalu recreate service; jangan mencetak file env. Mode mock/synthetic tetap default. Live belum memenuhi guard keuangan dan tetap diblokir. Lihat [keputusan B1](../technical-decisions.md) untuk perubahan middleware, admission, manifest, migration dan adapter. Folder ignored/toolchain lokal lama bukan requirement checkout bersih.

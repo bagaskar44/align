@@ -12,11 +12,9 @@ from align_api.config import Settings
 
 _ACQUIRE_SCRIPT = """
 local expired = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
-for _, id in ipairs(expired) do
-  redis.call('HDEL', KEYS[2], id)
-  redis.call('SREM', KEYS[3], id)
-  redis.call('ZREM', KEYS[1], id)
-end
+-- Expiry is not proof that the child process died. Quarantine this node
+-- until its owner has terminated the process group and released the lease.
+if #expired > 0 then return {0, 0, 'parser_capacity_unavailable'} end
 local used = 0
 local values = redis.call('HVALS', KEYS[2])
 for _, value in ipairs(values) do used = used + tonumber(value) end
@@ -35,6 +33,12 @@ _RELEASE_SCRIPT = """
 redis.call('HDEL', KEYS[2], ARGV[1])
 redis.call('SREM', KEYS[3], ARGV[1])
 redis.call('ZREM', KEYS[1], ARGV[1])
+return 1
+"""
+
+_RENEW_SCRIPT = """
+if redis.call('ZSCORE', KEYS[1], ARGV[1]) == false then return 0 end
+redis.call('ZADD', KEYS[1], ARGV[2], ARGV[1])
 return 1
 """
 
@@ -57,16 +61,35 @@ def _memory_sources() -> tuple[int | None, int | None]:
                 break
     except OSError:
         host_available = None
-    container_available: int | None = None
-    for max_path, current_path in (
-        ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"),
-        ("/sys/fs/cgroup/memory/memory.limit_in_bytes", "/sys/fs/cgroup/memory/memory.usage_in_bytes"),
+    container_available: int | None = 0
+    for max_path, current_path, stat_path, inactive_key in (
+        ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory.stat", "inactive_file"),
+        ("/sys/fs/cgroup/memory/memory.limit_in_bytes", "/sys/fs/cgroup/memory/memory.usage_in_bytes", "/sys/fs/cgroup/memory/memory.stat", "total_inactive_file"),
     ):
         try:
             limit_text = Path(max_path).read_text(encoding="ascii").strip()
             current_text = Path(current_path).read_text(encoding="ascii").strip()
-            if limit_text != "max":
-                container_available = max(0, int(limit_text) - int(current_text))
+            if limit_text == "max":
+                container_available = None
+                break
+            else:
+                # Like Linux's working-set accounting, credit only inactive,
+                # clean file cache. Model downloads/read-only mappings otherwise
+                # exhaust "available" capacity after the first completed child.
+                # Missing/invalid stats conservatively credit no cache.
+                reclaimable = 0
+                try:
+                    stats = {key: int(value) for key, value in (
+                        line.split() for line in Path(stat_path).read_text(encoding="ascii").splitlines()
+                    )}
+                    prefix = "total_" if inactive_key.startswith("total_") else ""
+                    reclaimable = max(0, stats.get(inactive_key, 0) - sum(
+                        stats.get(prefix + key, 0) for key in ("dirty", "writeback", "shmem")
+                    ) - stats.get("file_dirty", 0) - stats.get("file_writeback", 0))
+                except (OSError, ValueError):
+                    pass
+                current = int(current_text)
+                container_available = max(0, int(limit_text) - current + min(current, reclaimable))
                 break
         except (OSError, ValueError):
             continue
@@ -89,9 +112,9 @@ def acquire_parser_lease(settings: Settings, profile: str) -> tuple[AdmissionLea
     memory_bytes = settings.parser_document_memory_bytes if heavy else settings.parser_native_memory_bytes
     required = memory_bytes + settings.parser_node_headroom_bytes
     host_available, container_available = _memory_sources()
-    if (host_available is None and container_available is None) or (
-        host_available is not None and host_available < required
-    ) or (container_available is not None and container_available < memory_bytes):
+    if host_available is None or host_available < required or (
+        container_available is not None and container_available < memory_bytes
+    ):
         return None, "parser_capacity_unavailable"
     node_id = settings.parser_node_id
     prefix = settings.redis_queue_prefix
@@ -135,5 +158,17 @@ def release_parser_lease(settings: Settings, lease: AdmissionLease) -> None:
     client = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
     try:
         client.eval(_RELEASE_SCRIPT, len(keys), *keys, lease.lease_id)
+    finally:
+        client.close()
+
+
+def renew_parser_lease(settings: Settings, lease: AdmissionLease) -> bool:
+    key = f"{settings.redis_queue_prefix}:parser:leases:{lease.node_id}"
+    expires_ms = int(time.time() * 1000) + max(
+        settings.worker_lease_seconds, settings.parser_task_hard_seconds + 30,
+    ) * 1000
+    client = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
+    try:
+        return int(cast(Any, client.eval)(_RENEW_SCRIPT, 1, key, lease.lease_id, expires_ms)) == 1
     finally:
         client.close()

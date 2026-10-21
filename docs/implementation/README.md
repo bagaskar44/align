@@ -1,8 +1,8 @@
 # Panduan Implementasi ALIGN per Tahap
 
-Tanggal pembaruan: 20 Oktober 2026 (Asia/Jakarta). Bahasa implementasi produk dan dokumen: Indonesia.
+Tanggal pembaruan: 21 Oktober 2026 (Asia/Jakarta). Bahasa implementasi produk dan dokumen: Indonesia.
 
-**Status: gate lokal B0 selesai; implementasi B1 berjalan dan gate B1 masih parsial.** Per 20 Oktober 2026, provisioning, konteks manual, konflik KK/RPP, approval, dan parsing native DOCX lulus alur browser. Profil Docling untuk PDF/gambar belum terverifikasi karena MemAvailable 7,98 GiB masih di bawah kebutuhan 9 GiB. B2–B9 belum dimulai. Lihat [traceability](../../requirements_traceability.md), [handover B0](../handover/B0.md), dan [handover B1](../handover/B1.md).
+**Status: gate lokal B0 dan B1 mock/synthetic lulus; berhenti setelah B1.** Auth/context dan native DOCX diuji bersama regresi browser; PDF digital/scan, PNG/JPG/JPEG/EXIF diuji dengan Docling nyata, manifest/anchor/checkpoint/replay. Integrasi umum 21 passed, browser 9 passed, matrix parser final 6 passed. Ini bukan gate live/benchmark atau penyelesaian seluruh acceptance lintas tahap. B2–B9 belum dimulai. Lihat [traceability](../../requirements_traceability.md), [handover B0](../handover/B0.md), dan [handover B1](../handover/B1.md) untuk bukti serta batas sebenarnya.
 
 ## 1. Otoritas dan cara menggunakan paket
 

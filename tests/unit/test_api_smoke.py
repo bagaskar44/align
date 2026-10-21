@@ -27,3 +27,12 @@ def test_login_rejects_cross_origin_with_stable_error_envelope() -> None:
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "FORBIDDEN"
     assert response.json()["error"]["message"] == "Aksi tidak diizinkan."
+
+
+def test_auth_body_limit_counts_actual_chunked_bytes_before_login() -> None:
+    client = TestClient(create_app())
+    response = client.post('/api/v1/auth/login', content=iter([b' ' * 4096, b' ' * 4097]))
+    assert response.status_code == 413
+    assert response.json()['error']['code'] == 'PAYLOAD_TOO_LARGE'
+    response = client.put('/api/v1/me/password', headers={'Content-Length': '9000'}, content=b'{}')
+    assert response.status_code == 413

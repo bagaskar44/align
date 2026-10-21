@@ -185,6 +185,7 @@ def get_context_file(
         .where(
             FileAsset.id == file_id,
             FileAsset.purpose == "context",
+            FileAsset.validation_state == "validated",
             Course.active.is_(True),
             Enrollment.user_id == identity.user.id,
             Enrollment.role == "lecturer",
@@ -210,6 +211,7 @@ def download_context_file(
         .where(
             FileAsset.id == file_id,
             FileAsset.purpose == "context",
+            FileAsset.validation_state == "validated",
             Course.active.is_(True),
             Enrollment.user_id == identity.user.id,
             Enrollment.role == "lecturer",
@@ -218,19 +220,38 @@ def download_context_file(
     )
     if asset is None:
         raise HTTPException(status_code=404, detail="file not found")
+    staged = tempfile.TemporaryFile()
     try:
         response = storage_client(settings).get_object(Bucket=settings.s3_bucket, Key=asset.object_key)
-    except (BotoCoreError, ClientError) as exc:
+        body = response["Body"]
+        try:
+            digest = hashlib.sha256()
+            size = 0
+            for chunk in body.iter_chunks(chunk_size=64 * 1024):
+                if chunk:
+                    size += len(chunk)
+                    if size > min(asset.size_bytes, settings.max_file_bytes):
+                        raise HTTPException(status_code=409, detail="source integrity check failed")
+                    digest.update(chunk)
+                    staged.write(chunk)
+            if size != asset.size_bytes or digest.hexdigest() != asset.sha256:
+                raise HTTPException(status_code=409, detail="source integrity check failed")
+            staged.seek(0)
+        finally:
+            body.close()
+    except HTTPException:
+        staged.close()
+        raise
+    except (BotoCoreError, ClientError, OSError) as exc:
+        staged.close()
         raise HTTPException(status_code=503, detail="storage unavailable") from exc
 
     def content() -> Any:
-        body = response["Body"]
         try:
-            for chunk in body.iter_chunks(chunk_size=64 * 1024):
-                if chunk:
-                    yield chunk
+            while chunk := staged.read(64 * 1024):
+                yield chunk
         finally:
-            body.close()
+            staged.close()
 
     headers = {
         "Content-Disposition": f"attachment; filename*=UTF-8''{quote(asset.original_name)}",

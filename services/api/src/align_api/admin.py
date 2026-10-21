@@ -233,6 +233,9 @@ def update_user(
     db: Annotated[DbSession, Depends(get_db)],
 ) -> dict[str, object]:
     _admin(identity)
+    # Always acquire the shared admin-set lock before any individual user lock.
+    # Otherwise concurrent demotions can deadlock while each owns a different row.
+    db.execute(text("SELECT pg_advisory_xact_lock(553715848)"))
     user = db.scalar(select(User).where(User.id == user_id).with_for_update())
     if user is None:
         raise HTTPException(status_code=404, detail="user not found")
@@ -243,7 +246,6 @@ def update_user(
     will_be_active_admin = (body.active if body.active is not None else user.active) and (
         body.global_role if body.global_role is not None else user.global_role
     ) == "admin"
-    db.execute(text("SELECT pg_advisory_xact_lock(553715848)"))
     if user.active and user.global_role == "admin" and not will_be_active_admin:
         active_admins = db.scalars(
             select(User).where(User.active.is_(True), User.global_role == "admin").with_for_update()

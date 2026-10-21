@@ -27,7 +27,7 @@ export default async function CourseContextPage({ params }: { params: Promise<{ 
       </header>
       <div className="content-shell">
         <section className="page-intro" aria-labelledby="course-title"><p className="eyebrow">KONTEKS KURIKULUM · {courseResult.data.code}</p><h1 id="course-title">{courseResult.data.title}</h1><p className="intro-copy">Kelola versi konteks, sumber normatif, usulan parser, dan keputusan akademik.</p></section>
-        <ContextWorkspace course={courseResult.data} csrfToken={profileResult.data.csrf_token} initialVersions={versionsResult.data.items} />
+        <ContextWorkspace course={courseResult.data} csrfToken={profileResult.data.csrf_token} initialVersions={versionsResult.data.items} initialCursor={versionsResult.data.next_cursor} />
       </div>
     </main>
   );

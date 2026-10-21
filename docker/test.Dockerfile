@@ -15,6 +15,9 @@ COPY services/api/src services/api/src
 COPY services/worker/pyproject.toml services/worker/pyproject.toml
 COPY services/worker/src services/worker/src
 COPY tests tests
-RUN uv sync --frozen --all-packages --group dev
+COPY apps/web/e2e/fixtures apps/web/e2e/fixtures
+COPY config config
+COPY fixtures fixtures
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --all-packages --group dev
 
-CMD ["uv", "run", "--no-sync", "pytest", "tests/integration/test_postgres_foundation.py"]
+CMD ["uv", "run", "--no-sync", "pytest", "tests/integration"]

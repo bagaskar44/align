@@ -11,6 +11,15 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = logging.getLogger("align.api")
 
+_CONTEXT_ERRORS = {
+    "context parsing must finish before approval": "Ekstraksi masih berjalan. Tunggu hasilnya sebelum mengesahkan konteks.",
+    "context conflicts must be resolved": "Selesaikan konflik sumber dengan nilai keputusan dan alasan sebelum mengesahkan konteks.",
+    "required context fields must be confirmed": "Konfirmasi semua field wajib sebelum mengesahkan konteks.",
+    "source integrity check failed": "Integritas berkas sumber tidak cocok. Unggah ulang sumber ke draft baru.",
+    "conflict value and reason cannot be blank": "Isi nilai keputusan dan alasan penyelesaian konflik.",
+    "context field cannot be blank": "Field konteks wajib tidak boleh kosong.",
+}
+
 
 def error_payload(request: Request, code: str, message: str, field_errors: list[dict[str, str]] | None = None) -> dict[str, Any]:
     return {
@@ -39,6 +48,8 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         code, message = _http_error_copy(exc.status_code)
+        if isinstance(exc.detail, str):
+            message = _CONTEXT_ERRORS.get(exc.detail, message)
         return JSONResponse(
             status_code=exc.status_code,
             content=error_payload(request, code, message),

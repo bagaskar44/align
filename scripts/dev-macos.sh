@@ -1,5 +1,5 @@
 #!/bin/bash
-# Local manual/mock runtime; parser worker is not started by this workflow.
+# Local manual/mock runtime; heavy parser startup and verification are explicit.
 set -euo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 cd "$script_dir/.."
@@ -41,10 +41,16 @@ case "${1:-help}" in
   integration)
     compose --profile test run --build --rm --no-deps test-runner
     ;;
+  parser-up)
+    compose up --build --detach parser-worker
+    ;;
+  parser-integration)
+    compose --profile test run --build --rm --no-deps --env ALIGN_RUN_PARSER_INTEGRATION=true test-runner uv run --no-sync pytest tests/integration/test_b1_parser_runtime.py -v
+    ;;
   stop)
     compose stop
     ;;
-  *) echo 'Usage: bash scripts/dev-macos.sh {bootstrap|install|up|seed|verify|integration|stop}'
+  *) echo 'Usage: bash scripts/dev-macos.sh {bootstrap|install|up|seed|verify|integration|parser-up|parser-integration|stop}'
      echo 'Select isolation with ALIGN_COMPOSE_PROJECT and ALIGN_HOST_PORT (before bootstrap).'
      exit 1 ;;
 esac

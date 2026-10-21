@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import math
 import re
 import stat
 import zipfile
 from pathlib import PurePath, PureWindowsPath
 from typing import Any, BinaryIO
+from xml.sax.handler import ContentHandler
+from xml.sax.xmlreader import AttributesImpl
 
-from defusedxml import ElementTree as ET
+from defusedxml import sax
 from fastapi import HTTPException
 
 SUPPORTED_SUFFIXES = {".pdf", ".docx", ".jpg", ".jpeg", ".png"}
@@ -105,20 +108,32 @@ def validate_context_file(path: str, filename: str | None, reported_mime: str | 
                 if reader.is_encrypted:
                     raise HTTPException(status_code=415, detail="encrypted PDFs are unsupported")
                 pages = len(reader.pages)
+                page_sizes = [
+                    [float(page.mediabox.width), float(page.mediabox.height)] for page in reader.pages
+                ] if pages <= 100 else []
         except HTTPException:
             raise
         except Exception as exc:
             raise HTTPException(status_code=415, detail="unsupported file") from exc
         if pages < 1 or pages > 100:
             raise HTTPException(status_code=413, detail="document page limit exceeded")
+        if any(not math.isfinite(value) or value <= 0 for size in page_sizes for value in size):
+            raise HTTPException(status_code=415, detail="invalid PDF geometry")
         detected_mime = EXPECTED_MIME[suffix]
-        details: dict[str, Any] = {"pages": pages, "parser_profile": "docling_native_v1"}
+        details: dict[str, Any] = {"pages": pages, "page_sizes": page_sizes, "parser_profile": "docling_native_v1"}
     elif suffix == ".docx":
         if prefix[:4] != b"PK\x03\x04":
             raise HTTPException(status_code=415, detail="unsupported file")
         archive_info = _zip_preflight(path, max_ooxml_entries, max_ooxml_expanded_bytes)
         try:
             node_count = 0
+            class NodeCounter(ContentHandler):
+                def startElement(self, _name: str, _attrs: AttributesImpl) -> None:
+                    nonlocal node_count
+                    node_count += 1
+                    if node_count > max_docx_nodes:
+                        raise HTTPException(status_code=413, detail="document node limit exceeded")
+            counter = NodeCounter()
             with zipfile.ZipFile(path) as archive:
                 names = archive.namelist()
                 media_count = sum(name.startswith("word/media/") for name in names)
@@ -130,11 +145,7 @@ def validate_context_file(path: str, filename: str | None, reported_mime: str | 
                 ]
                 for part in content_parts:
                     with archive.open(part) as stream:
-                        for event, _node in ET.iterparse(stream, events=("start",)):
-                            if event == "start":
-                                node_count += 1
-                                if node_count > max_docx_nodes:
-                                    raise HTTPException(status_code=413, detail="document node limit exceeded")
+                        sax.parse(stream, counter, forbid_dtd=True, forbid_entities=True, forbid_external=True)
         except HTTPException:
             raise
         except Exception as exc:
@@ -161,7 +172,11 @@ def validate_context_file(path: str, filename: str | None, reported_mime: str | 
 
             with Image.open(path) as image:
                 width, height = image.size
+                if width <= 0 or height <= 0 or width * height > max_pixels:
+                    raise HTTPException(status_code=413, detail="image pixel limit exceeded")
                 image.verify()
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(status_code=415, detail="unsupported file") from exc
         if width <= 0 or height <= 0 or width * height > max_pixels:
