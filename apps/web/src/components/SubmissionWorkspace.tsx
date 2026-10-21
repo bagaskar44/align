@@ -5,6 +5,19 @@ import { useEffect, useRef, useState, type ChangeEvent } from "react";
 type Assignment = { id: string; title: string; version_no?: number | null; due_at?: string; mode?: "individual" | "group" };
 type DraftFile = { id: string; name: string; size_bytes: number; mime: string; sha256: string; preflight: Record<string, unknown> };
 type SubmissionJobStatus = { status: string; retry_scheduled?: boolean };
+type StudentPublication = {
+  publication_id: string;
+  status: "released" | "withdrawn" | "not_published";
+  submission_version?: number;
+  assignment_version?: number;
+  published_at?: string;
+  feedback_markdown?: string;
+  feedback_blocks?: Array<{ message: string; next_action?: string | null; limitation?: string | null }>;
+  limitations?: string[];
+  source_labels?: string[];
+  confirmed_findings?: Array<{ category: string; criterion_title: string; claim: string; evidence: Array<{ file_name: string; anchor: Record<string, unknown> }> }>;
+};
+type PublicationHistoryItem = { publication_id: string; sequence_no: number; submission_version: number; status: string; published_at: string };
 type SubmissionStatus = {
   id: string;
   revision: number;
@@ -39,6 +52,8 @@ export function SubmissionWorkspace({ assignments, csrfToken }: { assignments: A
   const [groupId, setGroupId] = useState("");
   const [confirmFinal, setConfirmFinal] = useState(false);
   const [job, setJob] = useState<SubmissionJobStatus | null>(null);
+  const [publishedResult, setPublishedResult] = useState<StudentPublication | null>(null);
+  const [publicationHistory, setPublicationHistory] = useState<PublicationHistoryItem[]>([]);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const pollCount = useRef(0);
@@ -50,11 +65,28 @@ export function SubmissionWorkspace({ assignments, csrfToken }: { assignments: A
     setSubmission(current);
     const jobId = current.active_final_version?.job_id;
     if (jobId) setJob(await api<SubmissionJobStatus>(`/jobs/${jobId}`, csrfToken));
+    if (current.active_final_version) await loadPublication(id);
     return current;
+  }
+
+  async function loadPublication(submissionId: string, publicationId?: string) {
+    try {
+      const suffix = publicationId ? `?publication_id=${encodeURIComponent(publicationId)}` : "";
+      const [result, history] = await Promise.all([
+        api<StudentPublication>(`/submissions/${submissionId}/published-result${suffix}`, csrfToken),
+        api<{ items: PublicationHistoryItem[] }>(`/submissions/${submissionId}/publications`, csrfToken),
+      ]);
+      setPublishedResult(result);
+      setPublicationHistory(history.items);
+    } catch {
+      setPublishedResult(null);
+      setPublicationHistory([]);
+    }
   }
 
   async function openAssignment(assignment: Assignment) {
     setError(""); setNotice(""); setSelected(assignment); setSubmission(null); setJob(null); setConfirmFinal(false);
+    setPublishedResult(null); setPublicationHistory([]);
     try {
       const [assignmentDetail, listed] = await Promise.all([
         api<Record<string, unknown>>(`/assignments/${assignment.id}`, csrfToken),
@@ -64,6 +96,7 @@ export function SubmissionWorkspace({ assignments, csrfToken }: { assignments: A
       const existing = listed.items[0];
       if (existing) {
         setSubmission(existing);
+        if (existing.active_final_version) await loadPublication(existing.id);
         if (existing.active_final_version?.job_id) {
           setJob(await api<SubmissionJobStatus>(`/jobs/${existing.active_final_version.job_id}`, csrfToken));
           pollCount.current = 0;
@@ -224,6 +257,24 @@ export function SubmissionWorkspace({ assignments, csrfToken }: { assignments: A
             {submission.final_files.map((file) => <li key={file.id}><strong>{file.name}</strong><span>{file.mime} · {file.size_bytes} byte</span></li>)}
           </ul>
         </div>}
+        {submission?.active_final_version && <section className="student-publication" aria-labelledby="student-publication-title">
+          <h3 id="student-publication-title">Hasil pemeriksaan resmi</h3>
+          {!publishedResult || publishedResult.status === "not_published" ? <p className="notice notice-muted">Feedback belum diterbitkan. Status parser tidak menyimpulkan hasil akademik.</p> : publishedResult.status === "withdrawn" ? <p className="notice notice-muted">Hasil versi sumber {publishedResult.submission_version ?? "—"} ditarik untuk koreksi.</p> : <>
+            <p className="help-text">Publikasi {new Date(publishedResult.published_at ?? "").toLocaleString("id-ID")} · versi tugas {publishedResult.assignment_version} · versi sumber {publishedResult.submission_version}</p>
+            <pre className="student-feedback-text">{publishedResult.feedback_markdown}</pre>
+            {publishedResult.feedback_blocks?.map((block, index) => <article className="criterion-card" key={`${index}-${block.message}`}>
+              <p>{block.message}</p>{block.next_action && <p><strong>Langkah berikutnya:</strong> {block.next_action}</p>}{block.limitation && <p><strong>Batas:</strong> {block.limitation}</p>}
+            </article>)}
+            {publishedResult.limitations?.length ? <div><strong>Batas pemeriksaan</strong><ul>{publishedResult.limitations.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul></div> : null}
+            {publishedResult.confirmed_findings?.length ? <div className="student-finding-list"><strong>Temuan dan bukti yang disertakan</strong>{publishedResult.confirmed_findings.map((item, itemIndex) => <article className="criterion-card" key={`${item.criterion_title}-${itemIndex}`}><h4>{item.criterion_title} · {item.category}</h4><p>{item.claim}</p>{item.evidence.map((source, index) => <small key={`${source.file_name}-${index}`}>{source.file_name} · {String(source.anchor.locator_note ?? source.anchor.format ?? "lokasi sumber")}</small>)}</article>)}</div> : null}
+            <div className="button-row"><a className="button button-quiet" href={`/api/v1/publications/${publishedResult.publication_id}/export?format=json`}>Unduh JSON</a><a className="button button-quiet" href={`/api/v1/publications/${publishedResult.publication_id}/export?format=md`}>Unduh Markdown</a></div>
+          </>}
+          {publicationHistory.length > 1 && <label className="field-label">Riwayat publikasi
+            <select value={publishedResult?.publication_id ?? ""} onChange={(event) => void loadPublication(submission.id, event.target.value)}>
+              {publicationHistory.map((item) => <option key={item.publication_id} value={item.publication_id}>Publikasi {item.sequence_no} · sumber v{item.submission_version} · {item.status}</option>)}
+            </select>
+          </label>}
+        </section>}
       </article>}
     </section>
   );

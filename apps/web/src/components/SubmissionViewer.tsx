@@ -5,7 +5,8 @@ import { PdfSourceViewer } from "./PdfSourceViewer";
 
 type Unit = { id: string; unit_type: string; anchor: Record<string, unknown>; parse_status: string; limitations: Array<Record<string, unknown>> };
 type FileSources = { items: Unit[]; next_cursor: number | null; parse_status: string; limitations: Array<Record<string, unknown>>; file: { id: string; name: string; mime: string; preflight: Record<string, unknown>; content_url: string } };
-type Rendered = { source_unit: Unit; evidence: Array<{ id: string; type: string; content: Record<string, unknown>; parse_status: string; limitations: Array<Record<string, unknown>> }>; file: { name: string; mime: string; preflight?: Record<string, unknown>; content_url: string } };
+type Rendered = { source_unit: Unit; evidence: Array<{ id: string; type: string; content: Record<string, unknown>; parse_status: string; limitations: Array<Record<string, unknown>> }>; file: { id: string; name: string; mime: string; sha256: string; preflight?: Record<string, unknown>; content_url: string } };
+export type ManualAnchorSelection = { file_id: string; source_sha256: string; anchor: Record<string, unknown>; original_evidence_id: string | null; source_unit_id: string };
 type SpreadsheetCell = { source_unit_id: string; anchor: Record<string, unknown>; content: Record<string, unknown>; parse_status: string; limitations: Array<Record<string, unknown>> };
 type SpreadsheetPage = { sheet: { name: string; state: string }; items: SpreadsheetCell[]; next_cursor: number | null; total_preflight_nonempty_cells: number };
 
@@ -16,7 +17,9 @@ async function requestJson<T>(url: string): Promise<T> {
   return value;
 }
 
-export function SubmissionFileViewer({ fileId }: { fileId: string }) {
+export function SubmissionFileViewer({ fileId, initialSourceUnitId, onManualAnchor }: {
+  fileId: string; initialSourceUnitId?: string; onManualAnchor?: (selection: ManualAnchorSelection) => void;
+}) {
   const [sources, setSources] = useState<FileSources | null>(null);
   const [selected, setSelected] = useState<Rendered | null>(null);
   const [cursor, setCursor] = useState<number | null>(null);
@@ -29,11 +32,12 @@ export function SubmissionFileViewer({ fileId }: { fileId: string }) {
       .then(async (result) => {
         if (!live) return;
         setSources(result); setCursor(result.next_cursor); setError("");
-        if (result.items[0]) setSelected(await requestJson<Rendered>(`/api/v1/source-units/${result.items[0].id}/render`));
+        if (initialSourceUnitId) setSelected(await requestJson<Rendered>(`/api/v1/source-units/${initialSourceUnitId}/render`));
+        else if (result.items[0]) setSelected(await requestJson<Rendered>(`/api/v1/source-units/${result.items[0].id}/render`));
       })
       .catch((cause: unknown) => { if (live) setError(cause instanceof Error ? cause.message : "Sumber tidak dapat dibuka."); });
     return () => { live = false; };
-  }, [fileId]);
+  }, [fileId, initialSourceUnitId]);
 
   async function selectUnit(unit: Unit) {
     setError("");
@@ -91,6 +95,10 @@ export function SubmissionFileViewer({ fileId }: { fileId: string }) {
             </>}
           </div>
         </div>
+        {selected && onManualAnchor && <button type="button" className="button button-quiet" onClick={() => onManualAnchor({
+          file_id: selected.file.id, source_sha256: selected.file.sha256, anchor: selected.source_unit.anchor,
+          original_evidence_id: selected.evidence[0]?.id ?? null, source_unit_id: selected.source_unit.id,
+        })}>Gunakan lokasi ini sebagai evidence manual</button>}
       </>}
     </section>
   );

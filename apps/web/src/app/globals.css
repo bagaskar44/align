@@ -212,6 +212,11 @@ h1 { margin-bottom: 10px; font-size: clamp(30px, 5vw, 42px); line-height: 1.15; 
 .assignment-card { width: 100%; flex-direction: column; align-items: flex-start; text-align: left; cursor: pointer; }
 .assignment-card span { color: var(--muted); font-size: 12px; }
 .student-task-preview { display: grid; gap: 14px; padding-top: 20px; border-top: 1px solid var(--border); }
+.student-publication { display: grid; gap: 12px; padding-top: 18px; border-top: 1px solid var(--border); }
+.student-publication h3 { margin: 0; font-size: 17px; }
+.student-feedback-text { margin: 0; padding: 14px; white-space: pre-wrap; overflow-wrap: anywhere; background: #fff; border: 1px solid var(--border); border-radius: 10px; font: inherit; }
+.student-finding-list { display: grid; gap: 8px; }
+.student-finding-list small { display: block; margin-top: 5px; color: var(--muted); }
 .instruction-preview { max-height: 520px; margin: 0; padding: 16px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); background: var(--surface-muted); border: 1px solid var(--border); border-radius: 10px; font: inherit; }
 .criterion-card { padding: 14px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: 10px; }
 .criterion-card h4 { margin: 0 0 7px; font-size: 14px; }
@@ -265,6 +270,37 @@ h1 { margin-bottom: 10px; font-size: clamp(30px, 5vw, 42px); line-height: 1.15; 
 .image-source-content { position: relative; }
 .image-source-content img { display: block; max-width: 100%; }
 .image-anchor-overlay { position: absolute; border: 3px solid #dc2626; background: rgb(239 68 68 / 12%); pointer-events: none; }
+.b4-review-workspace { display: grid; gap: 16px; min-width: 0; padding: 16px; background: #fff; border: 1px solid var(--border); border-radius: 12px; }
+.b4-review-workspace h3, .b4-review-workspace h4, .b4-review-workspace h5 { margin: 0; }
+.b4-review-columns { display: grid; grid-template-columns: minmax(0, .86fr) minmax(0, 1.14fr); gap: 14px; align-items: start; min-width: 0; }
+.b4-review-panel { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; padding: 14px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: 11px; }
+.b4-review-panel > *, .b4-action-card > *, .b4-feedback-card > *, .b4-finding-card > * { min-width: 0; max-width: 100%; }
+.b4-review-panel > h4 { font-size: 15px; }
+.b4-element-list { display: grid; gap: 7px; max-height: 360px; overflow-y: auto; }
+.b4-element-button { display: grid; gap: 5px; padding: 10px; color: var(--text); text-align: left; border: 1px solid var(--border); border-radius: 9px; background: #fff; cursor: pointer; }
+.b4-element-button[aria-current="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px rgb(37 99 235 / 12%); }
+.b4-element-button span, .b4-element-button small { color: var(--muted); font-size: 11px; }
+.b4-action-card, .b4-feedback-card, .b4-finding-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; min-width: 0; padding: 12px; background: #fff; border: 1px solid var(--border); border-radius: 9px; }
+.b4-action-card > .button, .b4-finding-card > .button { justify-self: start; }
+.field-label { display: grid; gap: 6px; min-width: 0; color: var(--text); font-size: 12px; font-weight: 650; }
+.field-label input, .field-label select, .field-label textarea { width: 100%; min-width: 0; min-height: 42px; padding: 9px 10px; color: var(--text); background: #fff; border: 1px solid #94a3b8; border-radius: 8px; }
+.field-label textarea { min-height: 110px; resize: vertical; }
+.b4-action-card p, .b4-finding-card p { margin: 0; overflow-wrap: anywhere; }
+.b4-action-card h5, .b4-feedback-card h5 { font-size: 14px; }
+.b4-select-list { display: grid; gap: 7px; max-height: 220px; margin: 0; padding: 10px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+.b4-select-list legend { padding-inline: 4px; font-size: 12px; font-weight: 700; }
+.b4-select-list small, .b4-finding-card small { color: var(--muted); font-size: 11px; }
+.b4-evidence-content, .b4-feedback-preview pre { max-height: 260px; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #fff; border: 1px solid var(--border); border-radius: 8px; font: inherit; font-size: 12px; }
+.b4-candidate-actions { display: grid; gap: 10px; margin-top: 10px; }
+.b4-feedback-preview { display: grid; gap: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.b4-mobile-tabs { display: none; }
+
+@media (max-width: 767px) {
+  .b4-mobile-tabs { display: flex; gap: 8px; overflow-x: auto; }
+  .b4-mobile-tabs .button { flex: 1 0 auto; }
+  .b4-review-columns { grid-template-columns: minmax(0, 1fr); }
+  .b4-mobile-hidden { display: none; }
+}
 
 @media (max-width: 600px) {
   .topbar { min-height: 68px; padding-inline: 20px; }

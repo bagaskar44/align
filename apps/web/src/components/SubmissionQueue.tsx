@@ -1,12 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { SubmissionFileViewer } from "./SubmissionViewer";
+import { SubmissionFileViewer, type ManualAnchorSelection } from "./SubmissionViewer";
+import { ReviewWorkspace } from "./ReviewWorkspace";
 
 type Assignment = { id: string; title: string };
 type SubmissionFile = { id: string; name: string; mime: string; preflight: Record<string, unknown>; content_url: string; parse_status: string; limitations: Array<Record<string, unknown>> };
 type Submission = {
   id: string;
+  assignment_id: string;
   revision: number;
   owner: { individual_user_id: string | null; group_id: string | null; label?: string };
   roster?: string[];
@@ -22,11 +24,12 @@ async function getJson<T>(path: string): Promise<T> {
   return payload;
 }
 
-export function SubmissionQueue({ assignments }: { assignments: Assignment[] }) {
+export function SubmissionQueue({ assignments, csrfToken }: { assignments: Assignment[]; csrfToken: string }) {
   const [assignmentId, setAssignmentId] = useState("");
   const [items, setItems] = useState<Submission[]>([]);
   const [selected, setSelected] = useState<Submission | null>(null);
   const [fileId, setFileId] = useState("");
+  const [manualAnchorSelection, setManualAnchorSelection] = useState<ManualAnchorSelection | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -68,12 +71,14 @@ export function SubmissionQueue({ assignments }: { assignments: Assignment[] }) 
     setItems([]);
     setSelected(null);
     setFileId("");
+    setManualAnchorSelection(null);
     setError("");
   }
 
   function selectSubmission(item: Submission) {
     setSelected(item);
     setFileId(item.files?.[0]?.id ?? "");
+    setManualAnchorSelection(null);
   }
 
   const activeFile = selected?.files?.find((item) => item.id === fileId) ?? null;
@@ -104,12 +109,15 @@ export function SubmissionQueue({ assignments }: { assignments: Assignment[] }) 
           <h3>Versi {selected.active_final_version?.version_no ?? "—"}</h3>
           <p className="help-text">Manifest SHA-256: <code>{selected.active_final_version?.manifest_hash ?? "—"}</code></p>
           <div className="submission-file-list">
-            {(selected.files ?? []).map((file) => <button key={file.id} type="button" className="submission-file-select" onClick={() => setFileId(file.id)}>
+            {(selected.files ?? []).map((file) => <button key={file.id} type="button" className="submission-file-select" onClick={() => { setFileId(file.id); setManualAnchorSelection(null); }}>
               <strong>{file.name}</strong><span>{file.parse_status} · {file.mime}</span>
               {file.limitations.map((limit, index) => <small key={`${String(limit.code)}-${index}`}>{String(limit.message ?? limit.code)}</small>)}
             </button>)}
           </div>
-          {activeFile && <SubmissionFileViewer fileId={activeFile.id} />}
+          {activeFile && <SubmissionFileViewer fileId={activeFile.id} onManualAnchor={setManualAnchorSelection} />}
+          {selected.active_final_version && <ReviewWorkspace key={selected.active_final_version.id}
+            submission={selected} csrfToken={csrfToken} manualAnchorSelection={manualAnchorSelection}
+            onManualAnchorSelection={setManualAnchorSelection} />}
         </article>}
       </div>}
     </section>

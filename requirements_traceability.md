@@ -1,7 +1,7 @@
-# Requirements traceability B0–B3
+# Requirements traceability B0–B4
 
 Sumber normatif: `ALIGN_IMPLEMENTATION_SPEC.md` v2 dan alokasi tahap pada `docs/implementation/README.md`.
-Bagian matriks di bawah mencatat baseline B0/B1 per 21 Oktober 2026. Verifikasi lokal mock/synthetic mencakup auth/context, native DOCX dan Docling nyata; hasil, hardware dan batas gate ada di `docs/handover/B1.md`. Overlay B2 mencatat pekerjaan assignment/specification dan B2 gate yang lulus pada 21 Oktober 2026. Overlay B3 di bawah mencatat submission/viewer dan parser yang lulus pada data sintetis terisolasi pada 21 Oktober 2026. Acceptance bersama yang gate lengkapnya berada di B4–B8 tetap pending pada tahap pemiliknya. Test mock/synthetic bukan benchmark performa maksimum atau bukti inference live. Hasil dan batas ada di `docs/handover/B2.md` dan `docs/handover/B3.md`.
+Bagian matriks di bawah mencatat baseline B0/B1 per 21 Oktober 2026. Verifikasi lokal mock/synthetic mencakup auth/context, native DOCX dan Docling nyata; hasil, hardware dan batas gate ada di `docs/handover/B1.md`. Overlay B2, B3 dan B4 memperbarui bukti pada tahap masing-masing tanpa mengubah acceptance normatif. B4 berjalan pada data sintetis terisolasi dan provider off. Acceptance bersama yang gate lengkapnya berada di B5–B8 tetap pending pada tahap pemiliknya. Test mock/synthetic bukan benchmark performa maksimum atau bukti inference live. Hasil dan batas ada di handover tiap tahap.
 
 ## Overlay implementasi B2
 
@@ -59,6 +59,31 @@ Overlay ini memperbarui status bukti B3 pada baseline di bawah tanpa mengubah re
 | AC-MVP-64 | CLI/report B3 lulus untuk benchmark sintetis aktual; eligibility/evaluation B8 pending | JSON/Markdown memisahkan actual parser child, cold/warm, hardware, lock/profile/model hashes, timing/RSS, support/failure limits. Tidak ada live provider, klaim empiris atau stress maksimum. |
 
 Rincian test, fixture IDs, hashes dan limitation ada di [handover B3](docs/handover/B3.md); laporan benchmark actual ada di [`docs/handover/b3-benchmarks/`](docs/handover/b3-benchmarks/).
+
+## Overlay implementasi B4
+
+Status berikut meliputi bagian B4 yang dialokasikan dan tidak menggantikan gate lanjutan. Bukti rinci serta skipped checks ada di `docs/handover/B4.md`.
+
+| ID | Status B4 aktual | Bukti / batas |
+|---|---|---|
+| FR-11 | Lulus gate B4 | Review manual tanpa analysis run, semua elemen, keputusan kandidat, evidence, finding manual dan completion diuji. Synthetic candidate fixtures diberi label mock dan bukan bukti executor. `tests/integration/test_b4_review_release.py`; `apps/web/e2e/assignments.spec.ts`. |
+| FR-12 | Alur provider-off lulus; financial exhaustion tetap B6 | Provider `off` tanpa run sukses menjalankan workflow manual sampai release. Guard finansial dan exhaustion penuh belum bagian B4. |
+| FR-13 | Manual/template dan pemisahan approve/publish lulus; generator AI B5 | Draft manual/template, stale approval, approval, publication dan released result teruji. |
+| FR-14 | Lulus bagian B4 | Student serializer membatasi hasil pada current enrollment dan owner/roster final; admin tak terdaftar, outsider, revoked enrollment ditolak. Anggota roster kelompok mendapat hasil kelompok yang sama. |
+| FR-15 | Review, source version dan publication history lulus bagian B4 | Revisions/audit, active-final guard, old snapshot label pada version 1, withdrawal dan replacement version 2 diuji. Retry finansial dan seluruh automated history tetap B6. |
+| FR-17 | Workspace dan linked click path lulus; aksesibilitas lengkap B7 pending | Playwright mempertahankan source selection dari viewer final ke evidence review. Keyboard/touch/mobile tabs belum diklaim lulus. |
+| FR-18 | Lulus gate B4 | JSON dan Markdown menggunakan publication snapshot; JSON no-store, historical annotation tetap sama, export setelah withdrawal tidak tersedia. |
+| FR-23 | Lulus B4 pada linked anchor dan annotation revisions | Shared source selection, span/transcription/binding, append-only revisions, removal, stale feedback dan historical export diuji. AC-MVP-60 gesture/accessibility penuh masih B7. |
+| INV-02, INV-04 | Lulus bukti B4 | Evidence mengikat final file/hash/anchor; transcription membuat EvidenceItem lecturer baru tanpa mengubah original. Decimal policy memeriksa locale, konversi, context, tolerance dan source verification. |
+| INV-05 | Lulus B4 | DB integration mengonfirmasi worker role dapat menulis analysis/candidates tetapi tidak review decisions, feedback approval atau publications/events. |
+| INV-07 | Lulus consumer B4 pada fixture | Candidate accept/edit/reject/defer diuji; rejected/deferred claims tidak muncul sebagai kritik template. Generator/defer limitation penuh untuk AI tetap B5. |
+| INV-08 | Snapshot B4 lulus pada field yang dinyatakan | Publication hash menyimpan source/assignment/review/feedback/evidence/annotation dan actor; hash serta snapshot historis tetap sama setelah perubahan anotasi. Seluruh config/reconciliation gate tetap B6. |
+| INV-11, INV-12 | Lulus B4 pada workflow manual/roster fixture | Provider off tidak membatasi review manual; dua anggota roster mendapat hasil kelompok identik tanpa data diagnosis individual. |
+| AC-MVP-01, 03–04 | Lulus bagian B4 | Fresh isolated Compose stack, mode provider off, dua peran, internal endpoint denial, admin global-role denial, enrollment revocation dan workflow sampai ekspor/penggantian teruji. |
+| AC-MVP-29, 31, 34 | Alur dasar B4 lulus; gate ekstensi berlanjut | Provider-off manual pass; candidate consumer excludes reject/defer; internal serializer isolation lulus. Exhaustion B6, AI-generated feedback/executor B5 dan full internal endpoint audit tetap gate pemiliknya. |
+| AC-MVP-30, 32–33, 35–36 | Lulus gate B4 | Concurrent two-lecturer revision menghasilkan 200/409; unable-to-conclude dapat complete; annotation merusak stale approval; publish replay sama; source baru tetap berlabel version lama. |
+| AC-MVP-41, 61–62 | Lulus gate B4 pada tes yang dinyatakan | Export/revoke/replacement, annotation append-only dan stale conflict, support removal, corrected transcription, snapshot historis teruji. |
+| AC-MVP-60 | Click selection lulus; gate penuh B7 pending | Viewer PDF membagikan pemilihan sumber ke review; keyboard/touch/mobile navigation dan responsive tabs belum diverifikasi. |
 
 ## Functional requirements
 

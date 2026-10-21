@@ -1035,7 +1035,10 @@ def render_submission_source_unit(
     _assignment, role = _submission_access(db, submission, identity, version_id=version.id)
     if role != "lecturer":
         raise HTTPException(status_code=404, detail="source unit not found")
-    if artifact.status not in {"parsed", "partially_parsed", "unreadable", "unsupported", "failed"} or not _verify_source_anchor(unit.anchor_json, asset):
+    if (
+        artifact.status not in {"parsed", "partially_parsed", "unreadable", "unsupported", "failed", "blocked"}
+        or not _verify_source_anchor(unit.anchor_json, asset)
+    ):
         raise HTTPException(status_code=409, detail="source anchor unavailable")
     evidence = db.scalars(select(EvidenceItem).where(EvidenceItem.source_unit_id == unit.id,
         EvidenceItem.submission_version_id == version.id).order_by(EvidenceItem.created_at)).all()

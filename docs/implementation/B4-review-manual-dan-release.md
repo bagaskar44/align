@@ -1,6 +1,6 @@
 # B4 — Review Manual dan Release
 
-**Status implementasi: BELUM DIMULAI. Hasil pengujian: BELUM DIJALANKAN.**
+**Status: implementasi dan gate B4 lulus pada alur manual yang dialokasikan.** Rincian bukti, hasil regresi, batas dan hal yang belum lulus ada di [handover B4](../handover/B4.md). Ini tidak menandai gate lanjutan B5–B8 selesai.
 
 [Indeks dan matriks](README.md) · [Master](../../ALIGN_IMPLEMENTATION_SPEC.md) · [Predecessor: B3](B3-submission-dan-viewer.md) · [Berikutnya: B5](B5-ai-executor.md)
 
@@ -109,12 +109,14 @@ Jalankan DB transaction/concurrency tests dengan PostgreSQL nyata dan Playwright
 
 ## 6. Gate dan handover
 
-- [ ] Alur manual lengkap terbukti end-to-end tanpa paid/provider dependency.
-- [ ] Semua elemen/candidate consumer, manual evidence/findings dan numeric manual rules benar.
-- [ ] Linked selection, append-only annotation/history, stale/complete dan support removal safeguards bekerja.
-- [ ] Approval/publish terpisah, immutable snapshot/export/withdrawal dan student serialization benar.
-- [ ] Worker tidak dapat menulis academic decisions/approval/publication; concurrency/IDOR tests lulus.
-- [ ] Traceability dan `docs/handover/B4.md` mencatat source/review/publication fixture IDs, command/results serta capability AI/numeric otomatis yang belum selesai.
+- [x] Alur manual lengkap terbukti end-to-end tanpa paid/provider dependency.
+- [x] Semua elemen/candidate consumer, manual evidence/findings dan numeric manual rules benar pada fixture yang dinyatakan.
+- [x] Linked selection desktop, append-only annotation/history, stale/complete dan support removal safeguards bekerja.
+- [x] Approval/publish terpisah, immutable snapshot/export/withdrawal/replacement dan student serialization benar.
+- [x] Worker tidak dapat menulis academic decisions/approval/publication; concurrency, authorization dan revocation tests lulus.
+- [x] Traceability dan `docs/handover/B4.md` mencatat fixture IDs, command/results, skipped tests dan capability yang masih dimiliki B5–B8.
+
+AC-MVP-60 untuk navigasi keyboard/touch dan layout tab mobile, generator feedback B5, automated numeric/financial exhaustion B6, serta final accessibility/robustness B7 tetap pending pada pemiliknya.
 
 **BERHENTI setelah B4.** Ini milestone manual lengkap, belum seluruh MVP atau efektivitas AI. Jangan memulai B5 otomatis.
 

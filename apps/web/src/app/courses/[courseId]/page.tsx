@@ -37,7 +37,7 @@ export default async function CourseContextPage({ params }: { params: Promise<{ 
         {membership.role === "lecturer" && versionsResult?.kind === "ok" && <>
           <ContextWorkspace course={courseResult.data} csrfToken={profileResult.data.csrf_token} initialVersions={versionsResult.data.items} initialCursor={versionsResult.data.next_cursor} />
           <AssignmentWorkspace course={courseResult.data} csrfToken={profileResult.data.csrf_token} approvedContexts={versionsResult.data.items} initialAssignments={assignmentsResult.data.items} />
-          <SubmissionQueue assignments={assignmentsResult.data.items} />
+          <SubmissionQueue assignments={assignmentsResult.data.items} csrfToken={profileResult.data.csrf_token} />
         </>}
         {membership.role === "student" && <>
           <StudentAssignments courseId={courseId} csrfToken={profileResult.data.csrf_token} initialAssignments={assignmentsResult.data.items} />
