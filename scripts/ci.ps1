@@ -206,8 +206,8 @@ function Write-ValidationManifest {
         }
         parser_config_sha256 = $parserConfigs
         parser_profiles = [ordered]@{
-            development = [ordered]@{ document_memory_bytes = 4_294_967_296; container_limit_bytes = 5_368_709_120; headroom_bytes = 1_073_741_824 }
-            production = [ordered]@{ document_memory_bytes = 8_589_934_592; container_limit_bytes = 9_663_676_416; headroom_bytes = 1_073_741_824 }
+            development = [ordered]@{ document_memory_bytes = 4294967296; container_limit_bytes = 5368709120; headroom_bytes = 1073741824 }
+            production = [ordered]@{ document_memory_bytes = 8589934592; container_limit_bytes = 9663676416; headroom_bytes = 1073741824 }
         }
         qa_image_ids = $qaImageIds
         required_stages = @($requiredStages.Keys)
