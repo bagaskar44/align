@@ -262,10 +262,10 @@ function Invoke-PlaywrightGate {
 
 function Save-QAImageIds {
     param([Parameter(Mandatory = $true)][string]$Project)
-    foreach ($service in @('migrate', 'api', 'worker', 'parser-worker', 'test-parser-worker', 'test-runner', 'web')) {
+    foreach ($service in @('migrate', 'api', 'worker', 'outbox-dispatcher', 'scheduler', 'parser-worker', 'test-parser-worker', 'test-outbox-dispatcher', 'test-runner', 'web')) {
         $image = "$Project-$service"
-        $id = & docker image inspect $image --format '{{.Id}}' 2>$null
-        if ($LASTEXITCODE -eq 0 -and $id) { $qaImageIds["$Project/$service"] = "$id".Trim() }
+        $id = & docker image ls --no-trunc --format '{{.ID}}' $image 2>$null | Select-Object -First 1
+        if ($id) { $qaImageIds["$Project/$service"] = "$id".Trim() }
     }
 }
 
