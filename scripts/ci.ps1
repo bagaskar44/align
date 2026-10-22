@@ -450,14 +450,14 @@ try {
         Invoke-JUnitGate -Label 'linux-unit' -Report (Join-Path $evidenceRoot 'linux-unit.xml') -SummaryPath (Join-Path $evidenceRoot 'linux-unit-summary.json')
         Complete-QAStage -Name 'linux-unit' -Summary $stageResults['linux-unit']
         Write-Output '==> Full PostgreSQL integration suite with Linux process-isolation tests enabled'
-        Start-QAStage -Name 'integration-suite' -Command 'pytest tests/integration --junitxml /qa-evidence/integration.xml (only 8 parser-runtime + 1 OOM opt-in skips allowed)'
+        Start-QAStage -Name 'integration-suite' -Command 'pytest tests/integration --junitxml /qa-evidence/integration.xml (only 7 parser-runtime + 1 OOM opt-in skips allowed)'
         Invoke-QACompose $integrationProject @('stop', 'outbox-dispatcher', 'worker') | Out-Null
         Invoke-QACompose $integrationProject @('--profile', 'test', 'up', '--build', '--detach', '--wait', 'test-parser-worker', 'test-outbox-dispatcher') | Out-Null
         Invoke-QACompose $integrationProject @('stop', 'parser-worker') | Out-Null
         Invoke-QACompose $integrationProject @('--profile', 'test', 'run', '--rm', '--build', '--no-deps', '--volume', "${dockerEvidenceRoot}:/qa-evidence", '-e', 'ALIGN_RUN_INTEGRATION=true', '-e', "PARSER_DOCUMENT_MEMORY_BYTES=$env:ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES", 'test-runner', 'uv', 'run', '--no-sync', 'pytest', 'tests/integration', '-q', '--junitxml', '/qa-evidence/integration.xml') | Tee-Object -FilePath (Join-Path $evidenceRoot 'integration.log')
         if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL integration suite failed.' }
         Invoke-JUnitGate -Label 'integration' -Report (Join-Path $evidenceRoot 'integration.xml') -SummaryPath (Join-Path $evidenceRoot 'integration-summary.json') -AllowedSkips @(
-            'test_b1_parser_runtime::test_real_docling_source_hash_original_anchor_and_checkpoint_replay=8',
+            'test_b1_parser_runtime::test_real_docling_source_hash_original_anchor_and_checkpoint_replay=7',
             'test_b3_parser_oom::test_confirmed_cgroup_oom_maps_to_parser_memory_limit=1'
         )
         Complete-QAStage -Name 'integration-suite' -Summary $stageResults['integration']
