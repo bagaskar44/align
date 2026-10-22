@@ -156,6 +156,12 @@ def test_lost_parser_message_recovery_is_guarded_and_idempotent() -> None:
         recover_queued_parser_job(pending.id, reason="pending event must not be duplicated")
     with pytest.raises(RecoveryRejected, match="manifest is incompatible"):
         recover_queued_parser_job(incompatible.id, reason="mismatched manifest must not be reissued")
+    with WorkerSessionFactory() as db:
+        unchanged = db.get(Job, incompatible.id)
+        assert unchanged is not None
+        assert unchanged.scope_json["parser_resources"]["native_ooxml_v1"]["sha256"] == "f" * 64
+        assert unchanged.input_fingerprint == incompatible.input_fingerprint
+        assert unchanged.status == "queued"
 
     key = str(uuid4())
     first = recover_queued_parser_job(

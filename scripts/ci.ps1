@@ -6,10 +6,13 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
+. (Join-Path $PSScriptRoot 'promotion-orchestration.ps1')
 $temporaryEnvironmentNames = @(
     'APP_ORIGIN', 'ALIGN_HOST_PORT', 'ALIGN_WEB_BASE_URL', 'ALIGN_ALIAS_BASE_URL',
     'ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES', 'ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES',
-    'CI', 'UV_CACHE_DIR', 'PLAYWRIGHT_BROWSERS_PATH'
+    'PARSER_NATIVE_MEMORY_BYTES', 'PARSER_DOCUMENT_MEMORY_BYTES', 'PARSER_NODE_MEMORY_BUDGET_BYTES',
+    'PARSER_NODE_HEADROOM_BYTES', 'CI', 'UV_CACHE_DIR', 'PLAYWRIGHT_BROWSERS_PATH',
+    'PLAYWRIGHT_JSON_OUTPUT_NAME'
 )
 $previousTemporaryEnvironment = @{}
 foreach ($name in $temporaryEnvironmentNames) {
@@ -17,7 +20,11 @@ foreach ($name in $temporaryEnvironmentNames) {
 }
 
 if (-not (Test-Path -LiteralPath '.env')) {
-    throw 'Local .env is required. CI will not create or replace credentials.'
+    Write-Output 'No private environment exists in this isolated checkout; creating fresh synthetic QA credentials.'
+    & (Join-Path $PSScriptRoot 'bootstrap.ps1')
+    if (-not (Test-Path -LiteralPath '.env')) {
+        throw 'Could not create the isolated synthetic QA environment.'
+    }
 }
 Get-Content -LiteralPath '.env' -Encoding UTF8 | ForEach-Object {
     $line = $_.Trim()
@@ -26,6 +33,11 @@ Get-Content -LiteralPath '.env' -Encoding UTF8 | ForEach-Object {
     if ($separator -lt 1) { return }
     [Environment]::SetEnvironmentVariable($line.Substring(0, $separator), $line.Substring($separator + 1), 'Process')
 }
+$env:ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES = '4294967296'
+$env:PARSER_NATIVE_MEMORY_BYTES = '2147483648'
+$env:PARSER_DOCUMENT_MEMORY_BYTES = '4294967296'
+$env:PARSER_NODE_MEMORY_BUDGET_BYTES = '4294967296'
+$env:PARSER_NODE_HEADROOM_BYTES = '1073741824'
 $previousNoColor = [Environment]::GetEnvironmentVariable('NO_COLOR', 'Process')
 Remove-Item Env:NO_COLOR -ErrorAction SilentlyContinue
 
@@ -44,8 +56,216 @@ $e2eStarted = $false
 $developmentPromoted = $false
 $developmentValidated = $false
 $developmentProject = $null
-$rollbackOverridePath = $null
+$promotionStarted = $false
+$stageResults = [ordered]@{}
+$stageRecords = [ordered]@{}
+$qaImageIds = [ordered]@{}
+$activeStage = $null
+$promotionStatePath = Join-Path $evidenceRoot 'development-promotion-state.json'
+$promotionRecord = $null
+$incompleteReason = $null
+$pipelineStartedUtc = [DateTime]::UtcNow.ToString('o')
 New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
+
+function Start-QAStage {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Command
+    )
+    $script:activeStage = $Name
+    $script:stageRecords[$Name] = [ordered]@{
+        command = $Command
+        started_at_utc = [DateTime]::UtcNow.ToString('o')
+        finished_at_utc = $null
+        status = 'running'
+        summary = $null
+    }
+}
+
+function Complete-QAStage {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string]$Status = 'passed',
+        [object]$Summary = $null
+    )
+    $record = $script:stageRecords[$Name]
+    if ($null -eq $record) { throw "QA stage was not started: $Name" }
+    $record.finished_at_utc = [DateTime]::UtcNow.ToString('o')
+    $record.status = $Status
+    $record.summary = $Summary
+    $script:stageRecords[$Name] = $record
+    if ($script:activeStage -eq $Name) { $script:activeStage = $null }
+}
+
+function Get-ConfigFileDigests {
+    $paths = @('docker-compose.yml', 'docker-compose.production.yml', 'config/release.baseline.json') +
+        @('.env', '.env.api', '.env.worker', '.env.postgres', '.env.migration', '.env.tests')
+    $digests = [ordered]@{}
+    foreach ($path in $paths) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $digests[$path] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+    }
+    return $digests
+}
+
+function Get-DevelopmentRuntimeSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][string]$Project,
+        [Parameter(Mandatory = $true)][string[]]$Services,
+        [string]$OverridePath
+    )
+    $containers = [System.Collections.Generic.List[object]]::new()
+    foreach ($service in $Services) {
+        $containerId = (& docker compose --project-name $Project ps --all -q $service | Select-Object -Last 1)
+        if ($LASTEXITCODE -ne 0) { throw "Could not snapshot current deployment service '$service'." }
+        $containerId = "$containerId".Trim()
+        if (-not $containerId) { continue }
+        $raw = & docker inspect --format '{{json .}}' $containerId
+        if ($LASTEXITCODE -ne 0 -or -not $raw) { throw "Could not inspect deployment container for '$service'." }
+        $container = (($raw -join "`n") | ConvertFrom-Json)
+        $containers.Add([ordered]@{
+            service = $service
+            container_id = $container.Id
+            image_id = $container.Image
+            configured_image = $container.Config.Image
+        })
+    }
+    $configDigests = Get-ConfigFileDigests
+    if ($OverridePath -and (Test-Path -LiteralPath $OverridePath -PathType Leaf)) {
+        $configDigests['promotion-images.yml'] = (Get-FileHash -LiteralPath $OverridePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    return [ordered]@{
+        captured_at_utc = [DateTime]::UtcNow.ToString('o')
+        project = $Project
+        services = $containers.ToArray()
+        config_sha256 = $configDigests
+    }
+}
+
+function Write-ValidationManifest {
+    param([Parameter(Mandatory = $true)][string]$Status)
+    $requiredStages = [ordered]@{
+        'python-dependencies' = 'uv sync --frozen --all-packages --group dev'
+        'api-client-contract' = 'uv run --no-sync python scripts/openapi_contract.py --check'
+        'frontend-dependencies' = 'corepack pnpm install --frozen-lockfile'
+        'python-static-checks' = 'Ruff and mypy'
+        'windows-unit' = 'pytest tests/unit; JUnit XML gate'
+        'promotion-orchestration' = 'PowerShell promotion test with a mocked Docker command and partial-failure journal assertions'
+        'frontend-checks' = 'pnpm lint, typecheck, build'
+        'docker-vm-capacity' = 'Docker Linux VM memory inspection'
+        'integration-database' = 'fresh isolated PostgreSQL migrations'
+        'parser-capacity-preflight' = 'Linux Docker free-memory check before parser tests'
+        'integration-seed-release' = 'seed twice and idempotent baseline registration/activation'
+        'linux-unit' = 'pytest tests/unit in Linux test image; JUnit XML gate'
+        'integration-suite' = 'pytest tests/integration; exact opt-in skips only'
+        'docling-parser' = '8 real parser cases, health samples, and fingerprints'
+        'parser-oom' = 'isolated 1 GiB Linux OOM case'
+        'e2e-database' = 'second fresh isolated PostgreSQL migrations and baseline'
+        'worker-smoke' = 'broker health and successful worker operation'
+        'browser-e2e' = '12 Playwright cases with strict JSON gate'
+        'parser-healthcheck' = 'unresponsive worker detection and recovery'
+    }
+    foreach ($name in $requiredStages.Keys) {
+        if (-not $script:stageRecords.Contains($name)) {
+            $script:stageRecords[$name] = [ordered]@{
+                command = $requiredStages[$name]
+                started_at_utc = $null
+                finished_at_utc = $null
+                status = 'not_run'
+                summary = $null
+            }
+        }
+    }
+    $sha = (& git rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Could not resolve candidate commit SHA for the validation manifest.' }
+    $tree = (& git rev-parse 'HEAD^{tree}').Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Could not resolve candidate tree for the validation manifest.' }
+    $workingTree = (& git status --porcelain --untracked-files=all)
+    if ($LASTEXITCODE -ne 0) { throw 'Could not inspect candidate working tree for the validation manifest.' }
+    $parserConfigs = [ordered]@{}
+    Get-ChildItem -LiteralPath 'config' -Filter 'parser*.json' -File | Sort-Object Name | ForEach-Object {
+        $parserConfigs[$_.Name] = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    $manifest = [ordered]@{
+        schema_version = 1
+        status = $Status
+        incomplete_reason = $incompleteReason
+        started_at_utc = $pipelineStartedUtc
+        finished_at_utc = [DateTime]::UtcNow.ToString('o')
+        candidate = [ordered]@{
+            branch = (& git branch --show-current).Trim()
+            commit_sha = $sha
+            tree_sha = $tree
+            working_tree_clean = [string]::IsNullOrWhiteSpace(($workingTree -join "`n"))
+            dirty_paths = @($workingTree | ForEach-Object { $_.Substring(3) })
+        }
+        lockfiles = [ordered]@{
+            'uv.lock' = (Get-FileHash -LiteralPath 'uv.lock' -Algorithm SHA256).Hash.ToLowerInvariant()
+            'pnpm-lock.yaml' = (Get-FileHash -LiteralPath 'pnpm-lock.yaml' -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        parser_config_sha256 = $parserConfigs
+        parser_profiles = [ordered]@{
+            development = [ordered]@{ document_memory_bytes = 4_294_967_296; container_limit_bytes = 5_368_709_120; headroom_bytes = 1_073_741_824 }
+            production = [ordered]@{ document_memory_bytes = 8_589_934_592; container_limit_bytes = 9_663_676_416; headroom_bytes = 1_073_741_824 }
+        }
+        qa_image_ids = $qaImageIds
+        required_stages = @($requiredStages.Keys)
+        stages = $stageRecords
+        deployment_requested = [bool]$DeployDevelopment
+        evidence_directory = $evidenceRoot
+    }
+    if ($Status -eq 'passed' -and -not [string]::IsNullOrWhiteSpace(($workingTree -join "`n"))) {
+        throw 'Cannot label validation passed because the candidate working tree is not clean.'
+    }
+    $manifestPath = Join-Path $evidenceRoot 'validation-manifest.json'
+    [System.IO.File]::WriteAllText(
+        $manifestPath,
+        ($manifest | ConvertTo-Json -Depth 16),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    return $manifestPath
+}
+
+function Invoke-JUnitGate {
+    param(
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$Report,
+        [Parameter(Mandatory = $true)][string]$SummaryPath,
+        [int]$ExpectedTests = 0,
+        [int]$ExpectedPassed = 0,
+        [string[]]$AllowedSkips = @()
+    )
+    $arguments = @('scripts/qa_report_guard.py', 'junit', '--report', $Report, '--label', $Label)
+    if ($ExpectedTests -gt 0) { $arguments += @('--expected-tests', "$ExpectedTests") }
+    if ($ExpectedPassed -gt 0) { $arguments += @('--expected-passed', "$ExpectedPassed") }
+    foreach ($allowedSkip in $AllowedSkips) { $arguments += @('--allow-skipped', $allowedSkip) }
+    $output = & uv run --no-sync python @arguments
+    if ($LASTEXITCODE -ne 0) { throw "QA report rejected for '$Label'." }
+    $result = (($output | Select-Object -Last 1) | ConvertFrom-Json)
+    if ($result.status -ne 'passed') { throw "QA report did not pass for '$Label'." }
+    $result | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $SummaryPath -Encoding UTF8
+    $stageResults[$Label] = $result
+}
+
+function Invoke-PlaywrightGate {
+    param([Parameter(Mandatory = $true)][string]$Report)
+    $output = & uv run --no-sync python scripts/qa_report_guard.py playwright --report $Report --label e2e --expected-passed 12
+    if ($LASTEXITCODE -ne 0) { throw 'QA report rejected for E2E.' }
+    $result = (($output | Select-Object -Last 1) | ConvertFrom-Json)
+    if ($result.status -ne 'passed') { throw 'E2E report did not pass.' }
+    $result | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'e2e-summary.json') -Encoding UTF8
+    $stageResults['e2e'] = $result
+}
+
+function Save-QAImageIds {
+    param([Parameter(Mandatory = $true)][string]$Project)
+    foreach ($service in @('migrate', 'api', 'worker', 'parser-worker', 'test-parser-worker', 'test-runner', 'web')) {
+        $image = "$Project-$service"
+        $id = & docker image inspect $image --format '{{.Id}}' 2>$null
+        if ($LASTEXITCODE -eq 0 -and $id) { $qaImageIds["$Project/$service"] = "$id".Trim() }
+    }
+}
 
 function Invoke-QACompose {
     param(
@@ -123,40 +343,70 @@ function Remove-QAProject {
 try {
     Write-Output "Evidence and Playwright screenshots: $evidenceRoot"
     Write-Output '==> Install frozen Python workspace from uv.lock'
+    Start-QAStage -Name 'python-dependencies' -Command 'uv sync --frozen --all-packages --group dev'
     uv sync --frozen --all-packages --group dev
     if ($LASTEXITCODE -ne 0) { throw 'uv sync failed.' }
+    Complete-QAStage -Name 'python-dependencies'
 
     Write-Output '==> Verify generated OpenAPI and TypeScript contracts'
+    Start-QAStage -Name 'api-client-contract' -Command 'uv run --no-sync python scripts/openapi_contract.py --check'
     uv run --no-sync python scripts/openapi_contract.py --check
     if ($LASTEXITCODE -ne 0) { throw 'OpenAPI contract verification failed.' }
+    Complete-QAStage -Name 'api-client-contract'
 
     Write-Output '==> Install frozen frontend workspace'
+    Start-QAStage -Name 'frontend-dependencies' -Command 'corepack pnpm install --frozen-lockfile'
     $env:CI = 'true'
     corepack pnpm install --frozen-lockfile
     if ($LASTEXITCODE -ne 0) { throw 'pnpm install failed.' }
+    Complete-QAStage -Name 'frontend-dependencies'
 
-    Write-Output '==> Python lint, typecheck, and Windows unit suite'
+    Write-Output '==> Python lint and typecheck'
+    Start-QAStage -Name 'python-static-checks' -Command 'uv run --no-sync ruff check packages services tests migrations scripts; uv run --no-sync mypy packages/domain/src services/api/src services/worker/src'
     uv run --no-sync ruff check packages services tests migrations scripts
     if ($LASTEXITCODE -ne 0) { throw 'Ruff failed.' }
     uv run --no-sync mypy packages/domain/src services/api/src services/worker/src
     if ($LASTEXITCODE -ne 0) { throw 'mypy failed.' }
-    uv run --no-sync pytest tests/unit
+    Complete-QAStage -Name 'python-static-checks'
+    Write-Output '==> Windows unit suite'
+    Start-QAStage -Name 'windows-unit' -Command 'uv run --no-sync pytest tests/unit --junitxml <evidence>/windows-unit.xml'
+    $windowsUnitReport = Join-Path $evidenceRoot 'windows-unit.xml'
+    uv run --no-sync pytest tests/unit --junitxml $windowsUnitReport
     if ($LASTEXITCODE -ne 0) { throw 'Windows Python unit suite failed.' }
+    Invoke-JUnitGate -Label 'windows-unit' -Report $windowsUnitReport -SummaryPath (Join-Path $evidenceRoot 'windows-unit-summary.json')
+    Complete-QAStage -Name 'windows-unit' -Summary $stageResults['windows-unit']
+    Start-QAStage -Name 'promotion-orchestration' -Command 'tests/powershell/test-promotion-orchestration.ps1 (Docker command mocked)'
+    & (Join-Path $repoRoot 'tests/powershell/test-promotion-orchestration.ps1')
+    Complete-QAStage -Name 'promotion-orchestration'
 
     Write-Output '==> Frontend lint, typecheck, and production build'
+    Start-QAStage -Name 'frontend-checks' -Command 'corepack pnpm lint; corepack pnpm typecheck; corepack pnpm build'
     corepack pnpm lint
     if ($LASTEXITCODE -ne 0) { throw 'Frontend lint failed.' }
     corepack pnpm typecheck
     if ($LASTEXITCODE -ne 0) { throw 'Frontend typecheck failed.' }
     corepack pnpm build
     if ($LASTEXITCODE -ne 0) { throw 'Frontend production build failed.' }
+    Complete-QAStage -Name 'frontend-checks'
 
     if (-not $SkipDocker) {
         $env:ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES = '4294967296'
-        Write-Output '==> Check development parser capacity and 1 GiB host reserve'
-        uv run --no-sync python scripts/parser_capacity_preflight.py | Tee-Object -FilePath (Join-Path $evidenceRoot 'parser-capacity-preflight.json')
-        if ($LASTEXITCODE -ne 0) { throw 'Parser capacity preflight failed; rollout stopped.' }
-        Write-Output 'QA/development parser document memory profile: 4294967296 bytes; container limit: 5 GiB'
+        Write-Output '==> Inspect the Linux Docker VM memory ceiling before creating QA services'
+        Start-QAStage -Name 'docker-vm-capacity' -Command "docker info --format '{{.MemTotal}}'; parser preflight inside the Linux Docker environment"
+        $dockerTotalText = (& docker info --format '{{.MemTotal}}' | Select-Object -Last 1)
+        if ($LASTEXITCODE -ne 0 -or "$dockerTotalText" -notmatch '^\d+$') {
+            $incompleteReason = 'Docker Linux engine unavailable; no Windows host RAM fallback was accepted.'
+            throw 'Could not read Docker Linux VM memory. Windows host RAM is not accepted as parser capacity evidence.'
+        }
+        $dockerTotalBytes = [long]$dockerTotalText
+        $requiredContainerBytes = 5L * 1024 * 1024 * 1024
+        if ($dockerTotalBytes -lt $requiredContainerBytes) {
+            $incompleteReason = "Docker Linux VM has $dockerTotalBytes bytes; at least $requiredContainerBytes are required."
+            throw "Docker Linux VM has $dockerTotalBytes bytes; at least $requiredContainerBytes are required for the 5 GiB development parser container."
+        }
+        [ordered]@{ docker_linux_total_bytes = $dockerTotalBytes; required_container_bytes = $requiredContainerBytes } |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidenceRoot 'docker-vm-memory.json') -Encoding UTF8
+        Complete-QAStage -Name 'docker-vm-capacity' -Summary ([ordered]@{ docker_linux_total_bytes = $dockerTotalBytes })
         $portProbe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, [int]$hostPort)
         try { $portProbe.Start() } catch { throw "QA host port $hostPort is already in use; stop its owner or set another port." }
         finally { $portProbe.Stop() }
@@ -166,71 +416,114 @@ try {
         $env:APP_ORIGIN = $env:ALIGN_WEB_BASE_URL
 
         Write-Output '==> Create fresh isolated PostgreSQL integration QA project'
+        Start-QAStage -Name 'integration-database' -Command 'docker compose --project-name <isolated> up --build --detach --wait; apply all migrations to fresh QA database'
         $integrationStarted = $true
         Invoke-QACompose $integrationProject @('config', '--quiet') | Out-Null
         Invoke-QACompose -Project $integrationProject -ComposeArgs @('--progress', 'plain', 'up', '--build', '--detach', '--wait') -Stream
+        Complete-QAStage -Name 'integration-database'
+
+        Write-Output '==> Check live Linux Docker memory available to the parser before any parser tests'
+        Start-QAStage -Name 'parser-capacity-preflight' -Command "docker compose --project-name $integrationProject --profile test run --rm --no-deps test-runner python scripts/parser_capacity_preflight.py --docker-total-bytes $dockerTotalBytes"
+        $capacityOutput = Invoke-QACompose $integrationProject @('--profile', 'test', 'run', '--rm', '--build', '--no-deps', 'test-runner', 'python', 'scripts/parser_capacity_preflight.py', '--docker-total-bytes', "$dockerTotalBytes")
+        $capacityReport = (($capacityOutput | Where-Object { $_ -match '^\s*\{' } | Select-Object -Last 1) | ConvertFrom-Json)
+        if ($capacityReport.accepted -ne $true) {
+            $capacityReport | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'parser-capacity-preflight.json') -Encoding UTF8
+            $incompleteReason = 'Linux Docker VM currently lacks the required 4 GiB parser profile plus 1 GiB headroom.'
+            throw 'Linux Docker VM has insufficient currently available parser capacity; parser tests were not started.'
+        }
+        $capacityReport | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'parser-capacity-preflight.json') -Encoding UTF8
+        Complete-QAStage -Name 'parser-capacity-preflight' -Summary $capacityReport
+
+        Start-QAStage -Name 'integration-seed-release' -Command 'seed synthetic accounts twice; register, activate and re-register baseline idempotently'
         Invoke-SeedAccounts $integrationProject
         Register-AndActivateQABaseline $integrationProject
+        Complete-QAStage -Name 'integration-seed-release'
 
         Write-Output '==> Linux Python unit suite in the clean test image'
-        Invoke-QACompose $integrationProject @('--profile', 'test', 'run', '--rm', '--build', '--no-deps', 'test-runner', 'uv', 'run', '--no-sync', 'pytest', 'tests/unit', '-q') | Tee-Object -FilePath (Join-Path $evidenceRoot 'linux-unit.log')
+        Start-QAStage -Name 'linux-unit' -Command 'pytest tests/unit --junitxml /qa-evidence/linux-unit.xml'
+        $dockerEvidenceRoot = $evidenceRoot.Replace('\', '/')
+        Invoke-QACompose $integrationProject @('--profile', 'test', 'run', '--rm', '--build', '--no-deps', '--volume', "${dockerEvidenceRoot}:/qa-evidence", 'test-runner', 'uv', 'run', '--no-sync', 'pytest', 'tests/unit', '-q', '--junitxml', '/qa-evidence/linux-unit.xml') | Tee-Object -FilePath (Join-Path $evidenceRoot 'linux-unit.log')
+        if ($LASTEXITCODE -ne 0) { throw 'Linux Python unit suite failed.' }
+        Invoke-JUnitGate -Label 'linux-unit' -Report (Join-Path $evidenceRoot 'linux-unit.xml') -SummaryPath (Join-Path $evidenceRoot 'linux-unit-summary.json')
+        Complete-QAStage -Name 'linux-unit' -Summary $stageResults['linux-unit']
         Write-Output '==> Full PostgreSQL integration suite with Linux process-isolation tests enabled'
+        Start-QAStage -Name 'integration-suite' -Command 'pytest tests/integration --junitxml /qa-evidence/integration.xml (only 8 parser-runtime + 1 OOM opt-in skips allowed)'
         Invoke-QACompose $integrationProject @('stop', 'outbox-dispatcher') | Out-Null
         Invoke-QACompose $integrationProject @('--profile', 'test', 'up', '--build', '--detach', '--wait', 'test-parser-worker', 'test-outbox-dispatcher') | Out-Null
-        Invoke-QACompose $integrationProject @('--profile', 'test', 'run', '--rm', '--build', '--no-deps', '-e', 'ALIGN_RUN_INTEGRATION=true', '-e', "PARSER_DOCUMENT_MEMORY_BYTES=$env:ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES", 'test-runner', 'uv', 'run', '--no-sync', 'pytest', 'tests/integration', '-q') | Tee-Object -FilePath (Join-Path $evidenceRoot 'integration.log')
+        Invoke-QACompose $integrationProject @('--profile', 'test', 'run', '--rm', '--build', '--no-deps', '--volume', "${dockerEvidenceRoot}:/qa-evidence", '-e', 'ALIGN_RUN_INTEGRATION=true', '-e', "PARSER_DOCUMENT_MEMORY_BYTES=$env:ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES", 'test-runner', 'uv', 'run', '--no-sync', 'pytest', 'tests/integration', '-q', '--junitxml', '/qa-evidence/integration.xml') | Tee-Object -FilePath (Join-Path $evidenceRoot 'integration.log')
+        if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL integration suite failed.' }
+        Invoke-JUnitGate -Label 'integration' -Report (Join-Path $evidenceRoot 'integration.xml') -SummaryPath (Join-Path $evidenceRoot 'integration-summary.json') -AllowedSkips @(
+            'test_b1_parser_runtime::test_real_docling_source_hash_original_anchor_and_checkpoint_replay=8',
+            'test_b3_parser_oom::test_confirmed_cgroup_oom_maps_to_parser_memory_limit=1'
+        )
+        Complete-QAStage -Name 'integration-suite' -Summary $stageResults['integration']
         Write-Output '==> Real Docling model/OCR integration tests (opt-in, must not be skipped)'
+        Start-QAStage -Name 'docling-parser' -Command 'pytest tests/integration/test_b1_parser_runtime.py --junitxml /qa-evidence/docling.xml; require 8 passes and 0 skips'
         $parserContainerId = (Invoke-QACompose $integrationProject @('--profile', 'test', 'ps', '-q', 'test-parser-worker') | Select-Object -Last 1).Trim()
         if (-not $parserContainerId) { throw 'The 4 GiB QA parser worker container was not running for health sampling.' }
-        $healthMonitor = Start-Job -ArgumentList $parserContainerId -ScriptBlock {
-            param($containerId)
+        $healthMonitorStopPath = Join-Path $evidenceRoot 'stop-parser-health-monitor'
+        $healthMonitor = Start-Job -ArgumentList $parserContainerId, $healthMonitorStopPath -ScriptBlock {
+            param($containerId, $stopPath)
             $failures = [System.Collections.Generic.List[string]]::new()
-            for ($sample = 1; $sample -le 60; $sample++) {
+            $watch = [System.Diagnostics.Stopwatch]::StartNew()
+            $sample = 0
+            while (-not (Test-Path -LiteralPath $stopPath) -and $watch.Elapsed.TotalMinutes -lt 90) {
+                $sample++
                 & docker exec $containerId python -m align_worker.runtime_check --healthcheck 2>$null
                 if ($LASTEXITCODE -ne 0) { $failures.Add("sample $sample failed") }
-                if ($sample -lt 60) { Start-Sleep -Seconds 1 }
+                if (-not (Test-Path -LiteralPath $stopPath)) { Start-Sleep -Seconds 1 }
             }
+            $watch.Stop()
+            if (-not (Test-Path -LiteralPath $stopPath)) { throw 'Parser health monitor reached its 90-minute safety bound.' }
+            if ($sample -eq 0) { throw 'Parser health monitor collected no health samples.' }
             if ($failures.Count) { throw "Parser worker failed health pings during real parsing: $($failures -join ', ')" }
-            '60 parser health pings passed during the real parser test.'
+            "$sample parser health pings passed over $([Math]::Round($watch.Elapsed.TotalSeconds, 1)) seconds during the real parser test."
         }
         try {
-            Invoke-QACompose $integrationProject @('--profile', 'test', 'run', '--rm', '--build', '--no-deps', '-e', 'ALIGN_RUN_PARSER_INTEGRATION=true', '-e', "PARSER_DOCUMENT_MEMORY_BYTES=$env:ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES", 'test-runner', 'uv', 'run', '--no-sync', 'pytest', 'tests/integration/test_b1_parser_runtime.py', '-v', '-s') | Tee-Object -FilePath (Join-Path $evidenceRoot 'docling-integration.log')
+            Invoke-QACompose $integrationProject @('--profile', 'test', 'run', '--rm', '--build', '--no-deps', '--volume', "${dockerEvidenceRoot}:/qa-evidence", '-e', 'ALIGN_RUN_PARSER_INTEGRATION=true', '-e', "PARSER_DOCUMENT_MEMORY_BYTES=$env:ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES", 'test-runner', 'uv', 'run', '--no-sync', 'pytest', 'tests/integration/test_b1_parser_runtime.py', '-v', '-s', '--junitxml', '/qa-evidence/docling.xml') | Tee-Object -FilePath (Join-Path $evidenceRoot 'docling-integration.log')
             if ($LASTEXITCODE -ne 0) { throw 'Real parser integration failed.' }
-            Wait-Job -Job $healthMonitor | Out-Null
-            $healthSamples = Receive-Job -Job $healthMonitor -ErrorAction Stop
-            if ($healthMonitor.State -ne 'Completed') { throw 'Parser health monitor did not complete successfully.' }
-            $healthSamples | Set-Content -LiteralPath (Join-Path $evidenceRoot 'parser-health-samples.log') -Encoding UTF8
         } finally {
-            Remove-Job -Job $healthMonitor -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType File -Path $healthMonitorStopPath -Force | Out-Null
+            Wait-Job -Job $healthMonitor -Timeout 30 | Out-Null
+            try {
+                if ($healthMonitor.State -ne 'Completed') { throw 'Parser health monitor did not stop after the test completed.' }
+                $healthSamples = Receive-Job -Job $healthMonitor -ErrorAction Stop
+                $healthSamples | Set-Content -LiteralPath (Join-Path $evidenceRoot 'parser-health-samples.log') -Encoding UTF8
+            } finally {
+                Remove-Job -Job $healthMonitor -Force -ErrorAction SilentlyContinue
+            }
         }
+        Invoke-JUnitGate -Label 'docling' -Report (Join-Path $evidenceRoot 'docling.xml') -SummaryPath (Join-Path $evidenceRoot 'docling-summary.json') -ExpectedTests 8 -ExpectedPassed 8
         $doclingText = Get-Content -LiteralPath (Join-Path $evidenceRoot 'docling-integration.log') -Raw
-        if ($doclingText -match '(?m)^=*\s*[1-9]\d* skipped\b' -or $doclingText -notmatch '(?m)^=*\s*\d+ passed\b') {
-            throw 'Real Docling integration was skipped or did not report passed cases.'
-        }
         $parserFingerprints = @([regex]::Matches($doclingText, 'parser_profile_fingerprint=[a-f0-9]{64}; memory_bytes=\d+; peak_memory_bytes=\d+; format=[^\r\n]+') | ForEach-Object { $_.Value })
         if ($parserFingerprints.Count -ne 8) { throw "Expected eight real parser profile fingerprints; found $($parserFingerprints.Count)." }
         $parserFingerprints | Set-Content -LiteralPath (Join-Path $evidenceRoot 'parser-profile-fingerprints.log') -Encoding UTF8
+        Complete-QAStage -Name 'docling-parser' -Summary ([ordered]@{ tests = 8; fingerprints = $parserFingerprints.Count; health_samples = (Get-Content -LiteralPath (Join-Path $evidenceRoot 'parser-health-samples.log')).Count })
         Write-Output '==> Confirm parser OOM attribution in a disposable 1 GiB Linux container'
+        Start-QAStage -Name 'parser-oom' -Command 'docker run --rm --memory=1g --memory-swap=1g --network none; pytest tests/integration/test_b3_parser_oom.py --junitxml /qa-evidence/oom.xml'
         $oomImage = "$integrationProject-test-runner"
         docker image inspect $oomImage --format '{{.Id}}' | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Linux test image is missing for OOM verification: $oomImage" }
-        docker run --rm --memory=1g --network none -e ALIGN_B3_OOM_INTEGRATION=true $oomImage uv run --no-sync pytest tests/integration/test_b3_parser_oom.py -q 2>&1 | Tee-Object -FilePath (Join-Path $evidenceRoot 'oom-integration.log')
+        docker run --rm --memory=1g --memory-swap=1g --network none --volume "${dockerEvidenceRoot}:/qa-evidence" -e ALIGN_B3_OOM_INTEGRATION=true $oomImage uv run --no-sync pytest tests/integration/test_b3_parser_oom.py -q --junitxml /qa-evidence/oom.xml 2>&1 | Tee-Object -FilePath (Join-Path $evidenceRoot 'oom-integration.log')
         if ($LASTEXITCODE -ne 0) { throw 'Cgroup OOM integration test failed.' }
-        $oomText = Get-Content -LiteralPath (Join-Path $evidenceRoot 'oom-integration.log') -Raw
-        if ($oomText -match '(?m)^=*\s*[1-9]\d* skipped\b' -or $oomText -notmatch '(?m)^=*\s*\d+ passed\b') {
-            throw 'Cgroup OOM integration was skipped or did not report passed cases.'
-        }
+        Invoke-JUnitGate -Label 'oom' -Report (Join-Path $evidenceRoot 'oom.xml') -SummaryPath (Join-Path $evidenceRoot 'oom-summary.json') -ExpectedTests 1 -ExpectedPassed 1
+        Complete-QAStage -Name 'parser-oom' -Summary $stageResults['oom']
+        Save-QAImageIds -Project $integrationProject
         Remove-QAProject $integrationProject
         $integrationStarted = $false
 
         Write-Output '==> Create a second, fresh QA database for browser E2E'
+        Start-QAStage -Name 'e2e-database' -Command 'docker compose --project-name <isolated> up --build --detach --wait; fresh migrations, synthetic seed, idempotent release baseline'
         $e2eStarted = $true
         Invoke-QACompose $e2eProject @('config', '--quiet') | Out-Null
         Invoke-QACompose -Project $e2eProject -ComposeArgs @('--progress', 'plain', 'up', '--build', '--detach', '--wait') -Stream
         Invoke-SeedAccounts $e2eProject
         Register-AndActivateQABaseline $e2eProject
+        Complete-QAStage -Name 'e2e-database'
         $health = Invoke-QACompose $e2eProject @('exec', '-T', 'parser-worker', 'uv', 'run', '--no-sync', '--package', 'align-worker', 'python', '-m', 'align_worker.runtime_check', '--healthcheck')
         if ($LASTEXITCODE -ne 0) { throw 'Parser worker did not answer the broker in isolated E2E QA.' }
         Write-Output '==> Parser broker health and general worker smoke'
+        Start-QAStage -Name 'worker-smoke' -Command 'parser broker ping; align operations smoke; require succeeded'
         $operation = Invoke-QACompose $e2eProject @('run', '--rm', '-T', 'api', 'align', 'operations', 'smoke')
         $operationRecord = (($operation | Where-Object { $_ -match '^\s*\{' } | Select-Object -Last 1) | ConvertFrom-Json)
         $operationStatus = $null
@@ -241,25 +534,39 @@ try {
             if ($operationStatus.status -in @('succeeded', 'failed')) { break }
         }
         if ($operationStatus.status -ne 'succeeded') { throw "General worker smoke did not succeed: $($operationStatus.status)" }
+        Complete-QAStage -Name 'worker-smoke' -Summary $operationStatus
 
-        Write-Output '==> Run the ten browser E2Es on the separate database and retain screenshots'
-        $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $repoRoot '.playwright-browsers'
+        Write-Output '==> Run all twelve browser E2Es on the separate database and retain screenshots'
+        Start-QAStage -Name 'browser-e2e' -Command 'corepack pnpm --dir apps/web exec playwright test --reporter=json; require 12 passes and 0 skips/flakes'
+        $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $evidenceRoot 'playwright-browsers'
         $env:ALIGN_ALIAS_BASE_URL = "http://127.0.0.1:$hostPort"
+        $playwrightReport = Join-Path $evidenceRoot 'e2e-playwright.json'
+        $env:PLAYWRIGHT_JSON_OUTPUT_NAME = $playwrightReport
         corepack pnpm --dir apps/web exec playwright install chromium
         if ($LASTEXITCODE -ne 0) { throw 'Playwright Chromium install failed.' }
-        corepack pnpm --dir apps/web exec playwright test --output (Join-Path $evidenceRoot 'playwright') 2>&1 | Tee-Object -FilePath (Join-Path $evidenceRoot 'e2e.log')
+        corepack pnpm --dir apps/web exec playwright test --reporter=json --output (Join-Path $evidenceRoot 'playwright') 2>&1 | Tee-Object -FilePath (Join-Path $evidenceRoot 'e2e.log')
         if ($LASTEXITCODE -ne 0) { throw 'Playwright browser E2E failed.' }
+        Invoke-PlaywrightGate -Report $playwrightReport
+        Complete-QAStage -Name 'browser-e2e' -Summary $stageResults['e2e']
 
         $workerLogs = Invoke-QACompose $e2eProject @('logs', '--no-color', 'parser-worker', 'worker', 'outbox-dispatcher', 'scheduler', 'api')
         $workerLogs | Set-Content -LiteralPath (Join-Path $evidenceRoot 'runtime.log') -Encoding UTF8
         if ($workerLogs -match 'unregistered task|Traceback \(most recent call last\)|\[browser\].*error') {
             throw 'QA runtime logs contain an unregistered task or application error.'
         }
-        $e2eText = Get-Content -LiteralPath (Join-Path $evidenceRoot 'e2e.log') -Raw
-        if ($e2eText -match '(?m)^\s*[1-9]\d* skipped\b') { throw 'A required browser E2E was skipped.' }
+        Save-QAImageIds -Project $e2eProject
 
         Write-Output '==> Verify the parser healthcheck detects a nonresponsive worker in isolated QA'
+        Start-QAStage -Name 'parser-healthcheck' -Command 'derive unhealthy/recovery deadlines from Docker healthcheck; pause, detect, resume and recover worker'
         $e2eParserContainer = (Invoke-QACompose $e2eProject @('--profile', 'test', 'ps', '-q', 'parser-worker') | Select-Object -Last 1).Trim()
+        $healthConfigJson = & docker inspect --format '{{json .Config.Healthcheck}}' $e2eParserContainer
+        if ($LASTEXITCODE -ne 0 -or -not $healthConfigJson) { throw 'Could not read Docker parser healthcheck configuration.' }
+        $deadlineOutput = & uv run --no-sync python scripts/qa_report_guard.py health-deadline --docker-config "$healthConfigJson"
+        if ($LASTEXITCODE -ne 0) { throw 'Docker parser healthcheck configuration is invalid.' }
+        $unhealthyDeadlineSeconds = [int](($deadlineOutput | Select-Object -Last 1 | ConvertFrom-Json).unhealthy_deadline_seconds)
+        $healthStage = $stageResults['e2e']
+        $healthStage | Add-Member -NotePropertyName 'unhealthy_deadline_seconds' -NotePropertyValue $unhealthyDeadlineSeconds
+        $stageResults['e2e'] = $healthStage
         $workerProcessIds = @()
         $resumeWorker = 'import os,signal,sys; [os.kill(int(pid),signal.SIGCONT) for pid in sys.argv[1].split(",")]'
         try {
@@ -286,13 +593,13 @@ for pid in matches:
             if ($LASTEXITCODE -ne 0 -or -not $workerProcessIds.Count) { throw 'Could not pause the isolated parser worker for the failure-detection check.' }
             $failureWatch = [System.Diagnostics.Stopwatch]::StartNew()
             $parserHealth = ''
-            while ($failureWatch.Elapsed.TotalSeconds -lt 40) {
+            while ($failureWatch.Elapsed.TotalSeconds -lt $unhealthyDeadlineSeconds) {
                 $parserHealth = (& docker inspect --format '{{.State.Health.Status}}' $e2eParserContainer | Select-Object -Last 1).Trim()
                 if ($parserHealth -eq 'unhealthy') { break }
                 Start-Sleep -Seconds 2
             }
             $failureWatch.Stop()
-            if ($parserHealth -ne 'unhealthy') { throw "A paused parser worker was not marked unhealthy within 40 seconds (state=$parserHealth)." }
+            if ($parserHealth -ne 'unhealthy') { throw "A paused parser worker was not marked unhealthy within $unhealthyDeadlineSeconds seconds (state=$parserHealth)." }
             "paused_worker_detected_after_seconds=$([Math]::Round($failureWatch.Elapsed.TotalSeconds, 1)); status=$parserHealth" |
                 Set-Content -LiteralPath (Join-Path $evidenceRoot 'parser-health-failure-detection.log') -Encoding UTF8
             & docker exec $e2eParserContainer python -c $resumeWorker ($workerProcessIds -join ',')
@@ -302,13 +609,14 @@ for pid in matches:
             do {
                 Start-Sleep -Seconds 2
                 $parserHealth = (& docker inspect --format '{{.State.Health.Status}}' $e2eParserContainer | Select-Object -Last 1).Trim()
-            } while ($parserHealth -ne 'healthy' -and $recoveryDeadline.Elapsed.TotalSeconds -lt 40)
+            } while ($parserHealth -ne 'healthy' -and $recoveryDeadline.Elapsed.TotalSeconds -lt $unhealthyDeadlineSeconds)
             if ($parserHealth -ne 'healthy') { throw 'Parser worker health did not recover after the worker resumed.' }
         } finally {
             if ($workerProcessIds.Count) {
                 & docker exec $e2eParserContainer python -c $resumeWorker ($workerProcessIds -join ',') | Out-Null
             }
         }
+        Complete-QAStage -Name 'parser-healthcheck' -Summary ([ordered]@{ unhealthy_deadline_seconds = $unhealthyDeadlineSeconds; recovered = $parserHealth -eq 'healthy' })
         Remove-QAProject $e2eProject
         $e2eStarted = $false
 
@@ -347,21 +655,40 @@ for pid in matches:
             $registration = & docker compose --project-name $developmentProject -f docker-compose.yml -f $overridePath --profile operator run --rm -T --no-deps operator release register --file config/release.baseline.json
             if ($LASTEXITCODE -ne 0) { throw 'Could not register the target release in the deployment database; no images were promoted.' }
             $targetRelease = (($registration | Where-Object { $_ -match '^\s*\{' } | Select-Object -Last 1) | ConvertFrom-Json)
-            if ($releasePlan.action -eq 'verify_target') {
-                if ($targetRelease.state -ne 'active' -or $targetRelease.release_id -ne $releasePlan.active_release_id -or $targetRelease.config_hash -ne $releasePlan.active_config_hash) {
-                    throw 'The active B5 baseline hash differs from the tested target; image promotion stopped.'
-                }
-            } elseif ($targetRelease.state -eq 'retired') {
-                throw 'The target release is retired and cannot be reactivated; register a new release version before promotion.'
-            }
-            $targetRelease | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'development-target-release.json') -Encoding UTF8
+            $releasePlanPath = Join-Path $evidenceRoot 'development-release-plan.json'
+            $registeredTargetPath = Join-Path $evidenceRoot 'development-target-release.json'
+            $targetRelease | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $registeredTargetPath -Encoding UTF8
+            $registrationCheck = & uv run --no-sync python scripts/release_guard.py --verify-registered --plan-json-file $releasePlanPath --registered-json-file $registeredTargetPath
+            if ($LASTEXITCODE -ne 0) { throw "Registered target did not match the protected release plan: $($registrationCheck -join ' ')" }
 
             $developmentServices = $services + 'proxy'
-            docker compose --project-name $developmentProject -f docker-compose.yml -f $overridePath up --pull never --no-build --detach --wait @developmentServices
-            if ($LASTEXITCODE -ne 0) { throw 'Development stack did not become healthy on the verified QA images.' }
+            $beforeSnapshot = Get-DevelopmentRuntimeSnapshot -Project $developmentProject -Services $developmentServices -OverridePath $overridePath
+            $promotionRecord = Invoke-RecordedPromotion `
+                -JournalPath $promotionStatePath `
+                -Before $beforeSnapshot `
+                -TargetImageIds $promotedImages `
+                -TargetConfigDigests (Get-ConfigFileDigests) `
+                -ReleaseId $targetRelease.release_id `
+                -ReleaseHash $targetRelease.config_hash `
+                -RecoveryNote 'Restoring image IDs does not restore database schema/data. Back up database and object storage before migration 0018.' `
+                -StartServices {
+                    $script:promotionStarted = $true
+                    docker compose --project-name $developmentProject -f docker-compose.yml -f $overridePath up --pull never --no-build --detach --wait @developmentServices
+                    if ($LASTEXITCODE -ne 0) { throw 'Development stack did not become healthy on the verified QA images.' }
+                    docker compose --project-name $developmentProject -f docker-compose.yml -f $overridePath ps
+                    if ($LASTEXITCODE -ne 0) { throw 'Could not verify development Compose health.' }
+                } `
+                -CaptureAfter {
+                    $snapshot = Get-DevelopmentRuntimeSnapshot -Project $developmentProject -Services $developmentServices -OverridePath $overridePath
+                    foreach ($service in $services) {
+                        $runtime = @($snapshot.services | Where-Object { $_.service -eq $service } | Select-Object -Last 1)
+                        if (-not $runtime.Count -or $runtime[0].image_id -ne $promotedImages[$service]) {
+                            throw "Promoted service '$service' is not running the exact tested QA image."
+                        }
+                    }
+                    return $snapshot
+                }
             $developmentPromoted = $true
-            docker compose --project-name $developmentProject ps
-            if ($LASTEXITCODE -ne 0) { throw 'Could not verify development Compose health.' }
 
             if ($releasePlan.action -eq 'register_activate') {
                 Write-Output '==> Activate the tested B5 target on the deployment database'
@@ -407,8 +734,6 @@ for pid in matches:
             if ($LASTEXITCODE -ne 0) { throw 'Direct development browser smoke failed; the deployment is not validated.' }
             $developmentE2E = Get-Content -LiteralPath (Join-Path $evidenceRoot 'development-e2e.log') -Raw
             if ($developmentE2E -match '(?m)^\s*[1-9]\d* skipped\b') { throw 'Development browser smoke skipped a required flow.' }
-            $developmentPromoted = $false
-            $developmentValidated = $true
             Set-Content -LiteralPath (Join-Path $evidenceRoot 'deployment-runtime-evidence.txt') -Value @(
                 "image_project=$e2eProject",
                 "image_ids=$($promotedImages | ConvertTo-Json -Compress)",
@@ -418,13 +743,68 @@ for pid in matches:
                 "parser_document_memory_bytes=$env:ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES",
                 'browser_flow=upload, parse, analysis, lecturer review, feedback, publication, student download passed'
             ) -Encoding UTF8
+            $promotionRecord.status = 'completed'
+            $promotionRecord.finished_at_utc = [DateTime]::UtcNow.ToString('o')
+            $promotionRecord.after = Get-DevelopmentRuntimeSnapshot -Project $developmentProject -Services $developmentServices -OverridePath $overridePath
+            Write-PromotionJournal -Path $promotionStatePath -Record $promotionRecord
+            $promotionStarted = $false
+            $developmentPromoted = $false
+            $developmentValidated = $true
         }
     }
-    Write-Output "Validation pipeline passed. Evidence: $evidenceRoot"
+    if ($SkipDocker) {
+        $incompleteReason = 'Docker, parser, database, OOM and browser gates were explicitly skipped.'
+        $manifestPath = Write-ValidationManifest -Status 'incomplete'
+        Write-Output "Local checks completed; Docker/parser/browser QA remains incomplete. Evidence manifest: $manifestPath"
+    } else {
+        $manifestPath = Write-ValidationManifest -Status 'passed'
+        $candidateSha = (& git rev-parse HEAD).Trim()
+        Write-Output "Validation pipeline passed for candidate $candidateSha. Evidence manifest: $manifestPath"
+    }
 }
 catch {
+    $failureMessage = $_.Exception.Message
+    $failedStage = $activeStage
+    if ($activeStage -and $stageRecords.Contains($activeStage)) {
+        $stageFailureStatus = if ($incompleteReason) { 'incomplete' } else { 'failed' }
+        Complete-QAStage -Name $activeStage -Status $stageFailureStatus -Summary ([ordered]@{ error = $failureMessage })
+    }
+    if ($promotionStarted) {
+        try {
+            if ($null -eq $promotionRecord -and (Test-Path -LiteralPath $promotionStatePath)) {
+                $promotionObject = Get-Content -LiteralPath $promotionStatePath -Raw | ConvertFrom-Json
+                $promotionRecord = [ordered]@{}
+                foreach ($property in $promotionObject.PSObject.Properties) {
+                    $promotionRecord[$property.Name] = $property.Value
+                }
+            }
+            $promotionRecord.status = 'partial_failure'
+            $promotionRecord.failure = $failureMessage
+            $promotionRecord.recorded_at_utc = [DateTime]::UtcNow.ToString('o')
+            try {
+                $promotionRecord.after = Get-DevelopmentRuntimeSnapshot -Project $developmentProject -Services $developmentServices -OverridePath $overridePath
+            } catch {
+                $promotionRecord.after_snapshot_error = $_.Exception.Message
+            }
+            Write-PromotionJournal -Path $promotionStatePath -Record $promotionRecord
+            Write-Error "Partial development promotion was recorded before service replacement at $promotionStatePath. Restore image/config using the recorded before snapshot; database rollback requires separate recovery."
+        } catch {
+            Write-Error "Could not update promotion failure evidence: $($_.Exception.Message). Initial promotion journal: $promotionStatePath"
+        }
+    }
+    try {
+        $manifestStatus = if ($incompleteReason) { 'incomplete' } else { 'failed' }
+        $manifestPath = Write-ValidationManifest -Status $manifestStatus
+        if ($manifestStatus -eq 'incomplete') {
+            Write-Output "Validation incomplete at stage '$failedStage': $incompleteReason Evidence manifest: $manifestPath"
+        } else {
+            Write-Output "Validation failed at stage '$failedStage'. Failure evidence manifest: $manifestPath"
+        }
+    } catch {
+        Write-Error "Could not write failure manifest: $($_.Exception.Message)"
+    }
     if ($developmentPromoted -and -not $developmentValidated) {
-        Write-Error "Development post-promotion validation failed. The known previous image/config pair must be restored through the release recovery procedure. Details: $($_.Exception.Message)"
+        Write-Error "Development post-promotion validation failed. The promotion journal records previous and current image/config state. Restore database schema separately. Details: $failureMessage"
     }
     throw
 }

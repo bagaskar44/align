@@ -54,11 +54,19 @@ def test_production_requires_https_and_explicit_demo_label_for_mock() -> None:
         app_demo_mode=True,
         data_mode="synthetic",
         align_seed_password=None,
-            parser_document_memory_bytes=8 * 1024**3,
-            parser_node_memory_budget_bytes=8 * 1024**3,
+        parser_document_memory_bytes=8 * 1024**3,
+        parser_node_memory_budget_bytes=8 * 1024**3,
         **production_secrets,
     )
     assert explicit_demo.app_demo_mode
+
+
+def test_document_parser_override_cannot_exceed_its_node_budget() -> None:
+    with pytest.raises(ValidationError, match="exceeds the parser node budget"):
+        baseline_settings(
+            parser_document_memory_bytes=5 * 1024**3,
+            parser_node_memory_budget_bytes=4 * 1024**3,
+        )
 
 
 def test_monetary_configuration_does_not_coerce_float_values() -> None:

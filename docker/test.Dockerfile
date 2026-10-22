@@ -15,6 +15,7 @@ COPY services/api/src services/api/src
 COPY services/worker/pyproject.toml services/worker/pyproject.toml
 COPY services/worker/src services/worker/src
 COPY tests tests
+COPY scripts scripts
 COPY apps/web/e2e/fixtures apps/web/e2e/fixtures
 COPY config config
 COPY fixtures fixtures

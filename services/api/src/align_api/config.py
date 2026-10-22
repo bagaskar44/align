@@ -147,6 +147,12 @@ class Settings(BaseSettings):
             raise ValueError("PARSER_TASK_HARD_SECONDS must exceed PARSER_TASK_SOFT_SECONDS")
         if self.worker_lease_seconds <= self.stage_hard_seconds:
             raise ValueError("WORKER_LEASE_SECONDS must exceed the hard task timeout")
+        if self.parser_document_memory_bytes <= 0 or self.parser_node_memory_budget_bytes <= 0:
+            raise ValueError("parser document and node memory budgets must be positive")
+        if self.parser_node_headroom_bytes < 0:
+            raise ValueError("parser node headroom cannot be negative")
+        if self.parser_document_memory_bytes > self.parser_node_memory_budget_bytes:
+            raise ValueError("document parser memory override exceeds the parser node budget")
         if self.batch_baseline_elements != 1 or self.batch_max_elements < self.batch_baseline_elements:
             raise ValueError("baseline batching must start at exactly one element")
         if self.budget_planned_topup_usd != Decimal("0.00"):

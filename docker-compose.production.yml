@@ -1,5 +1,4 @@
-# Production parser capacity profile. Combine with docker-compose.yml only in
-# production deployments after setting APP_ORIGIN to the required HTTPS origin.
+# Parser capacity profile only; this is not a complete production deployment overlay.
 services:
   api:
     environment:

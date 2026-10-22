@@ -45,22 +45,14 @@ case "${1:-help}" in
     plan=$(printf '%s' "$active_json" | python3 "$script_dir/release_guard.py" --target config/release.baseline.json)
     action=$(printf '%s' "$plan" | python3 -c 'import json,sys; print(json.load(sys.stdin)["action"])')
     release_json=$(compose run --rm -T --no-deps api align release register --file config/release.baseline.json)
+    if ! printf '%s' "$release_json" | python3 "$script_dir/release_guard.py" --verify-registered --plan-json "$plan"; then
+      echo 'Registered release does not match the release preflight; no activation was attempted.' >&2
+      exit 1
+    fi
     baseline_id=$(printf '%s' "$release_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["release_id"])')
-    target_hash=$(printf '%s' "$release_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["config_hash"])')
-    target_state=$(printf '%s' "$release_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')
     if [ "$action" = verify_target ]; then
-      active_id=$(printf '%s' "$plan" | python3 -c 'import json,sys; print(json.load(sys.stdin)["active_release_id"])')
-      active_hash=$(printf '%s' "$plan" | python3 -c 'import json,sys; print(json.load(sys.stdin)["active_config_hash"])')
-      if [ "$target_state" != active ] || [ "$baseline_id" != "$active_id" ] || [ "$target_hash" != "$active_hash" ]; then
-        echo 'Active B5 release hash differs from the shipped target; it was preserved.' >&2
-        exit 1
-      fi
       echo 'The shipped synthetic B5 baseline is active with the same hash; no activation was repeated.'
     else
-      if [ "$target_state" = retired ]; then
-        echo 'The target B5 release is retired and cannot be reactivated; register a new version first.' >&2
-        exit 1
-      fi
       compose exec -T api align release activate "$baseline_id"
     fi
     ;;

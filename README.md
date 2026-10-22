@@ -25,7 +25,9 @@ Toolchain mengunci Node `22.22.0`, uv `0.8.22`, Python `3.12.11`, dan pnpm `10.1
 
 Buka `http://localhost:3000`. Akun demo disediakan oleh seed; password hanya ada di `.env` privat checkout. API/database/broker/object storage tetap berada di jaringan internal Compose. Mode mock tidak memerlukan API key dan provider berbayar tetap dibatasi guard.
 
-Compose development memakai profil parser dokumen 4 GiB, batas container 5 GiB, dan cadangan RAM host 1 GiB. `scripts/ci.ps1 -DeployDevelopment` menguji parser Docling/OCR serta alur browser sebelum promosi, lalu hanya menyelaraskan release kosong atau B0 sintetis bawaan. Kapasitas parser produksi 8 GiB tersedia lewat `docker-compose.production.yml`.
+Compose development memakai profil parser dokumen 4 GiB, batas container 5 GiB, dan headroom 1 GiB. QA memeriksa kapasitas yang tersedia di Linux VM Docker tempat parser berjalan; RAM Windows/macOS saja tidak membuktikan kapasitas tersebut. `scripts/ci.ps1 -DeployDevelopment` adalah langkah promosi terpisah setelah QA, dan hanya menerima database kosong, B0 sintetis bawaan, atau target aktif dengan ID dan hash yang sama.
+
+`docker-compose.production.yml` hanya overlay kapasitas parser: profil 8 GiB dengan batas container 9 GiB. Overlay itu bukan konfigurasi deployment produksi lengkap; origin HTTPS, ingress/TLS, penyimpanan, kredensial, backup, dan operasi produksi tetap perlu disediakan secara terpisah. Rollback image tidak membatalkan migrasi database. Sebelum menerapkan migrasi `0018_b7_retention.py`, buat dan verifikasi backup database serta object storage menggunakan prosedur yang disetujui untuk environment target. `scripts/backup-synthetic.sh` dan `scripts/restore-synthetic.sh` hanya menerima project synthetic khusus, bukan backup umum database development atau produksi.
 
 ## Pemeriksaan dan pekerjaan operator
 

@@ -5,14 +5,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from docx import Document
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, Reference
 
 
-def main() -> None:
-    output = Path(sys.argv[1] if len(sys.argv) > 1 else "fixtures/b3")
-    output.mkdir(parents=True, exist_ok=True)
+def generate_docx(output: Path) -> None:
+    from docx import Document
 
     document = Document()
     document.sections[0].header.paragraphs[0].text = "Header sintetis: B3 parsing source"
@@ -31,6 +29,8 @@ def main() -> None:
     document.sections[0].footer.paragraphs[0].text = "Footer sintetis"
     document.save(output / "complex-submission.docx")
 
+
+def generate_xlsx(output: Path) -> None:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Ringkasan"
@@ -51,7 +51,16 @@ def main() -> None:
     chart.add_data(Reference(sheet, min_col=2, max_col=3, min_row=2, max_row=4), titles_from_data=True)
     chart.set_categories(Reference(sheet, min_col=1, min_row=3, max_row=4))
     sheet.add_chart(chart, "F2")
+    semester = workbook.create_sheet("Rekap Nilai Semester Akademik")
+    semester["A1"] = "Data untuk tab dengan nama panjang"
     workbook.save(output / "complex-submission.xlsx")
+
+
+def main() -> None:
+    output = Path(sys.argv[1] if len(sys.argv) > 1 else "fixtures/b3")
+    output.mkdir(parents=True, exist_ok=True)
+    generate_docx(output)
+    generate_xlsx(output)
 
 
 if __name__ == "__main__":
