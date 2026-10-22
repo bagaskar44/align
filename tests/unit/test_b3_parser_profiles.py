@@ -42,6 +42,7 @@ def test_production_refuses_the_development_four_gib_document_profile() -> None:
             app_env="production",
             app_origin="https://align.example",
             app_demo_mode=True,
+            align_seed_password=None,
             csrf_server_secret=SecretStr("c" * 64),
             s3_secret_access_key=SecretStr("d" * 64),
             parser_document_memory_bytes=4 * 1024**3,
