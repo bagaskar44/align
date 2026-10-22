@@ -283,11 +283,13 @@ export function AssignmentWorkspace({
   csrfToken,
   approvedContexts,
   initialAssignments,
+  contextsUnavailable = false,
 }: {
   course: { id: string; code: string; title: string };
   csrfToken: string;
   approvedContexts: ContextSummary[];
   initialAssignments: AssignmentSummary[];
+  contextsUnavailable?: boolean;
 }) {
   const [assignments, setAssignments] = useState(initialAssignments);
   const [detail, setDetail] = useState<AssignmentDetail | null>(null);
@@ -734,7 +736,7 @@ export function AssignmentWorkspace({
         {providerDraftJob?.generation.limitations?.map((item, index) => <p className="help-text" key={`${item}-${index}`}>{item}</p>)}
         {providerDraftJob && ["blocked", "failed"].includes(providerDraftJob.status) && <p className="notice">Worker tidak menghasilkan usulan; editor manual tetap tersedia. Kode: {providerDraftJob.limitation_code ?? "manual_fallback"}.</p>}
       </div>}
-      {!hasApprovedContext && <p className="notice">Sahkan ContextVersion terlebih dahulu. Tugas hanya dapat mengikat konteks yang sudah approved.</p>}
+      {!hasApprovedContext && <p className="notice">{contextsUnavailable ? "Daftar konteks belum tersedia. Tugas yang sudah ada tetap dapat dibuka, tetapi tugas baru memerlukan konteks approved." : "Sahkan ContextVersion terlebih dahulu. Tugas hanya dapat mengikat konteks yang sudah approved."}</p>}
       <div className="assignment-start-grid">
         <label className="field"><span>Judul tugas</span><input value={newTitle} maxLength={240} onChange={(event) => setNewTitle(event.target.value)} /></label>
         <label className="field"><span>ContextVersion approved</span><select value={contextId} onChange={(event) => setContextId(event.target.value)} disabled={!contexts.length}>

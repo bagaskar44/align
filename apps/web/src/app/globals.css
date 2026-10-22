@@ -79,6 +79,17 @@ a { color: inherit; }
 h1, h2, p { margin-top: 0; }
 h1 { margin-bottom: 10px; font-size: clamp(30px, 5vw, 42px); line-height: 1.15; letter-spacing: -.035em; }
 .intro-copy { max-width: 600px; margin-bottom: 0; color: var(--muted); }
+.course-page-intro { padding: 32px 0 18px; }
+.course-workspace-tabs { min-width: 0; }
+.course-tab-list { display: flex; gap: 4px; max-width: 100%; margin-bottom: 18px; padding: 5px; overflow-x: auto; background: var(--surface-muted); border: 1px solid var(--border); border-radius: 12px; }
+.course-tab { min-height: 42px; flex: 0 0 auto; padding: 9px 16px; color: var(--muted); background: transparent; border: 0; border-radius: 8px; font-size: 14px; font-weight: 650; white-space: nowrap; cursor: pointer; transition: color .15s ease, background-color .15s ease, box-shadow .15s ease; }
+.course-tab:hover { color: var(--text); background: rgb(255 255 255 / 70%); }
+.course-tab[aria-selected="true"] { color: var(--text); background: var(--surface); box-shadow: 0 1px 3px rgb(15 23 42 / 10%); }
+.course-tab-panel { min-width: 0; outline: none; }
+.course-tab-panel[hidden] { display: none; }
+.workspace-unavailable { padding: 22px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--warning); border-radius: 12px; }
+.workspace-unavailable h2 { margin: 0 0 6px; font-size: 18px; }
+.workspace-unavailable p { margin: 0; color: var(--muted); }
 .course-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 0; padding: 0; list-style: none; }
 .course-card {
   min-height: 176px;
@@ -317,6 +328,9 @@ h1 { margin-bottom: 10px; font-size: clamp(30px, 5vw, 42px); line-height: 1.15; 
   .content-shell { width: min(100% - 32px, 1080px); padding-top: 22px; }
   .structured-card, .structured-subsection { padding: 10px; }
   .page-intro { padding: 36px 0 22px; }
+  .course-page-intro { padding: 30px 0 18px; }
+  .course-tab-list { width: 100%; }
+  .course-tab { flex: 1 0 auto; padding-inline: 12px; font-size: 13px; }
   .course-list { grid-template-columns: 1fr; gap: 12px; }
   .course-card { min-height: 150px; padding: 21px; }
   .auth-card { border-radius: 16px; }
