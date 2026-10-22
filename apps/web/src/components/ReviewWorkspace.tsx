@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ApiMethod, ApiRequestPath } from "@/lib/api-contract.generated";
 import { SubmissionFileViewer, type ManualAnchorSelection } from "./SubmissionViewer";
 
@@ -139,6 +139,7 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
 }) {
   const reviewTabsId = useId();
   const [review, setReview] = useState<Review | null>(null);
+  const reviewRevision = useRef<{ id: string; revision: number } | null>(null);
   const [evidence, setEvidence] = useState<Evidence[]>([]);
   const [numericPolicies, setNumericPolicies] = useState<NumericPolicy[]>([]);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
@@ -194,6 +195,32 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
   const feedbackStale = Boolean(feedback && review && (feedback.stale || feedback.source_review_hash !== review.content_hash || review.state !== "complete"));
   const selectedFeedbackFindingIds = includedFindingIds;
 
+  function expectedReviewRevision(current: Review): number {
+    return reviewRevision.current?.id === current.id ? reviewRevision.current.revision : current.revision;
+  }
+
+  function setCurrentReview(next: Review): boolean {
+    const latest = reviewRevision.current;
+    if (latest?.id === next.id && latest.revision > next.revision) return false;
+    reviewRevision.current = { id: next.id, revision: next.revision };
+    setReview(next);
+    return true;
+  }
+
+  function updateCurrentReviewRevision(id: string, revision: number, contentHash?: string, state: Review["state"] = "draft") {
+    const latest = reviewRevision.current;
+    if (latest && latest.id !== id) return;
+    const isNewer = !latest || revision >= latest.revision;
+    const nextRevision = latest ? Math.max(latest.revision, revision) : revision;
+    reviewRevision.current = { id, revision: nextRevision };
+    setReview((current) => current?.id === id ? {
+      ...current,
+      revision: nextRevision,
+      ...(isNewer && contentHash ? { content_hash: contentHash } : {}),
+      ...(isNewer ? { state } : {}),
+    } : current);
+  }
+
   useEffect(() => {
     if (!activeVersionId) return;
     let active = true;
@@ -229,7 +256,7 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
         const assignment = await request<{ version?: { numeric_policies?: NumericPolicy[] } }>(
           `/assignments/${submission.assignment_id}`, csrfToken);
         if (!active) return;
-        setReview(current);
+        if (!setCurrentReview(current)) return;
         setEvidence(page.items);
         setNumericPolicies(assignment.version?.numeric_policies ?? []);
         setIncludedFindingIds(current.findings.filter((item) => ["accept", "edit"].includes(item.action)).map((item) => item.id));
@@ -253,14 +280,11 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
       if (review && typeof result === "object" && result !== null && "review_id" in result
         && result.review_id === review.id) {
         const mutation = result as { revision?: unknown; review_revision?: unknown; content_hash?: unknown; state?: unknown };
-        const nextRevision = typeof mutation.review_revision === "number" ? mutation.review_revision : mutation.revision;
-        if (typeof nextRevision === "number" && Number.isInteger(nextRevision)) {
-          setReview((current) => current?.id === review.id ? {
-            ...current,
-            revision: nextRevision,
-            content_hash: typeof mutation.content_hash === "string" ? mutation.content_hash : current.content_hash,
-            state: mutation.state === "complete" ? "complete" : "draft",
-          } : current);
+        const responseRevision = typeof mutation.review_revision === "number" ? mutation.review_revision : mutation.revision;
+        if (typeof responseRevision === "number" && Number.isInteger(responseRevision)) {
+          updateCurrentReviewRevision(review.id, responseRevision,
+            typeof mutation.content_hash === "string" ? mutation.content_hash : undefined,
+            mutation.state === "complete" ? "complete" : "draft");
         }
       }
       setNotice(success);
@@ -293,7 +317,7 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
       const newReview = await request<Review>(`/submission-versions/${activeVersionId}/reviews`, csrfToken, "POST",
         { analysis_run_id: created.analysis_run_id });
       setAnalysisStatus(`Run ${terminal.status} · ${terminal.completion_kind ?? "manual review required"}. Workspace review baru dibuat; review lama tetap tersimpan.`);
-      setReview(newReview);
+      setCurrentReview(newReview);
       setRefreshKey((value) => value + 1);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Analysis run gagal dibuat.");
@@ -317,7 +341,7 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
     if (!review || !selectedElement) return;
     await mutate(() => request(`/reviews/${review.id}/element-decisions/${selectedElement.id}`, csrfToken, "PUT", {
       review_status: "reviewed", resolution, applicability_override: null,
-      reason: decisionReason || null, evidence_ids: decisionEvidenceIds, expected_revision: review.revision,
+      reason: decisionReason || null, evidence_ids: decisionEvidenceIds, expected_revision: expectedReviewRevision(review),
     }), "Keputusan elemen disimpan dengan revisi terbaru.");
   }
 
@@ -325,7 +349,7 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
     if (!review) return;
     await mutate(() => request(`/reviews/${review.id}/notes`, csrfToken, "PUT", {
       lecturer_notes: notes, limitations: limitationsText.split("\n").map((item) => item.trim()).filter(Boolean),
-      expected_revision: review.revision,
+      expected_revision: expectedReviewRevision(review),
     }), "Catatan dan batas pemeriksaan tersimpan.");
   }
 
@@ -343,13 +367,13 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
       action: "accept", primary_category: findingCategory, primary_criterion_id: criterionId,
       claim: findingClaim.trim(), element_ids: [selectedElement.id], requirement_ids: [], criterion_ids: [],
       evidence_ids: findingEvidenceIds, coverage_attestation: coverageAttestation, numeric, reason: null,
-      expected_revision: review.revision,
+      expected_revision: expectedReviewRevision(review),
     }), "Temuan manual dosen ditambahkan.");
   }
 
   async function candidateAction(finding: Finding, action: Finding["action"]) {
     if (!review || !finding.candidate_id) return;
-    const payload: Record<string, unknown> = { action, expected_revision: review.revision };
+    const payload: Record<string, unknown> = { action, expected_revision: expectedReviewRevision(review) };
     if (action === "defer" || action === "reject") payload.reason = candidateReason.trim();
     if (action === "edit") {
       payload.primary_category = findingCategory;
@@ -372,7 +396,7 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
       kind: "evidence_binding", evidence_item_id: selectedEvidence.id,
       element_ids: [selectedElement.id], relationship_code: activeRole ? activeRelationshipCode || null : null,
       role: activeRole || null, reason: annotationReason.trim() || null,
-      expected_revision: review.revision,
+      expected_revision: expectedReviewRevision(review),
     }), "Binding sumber ke elemen dan role tercatat sebagai revisi anotasi.");
   }
 
@@ -394,7 +418,7 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
     const elementTarget = selectedElement?.id ?? priorTargets.find((item) => item.check_element_id)?.check_element_id ?? null;
     const findingTarget = selectedFindingId || priorTargets.find((item) => item.review_finding_id)?.review_finding_id || null;
     let body: Record<string, unknown> = {
-      kind: annotation.kind, operation, expected_revision: review.revision,
+      kind: annotation.kind, operation, expected_revision: expectedReviewRevision(review),
       reason: annotationReason.trim() || null,
       element_ids: elementTarget ? [elementTarget] : [], review_finding_id: findingTarget,
       relationship_code: activeRelationshipCode || priorTargets[0]?.relationship_code || null,
@@ -436,7 +460,7 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
         blocks: mode === "manual" ? blocks : [],
         included_review_finding_ids: included,
         exclusion_reasons: exclusionReasons,
-        expected_revision: review.revision,
+        expected_revision: expectedReviewRevision(review),
       });
       setFeedback(created);
       if (mode === "model" && created.generation_status === "queued") {
@@ -454,7 +478,7 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
     if (!review || !feedback || feedbackStale) return;
     await mutate(async () => {
       const result = await request<Feedback>(`/feedback-drafts/${feedback.id}/approve`, csrfToken, "POST", {
-        expected_revision: feedback.revision, expected_review_revision: review.revision,
+        expected_revision: feedback.revision, expected_review_revision: expectedReviewRevision(review),
       });
       setFeedback(result);
     }, "Feedback disetujui. Publikasi masih memerlukan aksi terpisah.", false);
@@ -483,7 +507,7 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
     await mutate(async () => {
       const result = await request<{ id: string }>(`/reviews/${review.id}/publish`, csrfToken, "POST", {
         feedback_draft_id: feedback.id,
-        expected_revision: review.revision,
+        expected_revision: expectedReviewRevision(review),
         expected_feedback_revision: feedback.revision,
       });
       setPublicationId(result.id);
@@ -683,12 +707,13 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
           </section>}
           <ManualEvidenceForm review={review} files={review.source_files} elements={review.elements} sourceSelection={manualAnchorSelection}
             onSourceSelection={onManualAnchorSelection} csrfToken={csrfToken} busy={busy}
+            getExpectedRevision={() => expectedReviewRevision(review)}
             relationships={relationships} relationshipCode={activeRelationshipCode} role={activeRole}
             selectedElementId={selectedElement?.id ?? ""} onElementChange={selectElement}
             onRelationshipChange={(code, nextRole) => { setSelectedRelationshipCode(code); setSelectedRole(nextRole); }}
           onSaved={(result) => {
             setSelectedEvidenceId(result.evidence_id);
-            setReview((current) => current ? { ...current, revision: result.revision, content_hash: result.content_hash, state: "draft" } : current);
+            updateCurrentReviewRevision(review.id, result.revision, result.content_hash);
             setRefreshKey((value) => value + 1);
           }} onBusy={setBusy} onError={setError} onNotice={setNotice} />
           <div className="b4-action-card">
@@ -764,7 +789,7 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
         <div className="button-row">
           <button type="button" className="button button-quiet" disabled={busy} onClick={() => void saveNotes()}>Simpan catatan</button>
           <button type="button" className="button button-primary" disabled={busy || review.state === "complete"} onClick={() => void mutate(
-            () => request(`/reviews/${review.id}/complete`, csrfToken, "POST", { expected_revision: review.revision }),
+            () => request(`/reviews/${review.id}/complete`, csrfToken, "POST", { expected_revision: expectedReviewRevision(review) }),
             "Pemeriksaan lengkap dan hash review dibekukan.")}>Selesaikan pemeriksaan</button>
         </div>
         <div className="b4-feedback-card">
@@ -808,10 +833,11 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
   </section>;
 }
 
-function ManualEvidenceForm({ review, files, elements, selectedElementId, onElementChange, sourceSelection, onSourceSelection, csrfToken, busy, relationships, relationshipCode, role, onRelationshipChange, onSaved, onBusy, onError, onNotice }: {
+function ManualEvidenceForm({ review, files, elements, selectedElementId, onElementChange, sourceSelection, onSourceSelection, csrfToken, busy, relationships, relationshipCode, role, onRelationshipChange, getExpectedRevision, onSaved, onBusy, onError, onNotice }: {
   review: Review; files: SourceFile[]; elements: ReviewElement[]; csrfToken: string; busy: boolean;
   selectedElementId: string; onElementChange: (id: string) => void;
   relationships: Relationship[]; relationshipCode: string; role: string; onRelationshipChange: (code: string, role: string) => void;
+  getExpectedRevision: () => number;
   sourceSelection: ManualAnchorSelection | null; onSourceSelection: (selection: ManualAnchorSelection | null) => void;
   onSaved: (result: { evidence_id: string; revision: number; content_hash: string }) => void;
   onBusy: (busy: boolean) => void; onError: (message: string) => void; onNotice: (message: string) => void;
@@ -836,7 +862,7 @@ function ManualEvidenceForm({ review, files, elements, selectedElementId, onElem
         review_finding_id: null,
         relationship_code: role ? relationshipCode || null : null,
         role: role || null,
-        expected_revision: review.revision,
+        expected_revision: getExpectedRevision(),
       });
       onNotice(sourceSelection
         ? "Evidence manual ditambahkan dari lokasi unit sumber yang diperiksa."
