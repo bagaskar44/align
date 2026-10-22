@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
 
+from align_api.context_provider_profiles import context_provider_payload
 from align_domain.providers import (
     MockProvider,
     OpenAIResponsesProvider,
@@ -78,3 +80,11 @@ def test_context_output_cap_retains_manual_fallback_without_silent_truncation() 
     candidates[0]["value"] = "x" * 4000
     proposed, outcome = propose_context_fields(job, context, scope, candidates)
     assert proposed == [] and outcome["status"] == "processing_limit"
+
+
+def test_context_model_profile_pins_model_and_labels_live_calls_as_ledger_guarded() -> None:
+    profile = context_provider_payload(SimpleNamespace(
+        provider_mode="live", data_mode="synthetic", model_efficient="synthetic-model",
+    ))  # type: ignore[arg-type]
+    assert profile["model"] == "synthetic-model"
+    assert profile["live_calls"] == "ledger_guarded"

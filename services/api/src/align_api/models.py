@@ -909,6 +909,7 @@ class AssignmentVersion(RevisionMixin, Base):
         String(32), nullable=False, default="accept_with_label"
     )
     limits_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    task_facts_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     criterion_set_version_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("criterion_set_versions.id", use_alter=True)
     )

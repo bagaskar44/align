@@ -38,6 +38,23 @@ MAX_INPUT_TOKENS = 20_000
 MAX_OUTPUT_TOKENS = 4_000
 
 
+def draft_model_manifest_matches(
+    content: dict[str, Any], scope: dict[str, Any], settings: Any
+) -> bool:
+    configured_models = [
+        value if isinstance(value, str) and value.strip() else None
+        for value in (content.get("model"), scope.get("provider_model"), settings.model_efficient)
+    ]
+    model_bound = configured_models[0] == configured_models[1] == configured_models[2]
+    if scope.get("provider_mode") == "live" and configured_models[0] is None:
+        return False
+    return bool(
+        content.get("provider_mode") == scope.get("provider_mode")
+        and content.get("data_mode") == scope.get("data_mode")
+        and model_bound
+    )
+
+
 def _strict_schema() -> dict[str, Any]:
     source_ref = {
         "type": "object",
@@ -317,6 +334,9 @@ def execute_draft_job(job_id: UUID, expected_fence: int, expected_fingerprint: s
                 model_manifest is None
                 or model_manifest.kind != "model"
                 or model_manifest.sha256 != job.scope_json.get("model_manifest_sha256")
+                or not draft_model_manifest_matches(
+                    model_manifest.content_json, job.scope_json, settings
+                )
                 or routing_manifest is None
                 or routing_manifest.kind != "routing"
                 or routing_manifest.sha256 != job.scope_json.get("routing_manifest_sha256")

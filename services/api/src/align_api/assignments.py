@@ -69,6 +69,7 @@ from align_domain.assignment_contracts import (
     SpecificationPayload,
     canonical_hash,
     compile_lint,
+    decimal_value,
     lint_effective_status,
     validate_spec_against_sources,
 )
@@ -207,6 +208,36 @@ class SpecApproval(StrictRequest):
 
 class PublishBody(StrictRequest):
     expected_revision: StrictInt = Field(ge=1)
+
+
+class TaskFactValueInput(StrictRequest):
+    key: StrictStr = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    value: Any
+    origin: StrictStr = Field(min_length=1, max_length=500)
+    evidence_ids: list[UUIDInput] = Field(default_factory=list, max_length=20)
+
+    @field_validator("origin")
+    @classmethod
+    def origin_nonblank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("fact origin cannot be blank")
+        return value.strip()
+
+
+class TaskFactsUpdate(StrictRequest):
+    expected_revision: StrictInt = Field(ge=1)
+    lecturer_confirmation: Literal[True]
+    facts: list[TaskFactValueInput] = Field(max_length=100)
+
+    @model_validator(mode="after")
+    def unique_keys_and_evidence(self) -> TaskFactsUpdate:
+        keys = [item.key for item in self.facts]
+        if len(set(keys)) != len(keys):
+            raise ValueError("task fact keys must be unique")
+        for item in self.facts:
+            if len(set(item.evidence_ids)) != len(item.evidence_ids):
+                raise ValueError("task fact evidence IDs must be unique")
+        return self
 
 
 class LintBody(StrictRequest):
@@ -768,6 +799,7 @@ def _staff_version(db: DbSession, version: AssignmentVersion) -> dict[str, Any]:
         "due_at": version.due_at.isoformat(),
         "late_policy": version.late_policy,
         "limits": version.limits_json,
+        "task_facts": version.task_facts_json,
         "rubric_sources": [
             {"id": str(item.id), "name": item.original_name, "sha256": item.sha256}
             for item in rubric_sources
@@ -878,7 +910,7 @@ def _queue_provider_draft(
                 "services/worker/src/align_worker/drafting.py",
             )
         },
-        "live_calls": "blocked_before_network",
+        "live_calls": "ledger_guarded" if settings.provider_mode == "live" else "blocked_before_network",
         "limits": {"max_text_calls": 3, "max_input_tokens": 20000, "max_output_tokens": 4000},
         "budget_usd": str(settings.spec_draft_budget_usd),
     }
@@ -1006,6 +1038,7 @@ def create_assignment(
         due_at=now + timedelta(days=7),
         late_policy="accept_with_label",
         limits_json=dict(DEFAULT_LIMITS),
+        task_facts_json={},
         criterion_set_version_id=criteria.id,
         revision=1,
     )
@@ -1297,6 +1330,10 @@ def update_assignment_version(
     version.opens_at = body.opens_at.astimezone(UTC)
     version.due_at = body.due_at.astimezone(UTC)
     version.late_policy = body.late_policy
+    if version_changed:
+        # Facts are confirmed against the exact task package. Any package or
+        # instruction change clears them so they cannot silently cross revisions.
+        version.task_facts_json = {}
     if version_changed and version.criterion_set_version_id is not None:
         prior = db.get(CriterionSetVersion, version.criterion_set_version_id)
         if prior is not None and prior.state == "draft":
@@ -1340,6 +1377,142 @@ def update_assignment_version(
         "assignment_version",
         version.id,
         {"instruction_hash": version.instruction_hash},
+    )
+    store_response(db, identity.user.id, "PUT", route, idempotency_key, response)
+    db.commit()
+    return response
+
+
+@router.put("/assignment-versions/{version_id}/task-facts")
+def update_task_facts(
+    version_id: UUID,
+    body: TaskFactsUpdate,
+    request: Request,
+    identity: Annotated[Identity, Depends(require_verified_active_identity)],
+    db: Annotated[DbSession, Depends(get_db)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+) -> dict[str, Any]:
+    version = db.scalar(
+        select(AssignmentVersion).where(AssignmentVersion.id == version_id).with_for_update()
+    )
+    if version is None:
+        raise HTTPException(status_code=404, detail="assignment version not found")
+    assignment = _lecturer_assignment(db, version.assignment_id, identity, lock=True)
+    if db.scalar(
+        select(Enrollment.id).where(
+            Enrollment.course_id == assignment.course_id,
+            Enrollment.user_id == identity.user.id,
+            Enrollment.role == "lecturer",
+            Enrollment.active.is_(True),
+        )
+    ) is None:
+        raise HTTPException(status_code=404, detail="assignment version not found")
+    route = f"/api/v1/assignment-versions/{version_id}/task-facts"
+    cached = replay_or_lock(
+        db, identity.user.id, "PUT", route, idempotency_key, body.model_dump(mode="json")
+    )
+    if cached is not None:
+        return cached
+    if version.state != "draft":
+        raise HTTPException(status_code=409, detail="published version facts are immutable; create a new version")
+    if body.expected_revision != version.revision:
+        raise HTTPException(status_code=409, detail="revision mismatch")
+    spec = (
+        db.get(SpecificationVersion, version.specification_version_id)
+        if version.specification_version_id
+        else None
+    )
+    if (
+        spec is None
+        or spec.state != "approved"
+        or spec.assignment_id != version.assignment_id
+        or version.specification_version_id != spec.id
+        or spec.content_hash is None
+    ):
+        raise HTTPException(status_code=409, detail="approved bound specification is required")
+    try:
+        parsed = SpecificationPayload.model_validate_json(json.dumps(spec.payload_json))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="approved task fact registry is invalid") from exc
+    definitions = {item.key: item for item in parsed.task_facts}
+    unknown = {item.key for item in body.facts} - definitions.keys()
+    if unknown:
+        raise HTTPException(status_code=422, detail="task fact is not registered in the approved specification")
+
+    evidence_ids = {evidence_id for item in body.facts for evidence_id in item.evidence_ids}
+    if evidence_ids:
+        valid_evidence = set(
+            db.scalars(
+                select(EvidenceItem.id).where(
+                    EvidenceItem.id.in_(evidence_ids),
+                    EvidenceItem.submission_version_id.is_(None),
+                    or_(
+                        EvidenceItem.context_version_id == version.context_version_id,
+                        EvidenceItem.assignment_version_id == version.id,
+                    ),
+                )
+            ).all()
+        )
+        if valid_evidence != evidence_ids:
+            raise HTTPException(status_code=404, detail="task fact evidence not found in the bound task sources")
+
+    now = datetime.now(UTC)
+    confirmed: dict[str, Any] = {}
+    for item in body.facts:
+        definition = definitions[item.key]
+        value = item.value
+        if definition.value_type == "boolean":
+            if type(value) is not bool:
+                raise HTTPException(status_code=422, detail=f"task fact {item.key} requires a boolean")
+        elif definition.value_type == "string":
+            if not isinstance(value, str) or (
+                definition.allowed_values is not None and value not in definition.allowed_values
+            ):
+                raise HTTPException(status_code=422, detail=f"task fact {item.key} has an invalid string value")
+        else:
+            if not isinstance(value, str):
+                raise HTTPException(status_code=422, detail=f"task fact {item.key} requires a canonical decimal string")
+            try:
+                decimal_value(value, f"task fact {item.key}")
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        confirmed[item.key] = {
+            "value": value,
+            "origin": item.origin,
+            "evidence_ids": sorted(str(evidence_id) for evidence_id in item.evidence_ids),
+            "verification": "lecturer_confirmed",
+            "verified_by": str(identity.user.id),
+            "verified_at": now.isoformat(),
+            "assignment_version_id": str(version.id),
+            "specification_version_id": str(spec.id),
+            "specification_hash": spec.content_hash,
+        }
+    version.task_facts_json = {
+        "schema_version": 1,
+        "assignment_version_id": str(version.id),
+        "specification_version_id": str(spec.id),
+        "specification_hash": spec.content_hash,
+        "facts": confirmed,
+        "content_hash": canonical_hash(confirmed),
+        "verified_by": str(identity.user.id),
+        "verified_at": now.isoformat(),
+    }
+    version.revision += 1
+    db.flush()
+    response = {
+        "assignment_version_id": str(version.id),
+        "specification_version_id": str(spec.id),
+        "revision": version.revision,
+        "task_facts": version.task_facts_json,
+    }
+    _audit(
+        db,
+        identity,
+        request,
+        "assignment.task_facts.verified",
+        "assignment_version",
+        version.id,
+        {"task_facts_hash": version.task_facts_json["content_hash"], "fact_count": len(confirmed)},
     )
     store_response(db, identity.user.id, "PUT", route, idempotency_key, response)
     db.commit()
@@ -1445,6 +1618,7 @@ def new_assignment_version(
         due_at=base.due_at,
         late_policy=base.late_policy,
         limits_json=dict(base.limits_json),
+        task_facts_json={},
         criterion_set_version_id=criterion_set_id,
         revision=1,
     )
@@ -2239,6 +2413,8 @@ def create_spec_draft(
     db.add(spec)
     db.flush()
     version.criterion_set_version_id = criterion_set.id
+    if version.specification_version_id != spec.id:
+        version.task_facts_json = {}
     version.specification_version_id = spec.id
     version.revision += 1
     provider_draft_job_id = _queue_provider_draft(
@@ -3151,6 +3327,8 @@ def approve_specification(
     spec_row.fidelity_confirmed_by = identity.user.id
     spec_row.fidelity_confirmed_at = datetime.now(UTC)
     spec_row.revision += 1
+    if version.specification_version_id != spec_row.id:
+        version.task_facts_json = {}
     version.specification_version_id = spec_row.id
     version.revision += 1
     response = {

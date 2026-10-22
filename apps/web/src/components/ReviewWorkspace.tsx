@@ -580,7 +580,12 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
               <p>Applicability: {selectedElement.analysis.applicability_status} · coverage: {selectedElement.analysis.source_coverage_status} · hubungan bukti: {selectedElement.analysis.evidence_relationship} · status: {selectedElement.analysis.check_status ?? "not applicable"}</p>
               {selectedElement.analysis.interpretation && <p>{selectedElement.analysis.interpretation}</p>}
               {selectedElement.analysis.reason_codes.length > 0 && <p>Batas: {selectedElement.analysis.reason_codes.join(", ")}</p>}
-              {selectedElement.analysis.observations.length > 0 && <ul>{selectedElement.analysis.observations.map((item, index) => <li key={index}>{String(item.text ?? item.code ?? "Observation")}</li>)}</ul>}
+              {selectedElement.analysis.observations.length > 0 && <ul>{selectedElement.analysis.observations.map((item, index) => {
+                const record = item.record && typeof item.record === "object" ? item.record as Record<string, unknown> : null;
+                return <li key={index}>{item.kind === "applicability_task_fact" && record
+                  ? `Fakta terverifikasi ${String(item.fact)} = ${String(record.value)} · ${String(record.verification)} · asal: ${String(record.origin)} · diverifikasi ${String(record.verified_at)} oleh ${String(record.verified_by)} · evidence: ${Array.isArray(record.evidence_ids) ? record.evidence_ids.join(", ") || "konfirmasi dosen" : "tidak tersedia"}`
+                  : String(item.text ?? item.code ?? "Observation")}</li>;
+              })}</ul>}
               {selectedElement.analysis.support_bindings.length > 0 && <details>
                 <summary>Bindings bukti bertipe: {selectedElement.analysis.support_bindings.length}</summary>
                 <pre>{JSON.stringify(selectedElement.analysis.support_bindings, null, 2)}</pre>

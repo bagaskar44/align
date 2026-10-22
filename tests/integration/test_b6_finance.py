@@ -20,14 +20,16 @@ from align_api.models import (
     UsageEntry,
     UsageReservation,
 )
+from align_api.paid_calls import active_paid_release_scope
 from align_domain.assignment_contracts import canonical_hash
 from align_domain.finance import FinanceGuardError
-from align_domain.providers import OpenAIResponsesProvider, ProviderContext
+from align_domain.providers import OpenAIResponsesProvider, PaidCallBlocked, ProviderContext
 from align_worker.database import SessionFactory as WorkerSessionFactory
 from align_worker.finance import (
     CallBounds,
     WorkerPaidCallLedger,
     mark_unknown,
+    provider_finance_context,
     release_unstarted_call,
     reserve_call,
 )
@@ -105,14 +107,33 @@ def _rows() -> tuple[BudgetAccount, dict[str, UUID], UUID]:
         return account, jobs, rates.id
 
 
-def test_live_adapter_commits_reservation_then_settles_postgres_before_return(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_live_adapter_commits_reservation_then_settles_postgres_before_return(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    for name in ("MODEL_EFFICIENT", "MODEL_COMPLEX", "MODEL_VISION", "EMBEDDING_MODEL"):
+        monkeypatch.setenv(name, "mcheap")
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("DATA_MODE", "synthetic")
+    monkeypatch.setenv("APP_DEMO_MODE", "true")
+    monkeypatch.setenv("PROVIDER_MODE", "live")
+    monkeypatch.setenv("PAID_CALLS_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-postgres-test-key")
+    get_settings.cache_clear()
+    request.addfinalizer(get_settings.cache_clear)
     account, jobs, existing_rates_id = _rows()
     fixture_nonce = str(uuid4())
     with SessionFactory.begin() as db:
         manifest_rows: dict[str, MethodManifest] = {}
         contents = {
             "parser": {"schema_version": 1, "test_fixture": fixture_nonce},
-            "model": {"provider_mode": "live", "paid_calls": True, "test_fixture": fixture_nonce},
+            "model": {
+                "provider_mode": "live", "paid_calls": True,
+                "live_model_ids": {
+                    "efficient": "mcheap", "complex": "mcheap",
+                    "vision": "mcheap", "embedding": "mcheap",
+                },
+                "test_fixture": fixture_nonce,
+            },
             "retrieval": {"schema_version": 1, "test_fixture": fixture_nonce},
             "rules": {"schema_version": 1, "test_fixture": fixture_nonce},
             "prompt": {"schema_version": 1, "test_fixture": fixture_nonce},
@@ -173,7 +194,7 @@ def test_live_adapter_commits_reservation_then_settles_postgres_before_return(mo
             rate_manifest_id=manifest_rows["rates"].id,
             grounding_registry_version="test-only",
             lint_registry_version="test-only",
-            manifest_payload={"provider_mode": "live", "data_mode": "institutional"},
+            manifest_payload={"provider_mode": "live", "data_mode": "synthetic"},
             config_hash=canonical_hash({"release_id": str(release_id)}),
             state="active",
         ))
@@ -219,10 +240,37 @@ def test_live_adapter_commits_reservation_then_settles_postgres_before_return(mo
         return FakeResponse()
 
     monkeypatch.setattr("align_domain.providers.urllib.request.urlopen", fake_urlopen)
+    ledger = WorkerPaidCallLedger(enabled=True)
     provider = OpenAIResponsesProvider(
         "synthetic-test-key", {"complex": "mcheap"},
-        paid_call_ledger=WorkerPaidCallLedger(enabled=True),
+        paid_call_ledger=ledger,
     )
+    # Exercise the postgresql-backed guards before the fake provider transport:
+    # dev/synthetic/demo is admitted, while demo-off and runtime-role drift fail
+    # before creating a reservation.
+    with SessionFactory() as db:
+        scope = active_paid_release_scope(db, enabled=True)
+        assert scope["paid_calls_enabled"] is True
+        finance = provider_finance_context(
+            db, release_id=release_id, enabled=True, bounds=call.billing_bounds, model_id="mcheap"
+        )
+        assert finance["paid_calls_enabled"] is True
+        assert finance["rate_manifest_id"] == manifest_rows["rates"].id
+    monkeypatch.setenv("APP_DEMO_MODE", "false")
+    get_settings.cache_clear()
+    with pytest.raises(PaidCallBlocked, match="paid_release_binding_invalid"):
+        provider._post(call, "responses", {"model": "mcheap", "input": "synthetic"})
+    with WorkerSessionFactory() as db:
+        assert db.scalar(select(UsageReservation).where(UsageReservation.call_id == call.call_id)) is None
+    monkeypatch.setenv("APP_DEMO_MODE", "true")
+    monkeypatch.setenv("MODEL_VISION", "wrong-runtime-model")
+    get_settings.cache_clear()
+    with pytest.raises(PaidCallBlocked, match="paid_release_binding_invalid"):
+        provider._post(call, "responses", {"model": "mcheap", "input": "synthetic"})
+    with WorkerSessionFactory() as db:
+        assert db.scalar(select(UsageReservation).where(UsageReservation.call_id == call.call_id)) is None
+    monkeypatch.setenv("MODEL_VISION", "mcheap")
+    get_settings.cache_clear()
     response = provider._post(call, "responses", {"model": "mcheap", "input": "synthetic"})
     assert response["id"] == "req_b6_test"
     with WorkerSessionFactory() as db:
@@ -230,6 +278,57 @@ def test_live_adapter_commits_reservation_then_settles_postgres_before_return(mo
         entry = db.scalar(select(UsageEntry).where(UsageEntry.call_id == call.call_id))
         assert reservation is not None and reservation.status == "settled"
         assert entry is not None and entry.status == "known" and entry.actual_cost == Decimal("0.00000001")
+    # An unverified tariff manifest cannot authorize even a synthetic live call.
+    bad_rates_content = {
+        "schema_version": 1,
+        "status": "unverified",
+        "currency": "USD",
+        "models": {"mcheap": {"input_per_million": "0", "output_per_million": "0", "embedding_per_million": "0"}},
+    }
+    bad_rates_hash = canonical_hash(bad_rates_content)
+    with SessionFactory.begin() as db:
+        bad_rates = db.scalar(
+            select(MethodManifest).where(MethodManifest.sha256 == bad_rates_hash)
+        )
+        if bad_rates is None:
+            bad_rates = MethodManifest(
+                kind="rates", version_label=f"b6-unverified-{fixture_nonce[:8]}",
+                content_json=bad_rates_content, sha256=bad_rates_hash, verified_at=None,
+            )
+            db.add(bad_rates)
+        elif bad_rates.kind != "rates" or bad_rates.content_json != bad_rates_content:
+            raise AssertionError("test manifest hash collision across immutable contents")
+        db.flush()
+        active = db.get(ReleaseManifest, release_id)
+        assert active is not None
+        active.state = "retired"
+        bad_release_id = uuid4()
+        db.add(ReleaseManifest(
+            id=bad_release_id,
+            version_label=f"b6-ledger-unverified-{fixture_nonce[:8]}",
+            parser_manifest_id=manifest_rows["parser"].id,
+            model_manifest_id=manifest_rows["model"].id,
+            retrieval_manifest_id=manifest_rows["retrieval"].id,
+            rules_manifest_id=manifest_rows["rules"].id,
+            prompt_manifest_id=manifest_rows["prompt"].id,
+            routing_policy_manifest_id=manifest_rows["routing"].id,
+            batching_policy_manifest_id=manifest_rows["batching"].id,
+            parser_resource_manifest_id=manifest_rows["parser_resource"].id,
+            rate_manifest_id=bad_rates.id,
+            grounding_registry_version="test-only",
+            lint_registry_version="test-only",
+            manifest_payload={"provider_mode": "live", "data_mode": "synthetic"},
+            config_hash=canonical_hash({"unverified_release_id": str(bad_release_id)}),
+            state="active",
+        ))
+        db.flush()
+        finance = provider_finance_context(
+            db, release_id=bad_release_id, enabled=True, bounds=call.billing_bounds, model_id="mcheap"
+        )
+        assert finance["paid_calls_enabled"] is False
+    bad_call = call.model_copy(update={"call_id": uuid4(), "paid_release_manifest_id": bad_release_id, "rate_manifest_id": bad_rates.id})
+    with pytest.raises(PaidCallBlocked, match="paid_release_binding_invalid"):
+        ledger.reserve(bad_call, "mcheap", call.billing_bounds)
     with pytest.raises(DBAPIError, match="RELEASE_PAYLOAD_IMMUTABLE"):
         with SessionFactory.begin() as db:
             release = db.get(ReleaseManifest, release_id)

@@ -15,7 +15,7 @@ from align_api.models import (
     RoutingDecision,
     SubmissionVersion,
 )
-from align_domain.assignment_contracts import SpecificationPayload
+from align_domain.assignment_contracts import SpecificationPayload, TaskFact, canonical_hash
 from align_domain.executor import (
     ObservationBundle,
     SemanticVerdict,
@@ -33,6 +33,7 @@ from align_domain.executor import (
     topological_order,
     validate_batch_response,
     validate_observation_bundle,
+    verified_task_fact_values,
 )
 from align_domain.providers import (
     OpenAIResponsesProvider,
@@ -104,6 +105,92 @@ def test_applicability_is_closed_typed_and_unknown_facts_remain_unresolved() -> 
     assert resolve_applicability(
         SimpleNamespace(applicability=SimpleNamespace(mode="lecturer_required", rule=None)), {}
     ) == ("unresolved", "lecturer_confirmation_required")
+
+
+def test_applicability_uses_only_version_bound_lecturer_verified_task_facts() -> None:
+    assignment_version_id = str(uuid4())
+    specification_version_id = str(uuid4())
+    specification_hash = "a" * 64
+    definitions = {
+        "submission_variant": TaskFact(
+            key="submission_variant", value_type="string", allowed_values=["original", "alternate"]
+        )
+    }
+    rule = {"op": "eq", "fact": "task.submission_variant", "value": "original"}
+
+    def snapshot(value: str | None, *, verified: str = "lecturer_confirmed") -> dict[str, Any]:
+        facts: dict[str, Any] = {}
+        if value is not None:
+            facts["submission_variant"] = {
+                "value": value,
+                "origin": "Confirmed against the synthetic task instructions.",
+                "evidence_ids": [],
+                "verification": verified,
+                "verified_by": str(uuid4()),
+                "verified_at": "2026-10-22T00:00:00+00:00",
+                "assignment_version_id": assignment_version_id,
+                "specification_version_id": specification_version_id,
+                "specification_hash": specification_hash,
+            }
+        return {
+            "schema_version": 1,
+            "assignment_version_id": assignment_version_id,
+            "specification_version_id": specification_version_id,
+            "specification_hash": specification_hash,
+            "facts": facts,
+            "content_hash": canonical_hash(facts),
+        }
+
+    true_values, true_provenance = verified_task_fact_values(
+        snapshot("original"), assignment_version_id=assignment_version_id,
+        specification_version_id=specification_version_id, specification_hash=specification_hash,
+        definitions=definitions,
+    )
+    assert resolve_applicability(SimpleNamespace(applicability=SimpleNamespace(mode="fact_rule", rule=rule)), true_values) == ("applicable", None)
+    assert true_provenance["submission_variant"]["verification"] == "lecturer_confirmed"
+
+    false_values, _ = verified_task_fact_values(
+        snapshot("alternate"), assignment_version_id=assignment_version_id,
+        specification_version_id=specification_version_id, specification_hash=specification_hash,
+        definitions=definitions,
+    )
+    assert resolve_applicability(SimpleNamespace(applicability=SimpleNamespace(mode="fact_rule", rule=rule)), false_values) == (
+        "not_applicable", "verified_fact_rule_false"
+    )
+
+    unknown_values, _ = verified_task_fact_values(
+        snapshot(None), assignment_version_id=assignment_version_id,
+        specification_version_id=specification_version_id, specification_hash=specification_hash,
+        definitions=definitions,
+    )
+    assert resolve_applicability(SimpleNamespace(applicability=SimpleNamespace(mode="fact_rule", rule=rule)), unknown_values) == (
+        "unresolved", "applicability_fact_unverified"
+    )
+    proposed_values, _ = verified_task_fact_values(
+        snapshot("original", verified="proposed"), assignment_version_id=assignment_version_id,
+        specification_version_id=specification_version_id, specification_hash=specification_hash,
+        definitions=definitions,
+    )
+    assert proposed_values == {}
+
+    wrong_version_values, _ = verified_task_fact_values(
+        snapshot("original"), assignment_version_id=str(uuid4()),
+        specification_version_id=specification_version_id, specification_hash=specification_hash,
+        definitions=definitions,
+    )
+    assert wrong_version_values == {}
+    stale_spec_values, _ = verified_task_fact_values(
+        snapshot("original"), assignment_version_id=assignment_version_id,
+        specification_version_id=specification_version_id, specification_hash="b" * 64,
+        definitions=definitions,
+    )
+    assert stale_spec_values == {}
+    wrong_specification_values, _ = verified_task_fact_values(
+        snapshot("original"), assignment_version_id=assignment_version_id,
+        specification_version_id=str(uuid4()), specification_hash=specification_hash,
+        definitions=definitions,
+    )
+    assert wrong_specification_values == {}
 
 
 def test_dag_is_stable_and_dependencies_are_ordered_first() -> None:
@@ -409,7 +496,9 @@ def test_budget_caps_and_config_change_fingerprint_are_explicit() -> None:
         "retrieval": "r1", "rules": "r1", "prompt": "p1", "routing": "route1",
         "batching": "batch1", "grounding_registry": "g1", "lint_registry": "l1",
         "numeric_policy_hashes": [],
+        "task_facts_hash": "facts1",
     }
     assert analysis_fingerprint(snapshot) != analysis_fingerprint({**snapshot, "model": "m2"})
+    assert analysis_fingerprint(snapshot) != analysis_fingerprint({**snapshot, "task_facts_hash": "facts2"})
     with pytest.raises(ValueError, match="incomplete"):
         analysis_fingerprint({"submission_manifest_hash": "x"})

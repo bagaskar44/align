@@ -16,6 +16,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from align_api.config import get_settings
 from align_api.models import (
     BudgetAccount,
     Job,
@@ -24,6 +25,11 @@ from align_api.models import (
     UsageEntry,
     UsageReconciliation,
     UsageReservation,
+)
+from align_api.paid_calls import (
+    call_model_matches_manifest,
+    live_model_binding_matches,
+    runtime_live_model_ids,
 )
 from align_domain.finance import (
     BudgetState,
@@ -90,8 +96,19 @@ class WorkerPaidCallLedger:
             raise PaidCallBlocked("PAID_CALL_GUARD_INCOMPLETE")
         try:
             with SessionFactory() as db:
+                call_manifest = db.get(MethodManifest, context.manifest_id)
+                if (
+                    call_manifest is None
+                    or call_manifest.kind != "model"
+                    or not call_model_matches_manifest(call_manifest.content_json, model_id)
+                ):
+                    raise FinanceGuardError("paid_call_model_manifest_mismatch")
                 release_context = provider_finance_context(
-                    db, release_id=context.paid_release_manifest_id, enabled=True, bounds=bounds
+                    db,
+                    release_id=context.paid_release_manifest_id,
+                    enabled=True,
+                    bounds=bounds,
+                    model_id=model_id,
                 )
             if (
                 not release_context["paid_calls_enabled"]
@@ -149,6 +166,7 @@ def provider_finance_context(
     release_id: UUID | None,
     enabled: bool,
     bounds: dict[str, int],
+    model_id: str | None = None,
 ) -> dict[str, Any]:
     """Bind adapter permission and tariff to the immutable active release."""
     if release_id is None or not hasattr(db, "get"):
@@ -162,15 +180,38 @@ def provider_finance_context(
     routing = db.get(MethodManifest, release.routing_policy_manifest_id) if release else None
     model = db.get(MethodManifest, release.model_manifest_id) if release else None
     rate_id = release.rate_manifest_id if release else None
+    rates = db.get(MethodManifest, rate_id) if rate_id else None
+    settings = get_settings()
+    runtime_models = runtime_live_model_ids(settings)
+    rate_models = rates.content_json.get("models") if rates else None
+    synthetic_allowed = bool(
+        release is not None
+        and release.manifest_payload.get("data_mode") == "synthetic"
+        and settings.app_env == "development"
+        and settings.data_mode == "synthetic"
+        and settings.app_demo_mode
+    )
     allowed = bool(
         enabled
         and release is not None
         and release.state == "active"
         and release.manifest_payload.get("provider_mode") == "live"
+        and release.manifest_payload.get("data_mode") in {"synthetic", "institutional"}
+        and (release.manifest_payload.get("data_mode") != "synthetic" or synthetic_allowed)
         and routing is not None
         and routing.content_json.get("allow_live") is True
         and model is not None
         and model.content_json.get("paid_calls") is True
+        and model.content_json.get("provider_mode") == "live"
+        and live_model_binding_matches(model.content_json, settings)
+        and (model_id is None or call_model_matches_manifest(model.content_json, model_id))
+        and rates is not None
+        and rates.kind == "rates"
+        and rates.verified_at is not None
+        and rates.content_json.get("status") == "verified"
+        and isinstance(rate_models, dict)
+        and runtime_models is not None
+        and set(runtime_models.values()) <= set(rate_models)
         and rate_id is not None
     )
     return {

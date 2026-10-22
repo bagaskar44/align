@@ -49,7 +49,7 @@ from align_api.models import (
     SubmissionVersionFile,
     SupportBinding,
 )
-from align_domain.assignment_contracts import SpecificationPayload
+from align_domain.assignment_contracts import SpecificationPayload, canonical_hash
 from align_domain.executor import analysis_fingerprint
 
 router = APIRouter(tags=["analysis"])
@@ -152,6 +152,8 @@ def _fingerprint_snapshot(
         "submission_manifest_hash": source.manifest_hash,
         "specification_hash": spec.content_hash,
         "assignment_version_id": str(version.id),
+        "task_facts": version.task_facts_json,
+        "task_facts_hash": version.task_facts_json.get("content_hash", canonical_hash({})),
         "parser": method_rows["parser"].sha256 if method_rows["parser"] else "missing",
         "model": method_rows["model"].sha256 if method_rows["model"] else "missing",
         "retrieval": method_rows["retrieval"].sha256 if method_rows["retrieval"] else "missing",

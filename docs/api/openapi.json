@@ -2329,6 +2329,71 @@
         "title": "StartAnalysis",
         "type": "object"
       },
+      "TaskFactValueInput": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "key": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "title": "Key",
+            "type": "string"
+          },
+          "origin": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Origin",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value"
+          }
+        },
+        "required": [
+          "key",
+          "value",
+          "origin"
+        ],
+        "title": "TaskFactValueInput",
+        "type": "object"
+      },
+      "TaskFactsUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "facts": {
+            "items": {
+              "$ref": "#/components/schemas/TaskFactValueInput"
+            },
+            "maxItems": 100,
+            "title": "Facts",
+            "type": "array"
+          },
+          "lecturer_confirmation": {
+            "const": true,
+            "title": "Lecturer Confirmation",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "lecturer_confirmation",
+          "facts"
+        ],
+        "title": "TaskFactsUpdate",
+        "type": "object"
+      },
       "UserCreate": {
         "additionalProperties": false,
         "properties": {
@@ -3486,6 +3551,88 @@
           }
         },
         "summary": "Create Spec Draft",
+        "tags": [
+          "assignments",
+          "specifications",
+          "groups"
+        ]
+      }
+    },
+    "/api/v1/assignment-versions/{version_id}/task-facts": {
+      "put": {
+        "operationId": "update_task_facts_api_v1_assignment_versions__version_id__task_facts_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskFactsUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Task Facts Api V1 Assignment Versions  Version Id  Task Facts Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Task Facts",
         "tags": [
           "assignments",
           "specifications",

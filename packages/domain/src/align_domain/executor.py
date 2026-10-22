@@ -17,7 +17,7 @@ from uuid import UUID
 
 from pydantic import Field, StrictStr
 
-from .assignment_contracts import SpecificationPayload, canonical_hash
+from .assignment_contracts import SpecificationPayload, TaskFact, canonical_hash, decimal_value
 from .contracts import StrictModel
 
 
@@ -149,6 +149,78 @@ def evaluate_registered_rule(rule: dict[str, Any], facts: dict[str, Any]) -> boo
         "lt": left < right,
         "lte": left <= right,
     }[op]
+
+
+def verified_task_fact_values(
+    snapshot: dict[str, Any],
+    *,
+    assignment_version_id: str,
+    specification_version_id: str,
+    specification_hash: str,
+    definitions: dict[str, TaskFact],
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Return only lecturer-confirmed facts bound to this exact task/spec snapshot."""
+    if (
+        snapshot.get("schema_version") != 1
+        or snapshot.get("assignment_version_id") != assignment_version_id
+        or snapshot.get("specification_version_id") != specification_version_id
+        or snapshot.get("specification_hash") != specification_hash
+        or not isinstance(snapshot.get("facts"), dict)
+        or snapshot.get("content_hash") != canonical_hash(snapshot.get("facts", {}))
+    ):
+        return {}, {}
+    values: dict[str, Any] = {}
+    provenance: dict[str, dict[str, Any]] = {}
+    for key, record in snapshot["facts"].items():
+        definition = definitions.get(key)
+        if (
+            definition is None
+            or not isinstance(record, dict)
+            or record.get("verification") != "lecturer_confirmed"
+            or record.get("assignment_version_id") != assignment_version_id
+            or record.get("specification_version_id") != specification_version_id
+            or record.get("specification_hash") != specification_hash
+            or not isinstance(record.get("origin"), str)
+            or not record["origin"].strip()
+            or not isinstance(record.get("verified_by"), str)
+            or not record["verified_by"]
+            or not isinstance(record.get("verified_at"), str)
+            or not isinstance(record.get("evidence_ids"), list)
+            or any(not isinstance(value, str) for value in record.get("evidence_ids", []))
+        ):
+            continue
+        value = record.get("value")
+        if definition.value_type == "boolean":
+            valid = type(value) is bool
+        elif definition.value_type == "string":
+            valid = isinstance(value, str) and (
+                definition.allowed_values is None or value in definition.allowed_values
+            )
+        else:
+            valid = False
+            if isinstance(value, str):
+                try:
+                    decimal_value(value, f"task fact {key}")
+                    valid = True
+                except ValueError:
+                    pass
+        if valid:
+            values[f"task.{key}"] = value
+            provenance[key] = record
+    return values, provenance
+
+
+def applicability_fact_names(rule: dict[str, Any] | None) -> set[str]:
+    if not isinstance(rule, dict):
+        return set()
+    op = rule.get("op")
+    if op in {"all", "any"}:
+        children = rule.get("children", [])
+        return set().union(*(applicability_fact_names(child) for child in children))
+    if op == "not":
+        return applicability_fact_names(rule.get("child"))
+    fact = rule.get("fact")
+    return {fact} if isinstance(fact, str) else set()
 
 
 def resolve_applicability(element: Any, facts: dict[str, Any]) -> tuple[str, str | None]:
@@ -540,6 +612,7 @@ def analysis_fingerprint(snapshot: dict[str, Any]) -> str:
         "grounding_registry",
         "lint_registry",
         "numeric_policy_hashes",
+        "task_facts_hash",
     }
     if not required <= snapshot.keys():
         raise ValueError("analysis fingerprint snapshot is incomplete")

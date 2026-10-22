@@ -353,6 +353,17 @@ export type ApiSchemas = {
   "StartAnalysis": {
     "release_manifest_id": string;
   };
+  "TaskFactValueInput": {
+    "evidence_ids"?: Array<string>;
+    "key": string;
+    "origin": string;
+    "value": unknown;
+  };
+  "TaskFactsUpdate": {
+    "expected_revision": number;
+    "facts": Array<ApiSchemas["TaskFactValueInput"]>;
+    "lecturer_confirmation": boolean;
+  };
   "UserCreate": {
     "display_name": string;
     "email": string;
@@ -458,6 +469,11 @@ export interface ApiOperations {
   };
   "/assignment-versions/{version_id}/specification-drafts": {
     POST: { operationId: "create_spec_draft_api_v1_assignment_versions__version_id__specification_drafts_post"; requestBody: ApiSchemas["SpecDraftCreate"]; response: {
+  [key: string]: unknown;
+} };
+  };
+  "/assignment-versions/{version_id}/task-facts": {
+    PUT: { operationId: "update_task_facts_api_v1_assignment_versions__version_id__task_facts_put"; requestBody: ApiSchemas["TaskFactsUpdate"]; response: {
   [key: string]: unknown;
 } };
   };
@@ -855,6 +871,7 @@ export interface ApiOperationMethods {
   "/assignment-versions/{version_id}/publish-preview": "GET";
   "/assignment-versions/{version_id}/rubric-parse": "GET";
   "/assignment-versions/{version_id}/specification-drafts": "POST";
+  "/assignment-versions/{version_id}/task-facts": "PUT";
   "/assignments": "POST";
   "/assignments/{assignment_id}": "GET" | "PATCH";
   "/assignments/{assignment_id}/groups": "GET" | "POST";

@@ -69,6 +69,32 @@ def test_configured_live_b2_drafting_stops_at_paid_call_guard(monkeypatch: Any) 
     assert output["paid_calls"] == 0
 
 
+def test_b2_draft_model_must_match_immutable_manifest_scope_and_runtime() -> None:
+    settings = SimpleNamespace(model_efficient="model-a")
+    scope = {"provider_mode": "live", "data_mode": "synthetic", "provider_model": "model-a"}
+    content = {**scope, "model": scope["provider_model"]}
+    assert drafting.draft_model_manifest_matches(content, scope, settings)
+    assert not drafting.draft_model_manifest_matches(
+        {**content, "model": "model-b"}, scope, settings,
+    )
+    assert not drafting.draft_model_manifest_matches(
+        content, {**scope, "provider_model": "model-b"}, settings,
+    )
+
+
+def test_mock_draft_accepts_consistently_unconfigured_model_but_live_does_not() -> None:
+    mock_scope = {"provider_mode": "mock", "data_mode": "synthetic", "provider_model": ""}
+    mock_content = {"provider_mode": "mock", "data_mode": "synthetic", "model": ""}
+    assert drafting.draft_model_manifest_matches(
+        mock_content, mock_scope, SimpleNamespace(model_efficient=None)
+    )
+    live_scope = {**mock_scope, "provider_mode": "live"}
+    live_content = {**mock_content, "provider_mode": "live"}
+    assert not drafting.draft_model_manifest_matches(
+        live_content, live_scope, SimpleNamespace(model_efficient=None)
+    )
+
+
 def test_embedding_batches_split_without_omitting_text_and_fail_oversized_input_closed() -> None:
     texts = ["a" * 11_000, "b" * 11_000, "c" * 11_000]
     batches = _pack_embedding_batches(texts, "synthetic-model", token_limit=3_000)

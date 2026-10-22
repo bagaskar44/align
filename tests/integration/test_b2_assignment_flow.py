@@ -10,6 +10,7 @@ from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -24,12 +25,16 @@ from align_api.models import (
     Course,
     Enrollment,
     EvidenceItem,
+    FileAsset,
+    NormativeFileLink,
     ParseArtifact,
+    SourceUnit,
     SpecificationVersion,
     User,
 )
 from align_api.security import hash_password
-from align_domain.assignment_contracts import canonical_hash
+from align_domain.assignment_contracts import TaskFact, canonical_hash
+from align_domain.executor import resolve_applicability, verified_task_fact_values
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("ALIGN_RUN_INTEGRATION") != "true",
@@ -534,6 +539,13 @@ def test_assignment_spec_publish_group_and_student_visibility(b2_scenario):
     assert blocking.status_code == 422
 
     complete = specification_payload(**common, include_requirement=True)
+    complete["task_facts"] = [
+        {"key": "submission_variant", "value_type": "string", "allowed_values": ["original", "alternate"]}
+    ]
+    complete["elements"][0]["applicability"] = {
+        "mode": "fact_rule",
+        "rule": {"op": "eq", "fact": "task.submission_variant", "value": "original"},
+    }
     second_report = lecturer.put(
         f"/api/v1/specification-versions/{specification['id']}",
         headers=headers(csrf),
@@ -594,6 +606,251 @@ def test_assignment_spec_publish_group_and_student_visibility(b2_scenario):
     assert approved.status_code == 200, approved.text
     assert approved.json()["fidelity_confirmation"] is True
     assert approved.json()["state"] == "approved"
+
+    fact_rule_element = SimpleNamespace(
+        applicability=SimpleNamespace(
+            mode="fact_rule",
+            rule={"op": "eq", "fact": "task.submission_variant", "value": "original"},
+        )
+    )
+    fact_registry = {
+        "submission_variant": TaskFact(
+            key="submission_variant", value_type="string", allowed_values=["original", "alternate"]
+        )
+    }
+    task_source_hash = uuid4().hex * 2
+    task_artifact_fingerprint = uuid4().hex * 2
+    task_artifact_scope_hash = uuid4().hex * 2
+    with SessionFactory.begin() as db:
+        rubric_asset = FileAsset(
+            course_id=course.id,
+            assignment_id=UUID(assignment["id"]),
+            purpose="rubric",
+            uploaded_by=b2_scenario["users"]["lecturer"].id,
+            original_name="task-fact-source.txt",
+            size_bytes=1,
+            mime="text/plain",
+            sha256=task_source_hash,
+            object_key=f"synthetic/b2-task-fact/{uuid4()}",
+            validation_state="validated",
+            preflight_json={},
+        )
+        db.add(rubric_asset)
+        db.flush()
+        db.add(NormativeFileLink(
+            file_asset_id=rubric_asset.id,
+            assignment_version_id=UUID(version_id),
+            source_role="rubric",
+        ))
+        task_artifact = ParseArtifact(
+            file_asset_id=rubric_asset.id,
+            assignment_version_id=UUID(version_id),
+            fingerprint=task_artifact_fingerprint,
+            owner_scope_hash=task_artifact_scope_hash,
+            status="parsed",
+            limitations_json=[],
+        )
+        db.add(task_artifact)
+        db.flush()
+        task_unit = SourceUnit(
+            parse_artifact_id=task_artifact.id,
+            locator_key="synthetic-paragraph-1",
+            unit_type="paragraph",
+            source_order=0,
+            anchor_json={"paragraph": 1},
+            parse_status="parsed",
+            limitations_json=[],
+        )
+        db.add(task_unit)
+        db.flush()
+        task_evidence = EvidenceItem(
+            source_unit_id=task_unit.id,
+            assignment_version_id=UUID(version_id),
+            file_asset_id=rubric_asset.id,
+            source_sha256=task_source_hash,
+            type="paragraph",
+            anchor_json={"paragraph": 1},
+            content_original_json={"text": "Varian asli untuk tugas sintetis."},
+            content_normalized_json={"text": "Varian asli untuk tugas sintetis."},
+            parse_status="parsed",
+            limitations_json=[],
+        )
+        db.add(task_evidence)
+        db.flush()
+        task_evidence_id = task_evidence.id
+    fact_route = f"/api/v1/assignment-versions/{version_id}/task-facts"
+    initial_revision = lecturer.get(f"/api/v1/assignment-versions/{version_id}").json()["revision"]
+    empty_snapshot = {
+        "schema_version": 1,
+        "assignment_version_id": version_id,
+        "specification_version_id": specification["id"],
+        "specification_hash": approved.json()["content_hash"],
+        "facts": {},
+        "content_hash": canonical_hash({}),
+    }
+    empty_values, _ = verified_task_fact_values(
+        empty_snapshot,
+        assignment_version_id=version_id,
+        specification_version_id=specification["id"],
+        specification_hash=approved.json()["content_hash"],
+        definitions=fact_registry,
+    )
+    assert resolve_applicability(fact_rule_element, empty_values) == (
+        "unresolved", "applicability_fact_unverified"
+    )
+    fact_body = {
+        "expected_revision": initial_revision,
+        "lecturer_confirmation": True,
+        "facts": [{
+            "key": "submission_variant",
+            "value": "original",
+            "origin": "Dosen mengonfirmasi ketentuan varian pada instruksi sintetis.",
+            "evidence_ids": [str(task_evidence_id)],
+        }],
+    }
+    assert b2_scenario["clients"]["student_a"].put(
+        fact_route,
+        headers=headers(b2_scenario["tokens"]["student_a"]),
+        json=fact_body,
+    ).status_code == 404
+    assert b2_scenario["clients"]["outsider"].put(
+        fact_route,
+        headers=headers(b2_scenario["tokens"]["outsider"]),
+        json=fact_body,
+    ).status_code == 404
+    true_response = lecturer.put(fact_route, headers=headers(csrf), json=fact_body)
+    assert true_response.status_code == 200, true_response.text
+    true_record = true_response.json()["task_facts"]["facts"]["submission_variant"]
+    assert true_record["verification"] == "lecturer_confirmed"
+    assert true_record["verified_by"] == str(b2_scenario["users"]["lecturer"].id)
+    assert true_record["origin"] == fact_body["facts"][0]["origin"]
+    assert true_record["evidence_ids"] == [str(task_evidence_id)]
+    true_values, provenance = verified_task_fact_values(
+        true_response.json()["task_facts"],
+        assignment_version_id=version_id,
+        specification_version_id=specification["id"],
+        specification_hash=approved.json()["content_hash"],
+        definitions=fact_registry,
+    )
+    assert resolve_applicability(fact_rule_element, true_values) == ("applicable", None)
+    assert provenance["submission_variant"]["verified_by"] == str(b2_scenario["users"]["lecturer"].id)
+    assert provenance["submission_variant"]["evidence_ids"] == [str(task_evidence_id)]
+    assert lecturer.put(fact_route, headers=headers(csrf), json=fact_body).status_code == 409
+    invalid_value = {
+        **fact_body,
+        "expected_revision": true_response.json()["revision"],
+        "facts": [{**fact_body["facts"][0], "value": "unregistered"}],
+    }
+    assert lecturer.put(fact_route, headers=headers(csrf), json=invalid_value).status_code == 422
+    invalid_evidence = {
+        **fact_body,
+        "expected_revision": true_response.json()["revision"],
+        "facts": [{**fact_body["facts"][0], "evidence_ids": [str(uuid4())]}],
+    }
+    assert lecturer.put(fact_route, headers=headers(csrf), json=invalid_evidence).status_code == 404
+
+    false_body = {
+        **fact_body,
+        "expected_revision": true_response.json()["revision"],
+        "facts": [{**fact_body["facts"][0], "value": "alternate"}],
+    }
+    false_response = lecturer.put(fact_route, headers=headers(csrf), json=false_body)
+    assert false_response.status_code == 200, false_response.text
+    false_values, _ = verified_task_fact_values(
+        false_response.json()["task_facts"],
+        assignment_version_id=version_id,
+        specification_version_id=specification["id"],
+        specification_hash=approved.json()["content_hash"],
+        definitions=fact_registry,
+    )
+    assert resolve_applicability(fact_rule_element, false_values) == (
+        "not_applicable", "verified_fact_rule_false"
+    )
+    assert false_response.json()["task_facts"]["content_hash"] != true_response.json()["task_facts"]["content_hash"]
+    unknown_response = lecturer.put(
+        fact_route,
+        headers=headers(csrf),
+        json={"expected_revision": false_response.json()["revision"], "lecturer_confirmation": True, "facts": []},
+    )
+    assert unknown_response.status_code == 200, unknown_response.text
+    unknown_values, _ = verified_task_fact_values(
+        unknown_response.json()["task_facts"],
+        assignment_version_id=version_id,
+        specification_version_id=specification["id"],
+        specification_hash=approved.json()["content_hash"],
+        definitions=fact_registry,
+    )
+    assert resolve_applicability(fact_rule_element, unknown_values) == (
+        "unresolved", "applicability_fact_unverified"
+    )
+    true_again = lecturer.put(
+        fact_route,
+        headers=headers(csrf),
+        json={
+            "expected_revision": unknown_response.json()["revision"],
+            "lecturer_confirmation": True,
+            "facts": fact_body["facts"],
+        },
+    )
+    assert true_again.status_code == 200, true_again.text
+
+    replacement_spec_draft = lecturer.post(
+        f"/api/v1/assignment-versions/{version_id}/specification-drafts",
+        headers=headers(csrf),
+        json={"criterion_set_version_id": criterion_set["id"]},
+    )
+    assert replacement_spec_draft.status_code == 201, replacement_spec_draft.text
+    replacement_spec_id = replacement_spec_draft.json()["id"]
+    cleared_facts = lecturer.get(f"/api/v1/assignment-versions/{version_id}").json()
+    assert cleared_facts["task_facts"] == {}
+
+    replacement_lint = lecturer.put(
+        f"/api/v1/specification-versions/{replacement_spec_id}",
+        headers=headers(csrf),
+        json={"expected_revision": 1, "specification": complete},
+    )
+    assert replacement_lint.status_code == 200, replacement_lint.text
+    assert replacement_lint.json()["effective_status"] == "needs_review"
+    replacement_resolution = lecturer.post(
+        f"/api/v1/spec-lint-reports/{replacement_lint.json()['lint_report_id']}/resolutions",
+        headers=headers(csrf),
+        json={
+            "issue_code": "EL-REQ-MISSING-VALUE:condition_fidelity_review",
+            "resolution": "acknowledged_human_boundary",
+            "reason": "Dosen memverifikasi applicability terhadap instruksi sintetis.",
+            "expected_spec_revision": 2,
+            "expected_report_revision": 1,
+        },
+    )
+    assert replacement_resolution.status_code == 200, replacement_resolution.text
+    replacement_approval = lecturer.post(
+        f"/api/v1/specification-versions/{replacement_spec_id}/approve",
+        headers=headers(csrf),
+        json={
+            "expected_revision": 2,
+            "lint_report_id": replacement_lint.json()["lint_report_id"],
+            "expected_report_revision": 2,
+            "fidelity_confirmation": True,
+        },
+    )
+    assert replacement_approval.status_code == 200, replacement_approval.text
+    approved_replacement_version = lecturer.get(
+        f"/api/v1/assignment-versions/{version_id}"
+    ).json()
+    assert approved_replacement_version["task_facts"] == {}
+    reverified_fact = lecturer.put(
+        fact_route,
+        headers=headers(csrf),
+        json={
+            "expected_revision": approved_replacement_version["revision"],
+            "lecturer_confirmation": True,
+            "facts": fact_body["facts"],
+        },
+    )
+    assert reverified_fact.status_code == 200, reverified_fact.text
+    rebound_record = reverified_fact.json()["task_facts"]
+    assert rebound_record["specification_version_id"] == replacement_spec_id
+    assert rebound_record["specification_hash"] == replacement_approval.json()["content_hash"]
 
     preview = lecturer.get(f"/api/v1/assignment-versions/{version_id}/publish-preview")
     assert preview.status_code == 200, preview.text
@@ -680,6 +937,7 @@ def test_assignment_spec_publish_group_and_student_visibility(b2_scenario):
     assert new_version.json()["package_approved_at"] is None
     assert new_version.json()["criterion_set"]["state"] == "draft"
     assert new_version.json()["specification"] is None
+    assert new_version.json()["task_facts"] == {}
 
     history_fixture = json.loads(
         (Path(__file__).parents[2] / "fixtures/synthetic/b2-schema1-history.json").read_text()
@@ -690,7 +948,7 @@ def test_assignment_spec_publish_group_and_student_visibility(b2_scenario):
     assert "derivation_refs" not in legacy_element
     legacy = SpecificationVersion(
         assignment_id=UUID(assignment["id"]),
-        version_no=2,
+        version_no=3,
         schema_version=1,
         criterion_set_version_id=UUID(new_version.json()["criterion_set"]["id"]),
         context_version_id=context.id,

@@ -52,3 +52,24 @@ Inventory berisi lima original dengan hash berikut. Semua file berasal dari fixt
 Screenshot review browser evidence (SHA-256): [360 px](../../docs/handover/b8-reports/demo-si-review-360.png) `20e74f67369811c7d4d1b599e5d0a69a89253fb2ae8961aa5dbfa1326a0ff5a4`; [768 px](../../docs/handover/b8-reports/demo-si-review-768.png) `262f806a53d743da0902d03c089fe64e37a75e3dfed43a0f9cc7c078b27c5c34`; [1440 px](../../docs/handover/b8-reports/demo-si-review-1440.png) `96e46acf2f927d24217f9e58fb164ed8901c62e20ae198c9f6dec7ef98a54dc7`.
 
 Limits: the analysis run is partial and two source formats retain parser limitations. Browser touch was emulated; no physical touch device or VoiceOver/screen-reader user validated the flow. Mock output is visibly labelled and is not provider-real or empirical evidence.
+
+## Rincian status analysis
+
+Run ini memiliki satu elemen, `EL-R1`. Applicability memakai rule `task.submission_variant == "original"`, tetapi runtime saat ini hanya memasok fakta terverifikasi `assignment.mode` dan `submission.file_types`. Registry `task_facts` pada SpecificationVersion hanya mendefinisikan key/tipe/nilai enum; nilai custom yang memiliki origin, evidence dan konfirmasi dosen belum mempunyai jalur penyimpanan/pembacaan. Karena itu `EL-R1` berstatus applicability `unresolved` (`applicability_fact_unverified`), coverage `unresolved`, relationship `unclear`, dan check `unassessable`. Ini fail-closed sesuai master, bukan bukti bahwa mahasiswa tidak memenuhi syarat; elemen tidak mencapai penilaian semantik.
+
+Coverage record tetap mencatat inventory: retrieval `hybrid`, 69 unit kompatibel, 10 terhitung inspected dan 59 unresolved; `exhaustive_for_negative=false`. Angka inspected adalah status kesiapan baca unit, bukan hasil semantic assessment `EL-R1`. Karena unit dari artifact `partially_parsed` ditandai unresolved seluruhnya secara konservatif, 59 bukan hitungan unit unsupported saja. Dukungan positif hanya dapat dinilai bila applicability terselesaikan dan bukti terkait benar-benar lolos pemeriksaan semantik; `sufficient_for_positive=true` sendiri bukan temuan.
+
+Parser hanya menyelesaikan PDF dua halaman, PNG dan JPEG terputar sebagai `parsed`. DOCX menjadi `partially_parsed` dengan 16 OOXML package parts tetap unsupported dan dipertahankan dalam inventory. XLSX tetap partial: hidden sheet dicatat, 2 package parts unsupported, 3 visual/chart units unsupported, dan 2 formula cache tidak terverifikasi; formula tidak dieksekusi. Limitations ini menghalangi klaim scan ketiadaan yang exhaustive. Retrieval memakai synthetic hash embedding, sehingga kualitas ranking semantik juga belum terukur. Tidak ada temuan absence yang ditarik dari top-k atau sumber yang tidak lengkap.
+
+## Update rerun TaskFact — 22 Oktober 2026
+
+Rincian di atas adalah hasil historis sebelum custom TaskFact terhubung ke executor. Pada isolated B8 database terbaru, dua submission Sistem Informasi dengan fact `submission_variant="original"` dicatat dosen dengan origin dan `lecturer_confirmed`, terikat ke assignment version serta specification ID/hash yang disahkan. API-run terbaru:
+
+| Submission sintetis | Analysis run | Hasil aktual |
+|---|---|---|
+| `B8 TaskFact Sistem Informasi 1792660254118` | `62dc1dbf-b854-4625-a3cb-bebd82ecd871` | `partial`, provider `mock`, data `synthetic`; `EL-R1` applicability `applicable`; observation memuat TaskFact provenance; semantic status `human_required`, reason `human_judgment_required`. |
+| `B8 TaskFact Sistem Informasi 1792659797017` | `083406a2-9888-423d-920f-5ff327a31628` | `partial`, provider `mock`, data `synthetic`; `EL-R1` applicability `applicable`; observation memuat TaskFact provenance; semantic status `human_required`. |
+
+Kedua run dibuat melalui API pada submission final yang sudah terparse, bukan full Playwright rerun. Nilai berasal dari konfirmasi dosen; bukan inferensi dari submission. Evidence IDs pada data demo kosong karena origin mengacu pada instruksi tugas, sementara integration test terpisah membuktikan evidence rubric sintetis pada task namespace yang sah diterima dan dicatat. `applicable` hanya membuka elemen untuk pemeriksaan; mock tidak memutus semantic support atau kelulusan.
+
+Coverage/parser limitations tetap berlaku: retrieval mencatat 69 unit kompatibel, 10 inspected, 59 unresolved dan `exhaustive_for_negative=false`. DOCX/XLSX partial membuat unit artifact itu tetap unresolved; unsupported package/chart/formula units tetap ada di inventory. Hasil ini tidak boleh dibaca sebagai bukti absence atau kualitas embedding.

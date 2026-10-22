@@ -63,6 +63,10 @@ type AssignmentVersion = {
   due_at: string;
   late_policy: "accept_with_label" | "reject_after_due";
   limits: Record<string, unknown>;
+  task_facts: {
+    facts?: Record<string, { value?: unknown; origin?: string; evidence_ids?: string[]; verification?: string }>;
+    content_hash?: string;
+  };
   rubric_sources?: RubricSource[];
   criterion_set: CriterionSet | null;
   specification: Specification | null;
@@ -306,6 +310,8 @@ export function AssignmentWorkspace({
   const [selectedRubricIds, setSelectedRubricIds] = useState<string[]>([]);
   const [publishPreview, setPublishPreview] = useState<PublicPreview | null>(null);
   const [numericKey, setNumericKey] = useState("numeric-comparison");
+  const [taskFactValues, setTaskFactValues] = useState<Record<string, string>>({});
+  const [taskFactOrigins, setTaskFactOrigins] = useState<Record<string, string>>({});
   const [numericJson, setNumericJson] = useState(JSON.stringify({
     metric_definition: "Besaran yang harus dibandingkan dalam tugas ini.",
     required_context_fields: ["metric", "entity", "definition", "unit"],
@@ -436,6 +442,9 @@ export function AssignmentWorkspace({
       setCriteriaProposals([]);
       setSelectedRubricIds((loadedVersion.rubric_sources ?? []).map((item) => item.id));
       setSpecJson(JSON.stringify(loadedVersion.specification?.payload ?? {}, null, 2));
+      const confirmedFacts = loadedVersion.task_facts?.facts ?? {};
+      setTaskFactValues(Object.fromEntries(Object.entries(confirmedFacts).map(([key, fact]) => [key, String(fact.value ?? "")])));
+      setTaskFactOrigins(Object.fromEntries(Object.entries(confirmedFacts).map(([key, fact]) => [key, String(fact.origin ?? "")])));
     }
   }, [csrfToken]);
 
@@ -655,6 +664,30 @@ export function AssignmentWorkspace({
     await loadAssignment(detail!.id);
   }, "NumericPolicy disahkan.");
 
+  const saveTaskFacts = () => execute(async () => {
+    if (!version || !specification) return;
+    const payload = specification.payload as { task_facts?: Array<{ key: string; value_type: string }> };
+    const definitions = payload.task_facts ?? [];
+    const facts = definitions.flatMap((definition) => {
+      const raw = taskFactValues[definition.key];
+      if (raw === undefined || raw === "") return [];
+      const origin = (taskFactOrigins[definition.key] ?? "").trim();
+      if (!origin) throw new Error(`Asal/verifikasi dosen untuk ${definition.key} wajib diisi.`);
+      const value = definition.value_type === "boolean" ? raw === "true" : raw;
+      if (definition.value_type === "boolean" && raw !== "true" && raw !== "false") {
+        throw new Error(`Pilih nilai true atau false untuk ${definition.key}.`);
+      }
+      return [{ key: definition.key, value, origin, evidence_ids: [] }];
+    });
+    const saved = await apiRequest<{ revision: number; task_facts: AssignmentVersion["task_facts"] }>(
+      `/assignment-versions/${version.id}/task-facts`, csrfToken, {
+        method: "PUT", idempotency: true,
+        body: { expected_revision: version.revision, lecturer_confirmation: true, facts },
+      },
+    );
+    setDetail((current) => current?.version ? { ...current, version: { ...current.version, revision: saved.revision, task_facts: saved.task_facts } } : current);
+  }, "Fakta tugas disahkan dosen dan terikat ke versi ini.");
+
   const publish = () => execute(async () => {
     if (!version) return;
     await apiRequest(`/assignment-versions/${version.id}/publish`, csrfToken, {
@@ -798,6 +831,7 @@ export function AssignmentWorkspace({
             {editable && specification.state === "draft" && <button type="button" className="button button-primary" disabled={busy || effectiveStatus !== "passed"} onClick={approveSpec}>Sahkan spec dengan konfirmasi fidelity</button>}
           </>}
         </section>}
+        {editable && specification?.state === "approved" && (Array.isArray((specification.payload as { task_facts?: unknown }).task_facts) && ((specification.payload as { task_facts: Array<{ key: string; value_type: string; allowed_values?: string[] | null }> }).task_facts).length > 0) && <section className="assignment-step" aria-labelledby="task-facts-title"><h3 id="task-facts-title">Fakta tugas · verifikasi dosen</h3><p className="help-text">Hanya fakta yang dikonfirmasi dosen untuk versi dan spesifikasi ini yang dapat menentukan applicability. Kosong berarti unknown. Perubahan tugas membuat versi baru dan tidak mewarisi konfirmasi.</p>{((specification.payload as { task_facts: Array<{ key: string; value_type: string; allowed_values?: string[] | null }> }).task_facts).map((fact) => <div className="assignment-form-grid" key={fact.key}><label className="field"><span>{fact.key} · nilai</span>{fact.value_type === "boolean" ? <select aria-label={`${fact.key} nilai`} value={taskFactValues[fact.key] ?? ""} onChange={(event) => setTaskFactValues((current) => ({ ...current, [fact.key]: event.target.value }))}><option value="">Belum diketahui</option><option value="true">true</option><option value="false">false</option></select> : fact.value_type === "string" && fact.allowed_values?.length ? <select aria-label={`${fact.key} nilai`} value={taskFactValues[fact.key] ?? ""} onChange={(event) => setTaskFactValues((current) => ({ ...current, [fact.key]: event.target.value }))}><option value="">Belum diketahui</option>{fact.allowed_values.map((value) => <option key={value} value={value}>{value}</option>)}</select> : <input aria-label={`${fact.key} nilai`} value={taskFactValues[fact.key] ?? ""} onChange={(event) => setTaskFactValues((current) => ({ ...current, [fact.key]: event.target.value }))} />}</label><label className="field"><span>Asal/provenance untuk {fact.key}</span><input aria-label={`${fact.key} asal`} value={taskFactOrigins[fact.key] ?? ""} onChange={(event) => setTaskFactOrigins((current) => ({ ...current, [fact.key]: event.target.value }))} /></label></div>)}<button type="button" className="button button-quiet" disabled={busy || !editable} onClick={saveTaskFacts}>Simpan dan sahkan fakta dosen</button><p className="help-text">Fakta tersimpan: {Object.keys(version.task_facts?.facts ?? {}).length} · snapshot {version.task_facts?.content_hash ?? "belum disahkan"}</p></section>}
         {editable && specification?.state === "approved" && <section className="assignment-step" aria-labelledby="publish-title"><h3 id="publish-title">Publikasi</h3><p className="help-text">Pratinjau berikut memakai serializer publik mahasiswa yang sama. Periksa instruksi, criteria, requirements, bentuk bukti, jadwal dan kebijakan sebelum menerbitkan.</p><div className="button-row"><button type="button" className="button button-quiet" disabled={busy} onClick={loadPublishPreview}>Tampilkan preview mahasiswa</button><button type="button" className="button button-primary" disabled={busy} onClick={publish}>Terbitkan versi</button></div>{publishPreview && <article className="student-task-preview" aria-label="Preview paket publik mahasiswa"><p className="eyebrow">{publishPreview.title} · VERSI {publishPreview.version.version_no}</p><h4>Instruksi tugas</h4><pre className="instruction-preview">{publishPreview.version.instruction_original}</pre>{publishPreview.version.instruction_summary && <p className="notice"><strong>{publishPreview.version.instruction_summary_label}</strong><br />{publishPreview.version.instruction_summary}</p>}<h4>Criteria dan requirements</h4>{publishPreview.version.criteria.map((criterion) => <section className="criterion-card" key={criterion.code}><h5>{criterion.code} · {criterion.title}</h5><p>{criterion.descriptor}</p>{criterion.requirements.length > 0 && <ul>{criterion.requirements.map((requirement) => <li key={requirement.code}>{requirement.text}{requirement.mandatory ? " (wajib)" : " (opsional)"}</li>)}</ul>}</section>)}<h4>Bentuk bukti yang diterima</h4><ul>{publishPreview.version.accepted_evidence.map((item, index) => <li key={`${item.criterion_code}-${index}`}>{item.criterion_code}: {item.accepted_evidence_types.join(", ")}</li>)}</ul><p className="help-text">Mode: {publishPreview.version.mode} · Dibuka: {new Date(publishPreview.version.opens_at).toLocaleString("id-ID")} · Tenggat: {new Date(publishPreview.version.due_at).toLocaleString("id-ID")} · Kebijakan terlambat: {publishPreview.version.late_policy}.</p></article>}</section>}
       </>}
     </section>

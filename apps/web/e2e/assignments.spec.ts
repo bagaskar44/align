@@ -110,6 +110,11 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await expect.poll(async () => specSection.innerText()).toContain("lint: passed");
   await specSection.getByRole("button", { name: "Sahkan spec dengan konfirmasi fidelity" }).click();
   await expect(workspace.getByRole("button", { name: "Terbitkan versi" })).toBeVisible();
+  await workspace.getByLabel("submission_variant nilai").selectOption("original");
+  await workspace.getByLabel("submission_variant asal").fill("Dosen memverifikasi ketentuan varian pada instruksi tugas sintetis.");
+  await workspace.getByRole("button", { name: "Simpan dan sahkan fakta dosen" }).click();
+  await expect(workspace.getByRole("status").filter({ hasText: "Fakta tugas disahkan dosen" })).toBeVisible();
+  await expect(workspace).toContainText("Fakta tersimpan: 1");
   await workspace.getByRole("button", { name: "Tampilkan preview mahasiswa" }).click();
   const publishPreview = workspace.getByRole("article", { name: "Preview paket publik mahasiswa" });
   await expect(publishPreview).toContainText(instruction);
@@ -214,6 +219,9 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await reviewWorkspace.getByRole("button", { name: "Jalankan analisis" }).click();
   await expect(reviewWorkspace.getByRole("status").filter({ hasText: /Run (partial|completed)/ })).toBeVisible({ timeout: 240_000 });
   await expect(reviewWorkspace).toContainText("provider mock · data synthetic");
+  await expect(reviewWorkspace).toContainText("Applicability: applicable");
+  await expect(reviewWorkspace).toContainText("human_judgment_required");
+  await expect(reviewWorkspace).toContainText("semantic human_required");
   for (const width of [360, 768, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     const viewportWidth = await page.evaluate(() => document.documentElement.clientWidth);

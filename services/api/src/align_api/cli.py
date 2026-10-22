@@ -41,6 +41,7 @@ from align_api.models import (
     UsageReservation,
     User,
 )
+from align_api.paid_calls import live_model_binding_matches, runtime_live_model_ids
 from align_api.security import hash_password, normalize_email
 from align_api.storage import storage_client
 
@@ -55,6 +56,8 @@ RELEASE_MANIFEST_COLUMNS = {
     "routing": "routing_policy_manifest_id",
     "batching": "batching_policy_manifest_id",
 }
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 
 
 def canonical_json(payload: Any) -> str:
@@ -311,6 +314,77 @@ def validate_policy_validation_report(
         raise SystemExit("PolicyValidationReport report hash does not match its immutable content")
 
 
+def _baseline_policy_content(kind: str) -> dict[str, Any]:
+    filename = {
+        "routing": "routing.baseline.json",
+        "batching": "batching.baseline.json",
+    }.get(kind)
+    if filename is None:
+        raise ValueError("unsupported policy kind")
+    payload = json.loads((REPOSITORY_ROOT / "config" / filename).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("baseline policy must be a JSON object")
+    return payload
+
+
+def _is_baseline_routing(routing: dict[str, Any]) -> bool:
+    baseline = _baseline_policy_content("routing")
+    candidate = dict(routing)
+    # Enabling the existing baseline on a live provider is an operational switch;
+    # it does not change role selection, semantic routing, limits, or batch size.
+    candidate["allow_live"] = baseline["allow_live"]
+    return candidate == baseline
+
+
+def _is_baseline_batching(batching: dict[str, Any]) -> bool:
+    return batching == _baseline_policy_content("batching")
+
+
+def _requires_policy_validation_report(
+    routing: dict[str, Any], batching: dict[str, Any]
+) -> bool:
+    return not (_is_baseline_routing(routing) and _is_baseline_batching(batching))
+
+
+def validate_live_synthetic_smoke_manifest(
+    routing: dict[str, Any],
+    batching: dict[str, Any],
+    checks: dict[str, Any],
+    model: dict[str, Any],
+) -> None:
+    if (
+        _requires_policy_validation_report(routing, batching)
+        or model.get("capability_smoke") is not True
+        or checks.get("baseline_batch_size") != 1
+        or checks.get("capability_smoke") is not True
+        or checks.get("empirical_verification") is not False
+    ):
+        raise SystemExit(
+            "live synthetic smoke is baseline-only, batch 1, and cannot claim empirical verification"
+        )
+
+
+def validate_release_data_mode(
+    provider_mode: str, data_mode: str, settings: Any
+) -> None:
+    """Permit live synthetic capability smoke only on an explicit dev demo stack."""
+    if provider_mode == "mock" and data_mode == "synthetic":
+        return
+    if provider_mode == "live" and data_mode == "institutional":
+        return
+    if (
+        provider_mode == "live"
+        and data_mode == "synthetic"
+        and settings.app_env == "development"
+        and settings.data_mode == "synthetic"
+        and settings.app_demo_mode
+    ):
+        return
+    raise SystemExit(
+        "release mode requires mock/synthetic, live/institutional, or live/synthetic on an explicit development demo stack"
+    )
+
+
 def require_release_validation_report(
     *,
     release_payload: dict[str, Any],
@@ -318,15 +392,26 @@ def require_release_validation_report(
     batching: dict[str, Any],
     candidate_core_hash: str,
     report: PolicyValidationReport | None,
+    model: dict[str, Any] | None = None,
 ) -> None:
-    batch_size = batching.get("maximum_elements")
-    required = (
-        type(batch_size) is not int
-        or batch_size != 1
-        or routing.get("allow_live") is True
-        or release_payload.get("provider_mode") == "live"
+    baseline_methods = not _requires_policy_validation_report(routing, batching)
+    baseline_mock = (
+        baseline_methods
+        and release_payload.get("provider_mode") == "mock"
+        and release_payload.get("data_mode") == "synthetic"
     )
-    if not required:
+    baseline_live_smoke = (
+        baseline_methods
+        and release_payload.get("provider_mode") == "live"
+        and release_payload.get("data_mode") == "synthetic"
+        and model is not None
+        and model.get("capability_smoke") is True
+        and isinstance(release_payload.get("activation_checks"), dict)
+        and release_payload["activation_checks"].get("capability_smoke") is True
+        and release_payload["activation_checks"].get("empirical_verification") is False
+    )
+    baseline_smoke = baseline_mock or baseline_live_smoke
+    if baseline_smoke:
         return
     if report is None or report.status != "eligible":
         raise SystemExit("release requires an eligible immutable PolicyValidationReport")
@@ -334,6 +419,24 @@ def require_release_validation_report(
         raise SystemExit("validation report core hash does not match release methods")
     if report.data_mode != release_payload.get("data_mode"):
         raise SystemExit("validation report data mode does not match release")
+
+
+def validate_live_model_release(
+    model: dict[str, Any], rates: dict[str, Any], settings: Any
+) -> None:
+    model_ids = runtime_live_model_ids(settings)
+    rate_models = rates.get("models")
+    if (
+        model.get("provider_mode") != "live"
+        or model.get("paid_calls") is not True
+        or not live_model_binding_matches(model, settings)
+        or not isinstance(rate_models, dict)
+        or model_ids is None
+        or not set(model_ids.values()) <= set(rate_models)
+    ):
+        raise SystemExit(
+            "live release model manifest must pin current role model IDs and verified rates must cover each model"
+        )
 
 
 def _operator(db: DbSession) -> User | None:
@@ -500,10 +603,7 @@ def register_release(filename: str) -> None:
         raise SystemExit("unsupported release schema")
     provider_mode = release.get("provider_mode")
     data_mode = release.get("data_mode")
-    if (provider_mode == "mock" and data_mode != "synthetic") or (
-        provider_mode == "live" and data_mode != "institutional"
-    ) or provider_mode not in {"mock", "live"}:
-        raise SystemExit("mock releases require synthetic data; live releases require institutional data")
+    validate_release_data_mode(provider_mode, data_mode, get_settings())
     if release.get("schema_version") == 1 and provider_mode != "mock":
         raise SystemExit("schema-1 B0 releases are mock-only")
     manifest_payloads: dict[str, dict[str, Any]] = {}
@@ -667,6 +767,7 @@ def activate_release(release_id: str) -> None:
                 release.lint_registry_version,
             ),
             report=report,
+            model=linked_manifests["model"].content_json,  # type: ignore[union-attr]
         )
         if report is not None and report.status == "eligible":
             active_baseline = db.scalar(
@@ -687,14 +788,37 @@ def activate_release(release_id: str) -> None:
                 active_baseline.lint_registry_version,
             ):
                 raise SystemExit("validation report baseline core hash does not match the active baseline")
-        if payload.get("provider_mode") == "live" or routing.get("allow_live") is True:
-            if rates.get("status") != "verified" or report is None or report.data_mode != "institutional":
-                raise SystemExit("live release requires verified rates and institutionally eligible validation")
-            if not get_settings().paid_calls_enabled:
+        is_live = payload.get("provider_mode") == "live"
+        is_live_synthetic_smoke = is_live and payload.get("data_mode") == "synthetic"
+        checks = payload.get("activation_checks", {})
+        if not isinstance(checks, dict):
+            raise SystemExit("release activation_checks must be a JSON object")
+        settings = get_settings()
+        validate_release_data_mode(
+            str(payload.get("provider_mode")), str(payload.get("data_mode")), settings
+        )
+        if is_live or routing.get("allow_live") is True:
+            model_manifest = linked_manifests["model"]
+            if (
+                rates.get("status") != "verified"
+                or model_manifest is None
+                or model_manifest.content_json.get("provider_mode") != "live"
+                or model_manifest.content_json.get("paid_calls") is not True
+                or routing.get("allow_live") is not True
+            ):
+                raise SystemExit("live release requires a live model, verified rates, and live routing")
+            validate_live_model_release(model_manifest.content_json, rates, settings)
+            if not settings.paid_calls_enabled:
                 raise SystemExit("live release requires PAID_CALLS_ENABLED=true after financial guard verification")
+        if is_live_synthetic_smoke:
+            validate_live_synthetic_smoke_manifest(
+                routing,
+                batching,
+                checks,
+                linked_manifests["model"].content_json,  # type: ignore[union-attr]
+            )
         if release.rate_manifest_id is None or release.parser_resource_manifest_id is None:
             raise SystemExit("release must bind immutable rates and parser-resource manifests")
-        checks = payload.get("activation_checks", {})
         available = set(payload.get("capabilities_available", []))
         unavailable = set(payload.get("capabilities_unavailable", []))
         is_baseline_mock = payload.get("provider_mode") == "mock" and payload.get("data_mode") == "synthetic"
@@ -707,7 +831,10 @@ def activate_release(release_id: str) -> None:
                 raise SystemExit("baseline routing must keep live calls disabled and semantic batch size one")
             if batch_size != 1 or batching.get("live_batch_optimization") is not False:
                 raise SystemExit("baseline batching must stay at batch size one without empirical optimization")
-        elif payload.get("provider_mode") != "live" or payload.get("data_mode") != "institutional":
+        elif payload.get("provider_mode") != "live" or payload.get("data_mode") not in {
+            "synthetic",
+            "institutional",
+        }:
             raise SystemExit("release mode and data mode are incompatible")
         if not {"manual_auth", "mock_provider_schema"}.issubset(available):
             raise SystemExit("required baseline identity/mock capabilities are not available")
@@ -736,6 +863,8 @@ def activate_release(release_id: str) -> None:
                 raise SystemExit("only baseline batch size one may be activated without an eligible report")
             if checks.get("empirical_verification") is not False:
                 raise SystemExit("synthetic mock release cannot claim empirical verification")
+        elif is_live_synthetic_smoke:
+            pass
         elif checks.get("empirical_verification") is not True:
             raise SystemExit("optimized/live release requires an empirical verification declaration")
         if payload.get("schema_version") == 2 and not all(
@@ -765,7 +894,7 @@ def activate_release(release_id: str) -> None:
     print(json.dumps({
         "release_id": release_id,
         "state": "active",
-        "empirical_verification": not is_baseline_mock,
+        "empirical_verification": checks.get("empirical_verification") is True,
     }))
 
 

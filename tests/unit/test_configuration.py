@@ -19,6 +19,7 @@ def test_b0_configuration_keeps_vector_dimension_and_budget_exact() -> None:
     assert settings.budget_reserve_usd == Decimal("5.00")
     assert settings.budget_planned_topup_usd == Decimal("0.00")
     assert settings.batch_baseline_elements == 1
+    assert settings.lms_adapter_enabled is False
 
 
 def test_incompatible_vector_and_paid_provider_without_key_are_rejected() -> None:

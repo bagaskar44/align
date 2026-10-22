@@ -16,12 +16,14 @@ from align_api.models import (
     BudgetAccount,
     Job,
     MethodManifest,
+    ReleaseManifest,
     UsageEntry,
     UsageReconciliation,
     UsageReservation,
     User,
 )
 from align_domain.finance import FinanceGuardError
+from align_domain.providers import PaidCallBlocked, ProviderContext
 from align_worker import finance
 from align_worker.finance import (
     CallBounds,
@@ -40,6 +42,7 @@ def _ledger(tmp_path, monkeypatch):
         AuditEvent.__table__,
         Job.__table__,
         MethodManifest.__table__,
+        ReleaseManifest.__table__,
         UsageReservation.__table__,
         UsageEntry.__table__,
         UsageReconciliation.__table__,
@@ -70,6 +73,89 @@ def _ledger(tmp_path, monkeypatch):
             sha256="b" * 64, verified_at=datetime.now(UTC),
         ))
     return engine, factory, job_id, rate_manifest_id
+
+
+def test_worker_rechecks_call_model_manifest_before_reservation(tmp_path, monkeypatch, request) -> None:
+    engine, factory, job_id, rate_manifest_id = _ledger(tmp_path, monkeypatch)
+    for name in ("MODEL_EFFICIENT", "MODEL_COMPLEX", "MODEL_VISION", "EMBEDDING_MODEL"):
+        monkeypatch.setenv(name, "m-test")
+    from align_api.config import get_settings
+
+    get_settings.cache_clear()
+    request.addfinalizer(get_settings.cache_clear)
+    now = datetime.now(UTC)
+    with factory.begin() as db:
+        manifests: dict[str, MethodManifest] = {}
+        contents = {
+            "parser": {}, "parser_resource": {}, "retrieval": {}, "rules": {},
+            "prompt": {}, "routing": {"allow_live": True},
+            "batching": {"maximum_elements": 1},
+            "model": {
+                "provider_mode": "live", "paid_calls": True,
+                "live_model_ids": {
+                    "efficient": "m-test", "complex": "m-test",
+                    "vision": "m-test", "embedding": "m-test",
+                },
+            },
+        }
+        for kind, content in contents.items():
+            row = MethodManifest(
+                kind=kind, version_label=f"test-{kind}", content_json=content,
+                sha256=uuid4().hex * 2,
+                verified_at=now if kind == "rates" else None,
+            )
+            db.add(row)
+            db.flush()
+            manifests[kind] = row
+        mismatched_call_model = MethodManifest(
+            kind="model", version_label="call-model-mismatch",
+            content_json={"model": "another-model"}, sha256="a" * 64,
+        )
+        db.add(mismatched_call_model)
+        db.flush()
+        release = ReleaseManifest(
+            version_label="live-test-release",
+            parser_manifest_id=manifests["parser"].id,
+            parser_resource_manifest_id=manifests["parser_resource"].id,
+            model_manifest_id=manifests["model"].id,
+            rate_manifest_id=rate_manifest_id,
+            retrieval_manifest_id=manifests["retrieval"].id,
+            rules_manifest_id=manifests["rules"].id,
+            prompt_manifest_id=manifests["prompt"].id,
+            routing_policy_manifest_id=manifests["routing"].id,
+            batching_policy_manifest_id=manifests["batching"].id,
+            grounding_registry_version="grounding-test-v1",
+            lint_registry_version="lint-test-v1",
+            manifest_payload={"provider_mode": "live", "data_mode": "institutional"},
+            config_hash="c" * 64,
+            state="active",
+        )
+        db.add(release)
+        db.flush()
+        release_id = release.id
+        call_manifest_id = mismatched_call_model.id
+
+    call_id, policy_id = uuid4(), manifests["routing"].id
+    context = ProviderContext(
+        call_id=call_id,
+        job_id=job_id,
+        manifest_id=call_manifest_id,
+        policy_id=policy_id,
+        scope_ids=[uuid4()],
+        max_input_tokens=100,
+        max_output_tokens=10,
+        paid_release_manifest_id=release_id,
+        rate_manifest_id=rate_manifest_id,
+        paid_calls_enabled=True,
+        billing_bounds={"input_tokens": 100, "output_tokens": 10, "active_ms": 1000},
+    )
+    with pytest.raises(PaidCallBlocked, match="paid_call_model_manifest_mismatch"):
+        finance.WorkerPaidCallLedger(enabled=True).reserve(
+            context, "m-test", {"input_tokens": 100, "output_tokens": 10, "active_ms": 1000},
+        )
+    with factory() as db:
+        assert db.query(UsageReservation).filter_by(call_id=call_id).first() is None
+    engine.dispose()
 
 
 def test_pending_liability_is_reserved_once_and_retry_needs_new_capacity(tmp_path, monkeypatch) -> None:

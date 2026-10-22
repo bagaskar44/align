@@ -6,9 +6,13 @@ from pathlib import Path
 import pytest
 
 from align_api.cli import (
+    _requires_policy_validation_report,
     require_release_validation_report,
     sha256_json,
+    validate_live_model_release,
+    validate_live_synthetic_smoke_manifest,
     validate_policy_validation_report,
+    validate_release_data_mode,
 )
 from align_api.models import PolicyValidationReport
 
@@ -152,6 +156,127 @@ def test_candidate_release_requires_exact_eligible_report_and_core_hash() -> Non
             candidate_core_hash="0" * 64,
             report=report,
         )
+
+
+def test_only_mock_or_live_synthetic_baseline_smoke_skips_research_report() -> None:
+    release, manifests = _baseline()
+    live_routing = {**manifests["routing"], "allow_live": True}
+    batching = manifests["batching"]
+    live_model = {"capability_smoke": True}
+    smoke_release = {
+        **release,
+        "provider_mode": "live",
+        "data_mode": "synthetic",
+        "activation_checks": {"capability_smoke": True, "empirical_verification": False},
+    }
+
+    assert not _requires_policy_validation_report(live_routing, batching)
+    require_release_validation_report(
+        release_payload=smoke_release,
+        routing=live_routing,
+        batching=batching,
+        candidate_core_hash="0" * 64,
+        report=None,
+        model=live_model,
+    )
+    with pytest.raises(SystemExit, match="eligible immutable"):
+        require_release_validation_report(
+            release_payload={**smoke_release, "activation_checks": {}},
+            routing=live_routing,
+            batching=batching,
+            candidate_core_hash="0" * 64,
+            report=None,
+            model=live_model,
+        )
+    with pytest.raises(SystemExit, match="eligible immutable"):
+        require_release_validation_report(
+            release_payload={**release, "provider_mode": "live", "data_mode": "institutional"},
+            routing=live_routing,
+            batching=batching,
+            candidate_core_hash="0" * 64,
+            report=None,
+        )
+
+
+def test_only_development_synthetic_demo_can_register_live_synthetic_release() -> None:
+    settings = type("Settings", (), {
+        "app_env": "development", "data_mode": "synthetic", "app_demo_mode": True,
+    })()
+    validate_release_data_mode("live", "synthetic", settings)
+
+    for invalid in (
+        type("Settings", (), {
+            "app_env": "production", "data_mode": "synthetic", "app_demo_mode": True,
+        })(),
+        type("Settings", (), {
+            "app_env": "development", "data_mode": "institutional", "app_demo_mode": True,
+        })(),
+        type("Settings", (), {
+            "app_env": "development", "data_mode": "synthetic", "app_demo_mode": False,
+        })(),
+    ):
+        with pytest.raises(SystemExit, match="explicit development demo stack"):
+            validate_release_data_mode("live", "synthetic", invalid)
+
+
+def test_live_synthetic_smoke_cannot_enable_policy_optimizations() -> None:
+    release, manifests = _baseline()
+    live_routing = {**manifests["routing"], "allow_live": True}
+    optimized_routing = {
+        **live_routing,
+        "semantic_routes": {"interpret_evidence": "efficient", "verify_claim": "complex"},
+    }
+    assert _requires_policy_validation_report(optimized_routing, manifests["batching"])
+    with pytest.raises(SystemExit, match="eligible immutable"):
+        require_release_validation_report(
+            release_payload={**release, "provider_mode": "live", "data_mode": "synthetic"},
+            routing=optimized_routing,
+            batching=manifests["batching"],
+            candidate_core_hash="0" * 64,
+            report=None,
+        )
+    validate_live_synthetic_smoke_manifest(
+        live_routing,
+        manifests["batching"],
+        {"baseline_batch_size": 1, "capability_smoke": True, "empirical_verification": False},
+        {"capability_smoke": True},
+    )
+    with pytest.raises(SystemExit, match="baseline-only"):
+        validate_live_synthetic_smoke_manifest(
+            optimized_routing,
+            manifests["batching"],
+            {"baseline_batch_size": 1, "capability_smoke": True, "empirical_verification": False},
+            {"capability_smoke": True},
+        )
+    with pytest.raises(SystemExit, match="baseline-only"):
+        validate_live_synthetic_smoke_manifest(
+            live_routing,
+            manifests["batching"],
+            {"baseline_batch_size": 1, "capability_smoke": True, "empirical_verification": True},
+            {"capability_smoke": True},
+        )
+
+
+def test_live_release_requires_exact_pinned_role_models_and_rate_coverage() -> None:
+    settings = type("Settings", (), {
+        "model_efficient": "text-e", "model_complex": "text-c",
+        "model_vision": "vision-v", "embedding_model": "embed-x",
+    })()
+    model = {
+        "provider_mode": "live", "paid_calls": True,
+        "live_model_ids": {
+            "efficient": "text-e", "complex": "text-c",
+            "vision": "vision-v", "embedding": "embed-x",
+        },
+    }
+    rates = {"models": {name: {} for name in model["live_model_ids"].values()}}
+    validate_live_model_release(model, rates, settings)
+
+    mismatched = {**model, "live_model_ids": {**model["live_model_ids"], "complex": "other"}}
+    with pytest.raises(SystemExit, match="pin current role model IDs"):
+        validate_live_model_release(mismatched, rates, settings)
+    with pytest.raises(SystemExit, match="pin current role model IDs"):
+        validate_live_model_release(model, {"models": {"text-e": {}}}, settings)
 
 
 def test_report_rejects_synthetic_data_claimed_as_institutional() -> None:

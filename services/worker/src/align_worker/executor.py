@@ -75,6 +75,7 @@ from align_domain.executor import (
     SemanticClaimAssessment,
     SemanticVerdict,
     analysis_fingerprint,
+    applicability_fact_names,
     bm25_rank,
     candidate_category,
     chunk_text,
@@ -86,6 +87,7 @@ from align_domain.executor import (
     topological_order,
     validate_batch_response,
     validate_observation_bundle,
+    verified_task_fact_values,
 )
 from align_domain.providers import (
     OBSERVATION_BUNDLE_JSON_SCHEMA,
@@ -376,6 +378,8 @@ def _fingerprint_snapshot(
         "submission_manifest_hash": source.manifest_hash,
         "specification_hash": spec.content_hash,
         "assignment_version_id": str(version.id),
+        "task_facts": version.task_facts_json,
+        "task_facts_hash": version.task_facts_json.get("content_hash", canonical_hash({})),
         "parser": methods["parser"].sha256 if methods["parser"] else "missing",
         "model": methods["model"].sha256 if methods["model"] else "missing",
         "retrieval": methods["retrieval"].sha256 if methods["retrieval"] else "missing",
@@ -687,6 +691,8 @@ def _persist_element(
     embedding_index_ready: bool,
     model_manifest_id: UUID,
     embedding_model: str,
+    task_fact_values: dict[str, Any],
+    task_fact_provenance: dict[str, dict[str, Any]],
 ) -> None:
     existing_check = prior_checks.get(element_row.id)
     if existing_check is not None:
@@ -704,6 +710,7 @@ def _persist_element(
         "assignment.mode": version.mode,
         "submission.file_types": sorted(file_types),
     }
+    facts.update(task_fact_values)
     applicability, applicability_reason = resolve_applicability(element, facts)
     accepted = set(element.accepted_evidence_types)
     child_ids = {unit.parent_id for unit, _, _ in all_units if unit.parent_id}
@@ -1034,7 +1041,16 @@ def _persist_element(
         source_coverage_status=coverage_status,
         evidence_relationship=relationship_status,
         check_status=check_status,
-        observations_json=[],
+        observations_json=[
+            {
+                "kind": "applicability_task_fact",
+                "fact": fact_name,
+                "record": task_fact_provenance[fact_name.removeprefix("task.")],
+            }
+            for fact_name in sorted(applicability_fact_names(element.applicability.rule))
+            if fact_name.startswith("task.")
+            and fact_name.removeprefix("task.") in task_fact_provenance
+        ],
         interpretation=interpretation,
         reason_codes_json=sorted(set(reasons)),
     )
@@ -2158,6 +2174,13 @@ def execute_analysis_run(analysis_run_id: str) -> dict[str, Any]:
                 spec = SpecificationPayload.model_validate_json(
                     json.dumps(spec_row.payload_json, ensure_ascii=False)
                 )
+                task_fact_values, task_fact_provenance = verified_task_fact_values(
+                    run.manifest_snapshot_json.get("task_facts", {}),
+                    assignment_version_id=str(version.id),
+                    specification_version_id=str(spec_row.id),
+                    specification_hash=spec_row.content_hash,
+                    definitions={fact.key: fact for fact in spec.task_facts},
+                )
         except Exception as exc:
             # The snapshot savepoint contains permission/validation failures while
             # leaving the outer transaction available for a safe terminal state.
@@ -2691,6 +2714,8 @@ def execute_analysis_run(analysis_run_id: str) -> dict[str, Any]:
                 embedding_index_ready=embedding_index_ready,
                 model_manifest_id=release.model_manifest_id,
                 embedding_model=settings.embedding_model,
+                task_fact_values=task_fact_values,
+                task_fact_provenance=task_fact_provenance,
             )
             check_row: ElementCheck | None = db.scalar(
                 select(ElementCheck).where(
