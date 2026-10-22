@@ -79,9 +79,9 @@ class Settings(BaseSettings):
     parser_profile_native: Literal["native_ooxml_v1"] = "native_ooxml_v1"
     parser_profile_document: Literal["docling_native_v1"] = "docling_native_v1"
     parser_native_memory_bytes: int = 2_147_483_648
-    parser_document_memory_bytes: int = 8_589_934_592
+    parser_document_memory_bytes: int = 4_294_967_296
     parser_light_memory_bytes: int = 4_294_967_296
-    parser_node_memory_budget_bytes: int = 8_589_934_592
+    parser_node_memory_budget_bytes: int = 4_294_967_296
     parser_node_headroom_bytes: int = 1_073_741_824
     parser_heavy_max_per_node: int = 1
     parser_node_id: str = "align-dev-node"
@@ -168,6 +168,10 @@ class Settings(BaseSettings):
                 raise ValueError("production mock mode requires an explicit synthetic demo label")
             if self.align_seed_password is not None:
                 raise ValueError("synthetic seed passwords are forbidden in production")
+            if self.parser_document_memory_bytes < 8_589_934_592:
+                raise ValueError("production requires the 8 GiB document parser profile")
+            if self.parser_node_memory_budget_bytes < self.parser_document_memory_bytes:
+                raise ValueError("production parser node budget must cover the document profile")
         if self.provider_mode == "live" and (
             self.openai_api_key is None or not self.openai_api_key.get_secret_value().strip()
         ):

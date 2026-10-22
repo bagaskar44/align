@@ -26,7 +26,17 @@ export function LoginForm() {
         }),
       });
       if (!response.ok) {
-        setError("Email atau kata sandi tidak sesuai. Periksa kembali lalu coba lagi.");
+        if (response.status === 401) {
+          setError("Email atau kata sandi tidak sesuai. Periksa kembali lalu coba lagi.");
+        } else if (response.status === 403) {
+          setError("Permintaan login ditolak oleh pemeriksaan keamanan. Muat ulang halaman dari alamat resmi aplikasi.");
+        } else if (response.status === 429) {
+          setError("Terlalu banyak percobaan login. Tunggu beberapa saat lalu coba lagi.");
+        } else if (response.status >= 500) {
+          setError("Layanan sementara tidak tersedia. Coba kembali beberapa saat lagi.");
+        } else {
+          setError("Permintaan login tidak dapat diproses. Coba kembali beberapa saat lagi.");
+        }
         return;
       }
       const result = (await response.json()) as LoginResponse;

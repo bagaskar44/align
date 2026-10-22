@@ -33,6 +33,51 @@ test("invalid credentials return a generic message", async ({ page }) => {
   await expect(page).toHaveURL(/\/login$/);
 });
 
+test("login errors distinguish security rejection, throttling, and service failures", async ({ page }) => {
+  const cases = [
+    [403, "Permintaan login ditolak oleh pemeriksaan keamanan."],
+    [429, "Terlalu banyak percobaan login."],
+    [503, "Layanan sementara tidak tersedia."],
+  ] as const;
+  for (const [status, message] of cases) {
+    await page.route("**/api/v1/auth/login", (route) => route.fulfill({
+      status,
+      contentType: "application/json",
+      body: JSON.stringify({ error: { code: "SYNTHETIC_TEST", message: "synthetic response" } }),
+    }));
+    await page.goto("/login");
+    await page.getByLabel("Email").fill("dosen@align.local");
+    await page.getByLabel("Kata sandi", { exact: true }).fill("synthetic-test-password");
+    expectBrowserHttpError(page, status);
+    await page.getByRole("button", { name: "Masuk" }).click();
+    const loginError = page.locator('.form-error[role="alert"]');
+    await expect(loginError).toContainText(message);
+    await expect(loginError).not.toContainText("Email atau kata sandi tidak sesuai");
+    if (status === 403) {
+      await page.screenshot({ path: test.info().outputPath("login-security-rejection.png"), animations: "disabled" });
+    }
+    await page.unroute("**/api/v1/auth/login");
+  }
+});
+
+test("development loopback alias redirects safe reads and rejects mutations", async ({ request }) => {
+  const aliasBaseUrl = process.env.ALIGN_ALIAS_BASE_URL;
+  if (!aliasBaseUrl) {
+    test.skip(true, "the isolated Compose QA proxy is required for the alias redirect check");
+    return;
+  }
+  const read = await request.get(`${aliasBaseUrl}/login?from=alias-check`, { maxRedirects: 0 });
+  expect(read.status()).toBe(307);
+  expect(read.headers().location).toBe(`${process.env.ALIGN_WEB_BASE_URL}/login?from=alias-check`);
+
+  const mutation = await request.post(`${aliasBaseUrl}/api/v1/auth/login`, {
+    headers: { Origin: aliasBaseUrl, "Content-Type": "application/json" },
+    data: { email: "dosen@align.local", password: "synthetic-test-password" },
+  });
+  expect(mutation.status()).toBe(403);
+  expect(await mutation.json()).toMatchObject({ error: { code: "FORBIDDEN" } });
+});
+
 test("login rejects a cross-origin browser mutation", async ({ request }) => {
   const response = await request.post("/api/v1/auth/login", {
     headers: {

@@ -21,6 +21,7 @@ from align_api.models import (
     EvidenceItem,
     Job,
     JobStage,
+    MethodManifest,
     OutboxEvent,
     ParseArtifact,
     ParserCheckpoint,
@@ -73,10 +74,13 @@ def await_context(client, context_id):
     ("native-two-pages.pdf", "application/pdf"), ("scanned.pdf", "application/pdf"),
     ("printed.png", "image/png"), ("printed.jpg", "image/jpeg"),
     ("printed.jpeg", "image/jpeg"), ("rotated.jpeg", "image/jpeg"),
+    ("complex-submission.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    ("complex-submission.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
 ])
 def test_real_docling_source_hash_original_anchor_and_checkpoint_replay(lecturer, filename, mime):
     client, course = lecturer
-    payload = (Path("tests/fixtures/b1") / filename).read_bytes()
+    fixture_dir = Path("fixtures/b3") if filename.startswith("complex-") else Path("tests/fixtures/b1")
+    payload = (fixture_dir / filename).read_bytes()
     digest = hashlib.sha256(payload).hexdigest()
     upload = client.post(f"/api/v1/courses/{course.id}/context-files", files={"file": (filename, payload, mime)})
     assert upload.status_code == 201, upload.text
@@ -96,15 +100,30 @@ def test_real_docling_source_hash_original_anchor_and_checkpoint_replay(lecturer
         if mime == "application/pdf":
             assert anchor["format"] == "pdf" and anchor["page"] in ({1, 2} if filename.startswith("native") else {1})
             assert anchor["coordinate_system"] == "pdf_points_top_left"
-        else:
+        elif mime.startswith("image/"):
             assert anchor["format"] == "image" and anchor["coordinate_system"] == "original_pixels_top_left"
             left, top, right, bottom = anchor["bbox"]
             assert 0 <= left <= right <= anchor["width"] and 0 <= top <= bottom <= anchor["height"]
             if filename == "rotated.jpeg":
                 assert anchor["transform_id"]
+        else:
+            assert anchor and anchor.get("format") in {"docx", "xlsx"}
     with SessionFactory.begin() as db:
         artifact = db.scalar(select(ParseArtifact).where(ParseArtifact.context_version_id == context_id))
         assert artifact.parser_manifest_id and artifact.parser_resource_manifest_id
+        resource_manifest = db.get(MethodManifest, artifact.parser_resource_manifest_id)
+        assert resource_manifest is not None
+        expected_memory = 4 * 1024**3 if mime == "application/pdf" or mime.startswith("image/") else 2 * 1024**3
+        assert resource_manifest.content_json["memory_limit_bytes"] == expected_memory
+        peaks = [checkpoint.peak_memory_bytes for checkpoint in db.scalars(
+            select(ParserCheckpoint).where(ParserCheckpoint.job_id == job_id)
+        ).all()]
+        assert peaks and all(isinstance(peak, int) and 0 < peak < expected_memory for peak in peaks)
+        print(
+            "parser_profile_fingerprint="
+            f"{resource_manifest.sha256}; memory_bytes={expected_memory}; "
+            f"peak_memory_bytes={max(peaks)}; format={filename}"
+        )
         stage = db.scalar(select(JobStage).where(JobStage.job_id == job_id))
         assert stage.output_refs_json["provider"]["status"] == "mocked"
         assert stage.output_refs_json["provider"]["simulated"] is True

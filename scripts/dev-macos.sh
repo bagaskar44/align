@@ -39,17 +39,29 @@ case "${1:-help}" in
     python3 "$script_dir/smoke-local.py" --project "$project" --docker "$docker_bin"
     ;;
   release-baseline)
-    # Register the shipped mock/synthetic baseline for a fresh local stack.
-    # Keep any already-active release untouched in a developer database.
-    release_json=$(compose exec -T api align release register --file config/release.baseline.json)
+    # Only an empty DB, the recognized default B0, or this exact B5 baseline
+    # may proceed. Custom/live releases are protected before any registration.
+    active_json=$(db_query "SELECT COALESCE(json_agg(json_build_object('id', id::text, 'version_label', version_label, 'config_hash', config_hash, 'provider_mode', manifest_payload->>'provider_mode', 'data_mode', manifest_payload->>'data_mode', 'capabilities_available', manifest_payload->'capabilities_available')), '[]'::json)::text FROM release_manifests WHERE state='active'")
+    plan=$(printf '%s' "$active_json" | python3 "$script_dir/release_guard.py" --target config/release.baseline.json)
+    action=$(printf '%s' "$plan" | python3 -c 'import json,sys; print(json.load(sys.stdin)["action"])')
+    release_json=$(compose run --rm -T --no-deps api align release register --file config/release.baseline.json)
     baseline_id=$(printf '%s' "$release_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["release_id"])')
-    active_ids=$(db_query "SELECT id::text FROM release_manifests WHERE state='active' ORDER BY id")
-    if [ -z "$active_ids" ]; then
-      compose exec -T api align release activate "$baseline_id"
-    elif [ "$active_ids" = "$baseline_id" ]; then
-      echo 'The shipped synthetic baseline is already active.'
+    target_hash=$(printf '%s' "$release_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["config_hash"])')
+    target_state=$(printf '%s' "$release_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')
+    if [ "$action" = verify_target ]; then
+      active_id=$(printf '%s' "$plan" | python3 -c 'import json,sys; print(json.load(sys.stdin)["active_release_id"])')
+      active_hash=$(printf '%s' "$plan" | python3 -c 'import json,sys; print(json.load(sys.stdin)["active_config_hash"])')
+      if [ "$target_state" != active ] || [ "$baseline_id" != "$active_id" ] || [ "$target_hash" != "$active_hash" ]; then
+        echo 'Active B5 release hash differs from the shipped target; it was preserved.' >&2
+        exit 1
+      fi
+      echo 'The shipped synthetic B5 baseline is active with the same hash; no activation was repeated.'
     else
-      echo 'An existing active release was preserved; no release was activated.'
+      if [ "$target_state" = retired ]; then
+        echo 'The target B5 release is retired and cannot be reactivated; register a new version first.' >&2
+        exit 1
+      fi
+      compose exec -T api align release activate "$baseline_id"
     fi
     ;;
   integration)

@@ -211,6 +211,37 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await expect(formulaCell).toBeVisible();
   await formulaCell.click();
   await expect(xlsxViewer.locator(".spreadsheet-grid-detail")).toContainText("Nilai cache (belum diverifikasi)");
+  await expect(sheetTabs.getByRole("tab", { name: /Rekap Nilai Semester Akademik/ })).toBeVisible();
+  for (const width of [360, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const dimensions = await page.evaluate(() => ({
+      viewport: document.documentElement.clientWidth,
+      page: document.documentElement.scrollWidth,
+    }));
+    expect(dimensions.page, `XLSX viewer overflow at ${width}px`).toBeLessThanOrEqual(dimensions.viewport + 1);
+    const viewerBounds = await xlsxViewer.evaluate((element) => {
+      const panel = element.querySelector('[role="tabpanel"]');
+      const grid = element.querySelector(".spreadsheet-grid-scroll");
+      const tabs = element.querySelector('[role="tablist"]');
+      return {
+        viewerRight: Math.ceil(element.getBoundingClientRect().right),
+        panelRight: panel ? Math.ceil(panel.getBoundingClientRect().right) : 0,
+        gridClientWidth: grid?.clientWidth ?? 0,
+        gridScrollWidth: grid?.scrollWidth ?? 0,
+        tabsClientWidth: tabs?.clientWidth ?? 0,
+        tabsScrollWidth: tabs?.scrollWidth ?? 0,
+      };
+    });
+    expect(viewerBounds.viewerRight).toBeLessThanOrEqual(width + 1);
+    expect(viewerBounds.panelRight).toBeLessThanOrEqual(width + 1);
+    expect(viewerBounds.gridScrollWidth).toBeGreaterThanOrEqual(viewerBounds.gridClientWidth);
+    if (width === 360) expect(viewerBounds.tabsScrollWidth).toBeGreaterThan(viewerBounds.tabsClientWidth);
+    await xlsxViewer.screenshot({
+      path: test.info().outputPath(`b7-xlsx-${width}.png`),
+      animations: "disabled",
+    });
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
 
   await queue.locator(".submission-file-select").filter({ hasText: "rotated.jpeg" }).click();
   const imageViewer = queue.locator(".submission-detail-card > .submission-viewer-panel");
@@ -219,6 +250,17 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
 
   const reviewWorkspace = queue.getByRole("region", { name: "Pemeriksaan dan publikasi" });
   await expect(reviewWorkspace.getByRole("heading", { name: "Pemeriksaan dan publikasi" })).toBeVisible();
+  const releasesResponse = await page.request.get("/api/v1/runtime/releases");
+  expect(releasesResponse.ok()).toBeTruthy();
+  const releases = (await releasesResponse.json()) as { releases: Array<Record<string, unknown>> };
+  const activeBaseline = releases.releases.find((release) => release.state === "active");
+  expect(activeBaseline).toMatchObject({
+    version_label: "align-b5-synthetic-baseline-v2",
+    provider_mode: "mock",
+    data_mode: "synthetic",
+  });
+  expect(activeBaseline?.capabilities_available).toContain("b5_executor");
+  expect(activeBaseline?.paid_calls).toBe("blocked_before_network");
   await reviewWorkspace.getByRole("button", { name: "Jalankan analisis" }).click();
   await expect(reviewWorkspace.getByRole("status").filter({ hasText: /Run (partial|completed)/ })).toBeVisible({ timeout: 240_000 });
   await expect(reviewWorkspace).toContainText("provider mock · data synthetic");

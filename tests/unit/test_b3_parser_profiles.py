@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from align_api.config import Settings
 from align_api.parser_profiles import profile_payload
@@ -17,11 +17,14 @@ def test_b3_profiles_keep_native_and_docling_memory_profiles_immutable() -> None
     assert native["memory_limit_bytes"] == 2 * 1024**3
     assert native["heavy"] is False
     assert native["formats"] == ["docx", "xlsx"]
-    assert docling["memory_limit_bytes"] == 8 * 1024**3
+    assert docling["memory_limit_bytes"] == 4 * 1024**3
     assert docling["heavy"] is True
     assert docling["formats"] == ["pdf", "jpg", "jpeg", "png"]
     assert docling["package_lock"]["docling-slim"] == "2.140.0"
     assert docling["package_lock"]["openpyxl"] == "3.1.5"
+    assert settings.parser_node_memory_budget_bytes == 4 * 1024**3
+    assert settings.parser_node_headroom_bytes == 1 * 1024**3
+    assert settings.parser_page_batch_size == 1
 
 
 def test_candidate_or_environment_selected_parser_profiles_fail_closed() -> None:
@@ -30,6 +33,19 @@ def test_candidate_or_environment_selected_parser_profiles_fail_closed() -> None
         profile_payload(settings, "docling_light_v1")
     with pytest.raises(ValidationError):
         Settings(_env_file=None, parser_profile_document="docling_light_v1")
+
+
+def test_production_refuses_the_development_four_gib_document_profile() -> None:
+    with pytest.raises(ValidationError, match="production requires the 8 GiB document parser profile"):
+        Settings(
+            _env_file=None,
+            app_env="production",
+            app_origin="https://align.example",
+            app_demo_mode=True,
+            csrf_server_secret=SecretStr("c" * 64),
+            s3_secret_access_key=SecretStr("d" * 64),
+            parser_document_memory_bytes=4 * 1024**3,
+        )
 
 
 @pytest.mark.parametrize(

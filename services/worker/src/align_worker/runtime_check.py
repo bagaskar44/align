@@ -11,9 +11,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from align_api.config import get_settings
-from align_api.idempotency import canonical_hash
-from align_api.parser_profiles import profile_payload
 from align_worker.celery_app import celery_app
 
 PARSER_TASKS = {
@@ -25,6 +22,9 @@ PARSER_TASKS = {
 
 def verify_parser_runtime() -> dict[str, Any]:
     """Check settings, task registration, parser packages, OCR, models and profiles."""
+    from align_api.config import get_settings
+    from align_api.idempotency import canonical_hash
+    from align_api.parser_profiles import profile_payload
     from align_worker import tasks as _tasks  # noqa: F401 -- register shared Celery tasks
     from align_worker.parser_child import _verify_docling_resources
 
@@ -73,14 +73,21 @@ def verify_parser_runtime() -> dict[str, Any]:
 
 
 def worker_responding() -> bool:
-    """Confirm this worker answers the broker's ping without rehashing models."""
-    from align_worker import tasks as _tasks  # noqa: F401 -- load the Celery worker app
-
+    """Confirm the target worker answers a bounded broker ping without loading tasks."""
     destination = f"celery@{socket.gethostname()}"
+    previous_timeout = celery_app.conf.broker_connection_timeout
+    previous_retries = celery_app.conf.broker_connection_max_retries
     try:
+        # This command runs in a separate healthcheck process. Bound only its
+        # broker connect/retry policy, leaving the long-lived worker unchanged.
+        celery_app.conf.broker_connection_timeout = 2
+        celery_app.conf.broker_connection_max_retries = 0
         replies = celery_app.control.ping(timeout=2, destination=[destination])
     except Exception:
         return False
+    finally:
+        celery_app.conf.broker_connection_timeout = previous_timeout
+        celery_app.conf.broker_connection_max_retries = previous_retries
     for reply in replies or []:
         response = reply.get(destination)
         if response == "pong" or isinstance(response, dict) and response.get("ok") == "pong":

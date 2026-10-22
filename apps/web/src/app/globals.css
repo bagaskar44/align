@@ -266,11 +266,12 @@ h1 { margin-bottom: 10px; font-size: clamp(30px, 5vw, 42px); line-height: 1.15; 
 .source-unit-content { display: grid; gap: 10px; min-width: 0; }
 .document-structure-viewer { display: grid; gap: 8px; }
 .document-structure-viewer p { margin: 0; overflow-wrap: anywhere; }
-.spreadsheet-cell-viewer { display: grid; gap: 12px; }
-.spreadsheet-sheet-tabs { display: flex; gap: 6px; overflow-x: auto; border-bottom: 1px solid var(--border); }
+.spreadsheet-cell-viewer { display: grid; width: 100%; min-width: 0; max-width: 100%; gap: 12px; }
+.spreadsheet-cell-viewer [role="tabpanel"] { width: 100%; min-width: 0; max-width: 100%; }
+.spreadsheet-sheet-tabs { display: flex; width: 100%; min-width: 0; max-width: 100%; gap: 6px; overflow-x: auto; border-bottom: 1px solid var(--border); }
 .spreadsheet-sheet-tab { flex: 0 0 auto; padding: 8px 10px; border: 1px solid var(--border); border-bottom: 0; border-radius: 8px 8px 0 0; background: var(--surface-muted); color: var(--foreground); cursor: pointer; }
 .spreadsheet-sheet-tab.is-selected { background: white; font-weight: 700; box-shadow: inset 0 2px 0 var(--accent); }
-.spreadsheet-grid-scroll { max-width: 100%; max-height: 520px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.spreadsheet-grid-scroll { width: 100%; min-width: 0; max-width: 100%; max-height: 520px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
 .spreadsheet-readonly-grid { border-collapse: collapse; min-width: 100%; font-size: 12px; }
 .spreadsheet-readonly-grid th, .spreadsheet-readonly-grid td { min-width: 84px; max-width: 240px; border: 1px solid var(--border); vertical-align: top; }
 .spreadsheet-readonly-grid th { position: sticky; top: 0; z-index: 1; padding: 5px; background: var(--surface-muted); font-weight: 700; }

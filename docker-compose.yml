@@ -62,7 +62,13 @@ services:
     env_file: .env.api
     environment:
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
-      PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-8589934592}
+      PARSER_NATIVE_MEMORY_BYTES: "2147483648"
+      PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES:-${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-4294967296}}
+      PARSER_LIGHT_MEMORY_BYTES: "4294967296"
+      PARSER_NODE_MEMORY_BUDGET_BYTES: "4294967296"
+      PARSER_NODE_HEADROOM_BYTES: "1073741824"
+      PARSER_HEAVY_MAX_PER_NODE: "1"
+      PARSER_PAGE_BATCH_SIZE: "1"
     command: ["uv", "run", "--no-sync", "--package", "align-api", "uvicorn", "align_api.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]
     depends_on:
       migrate:
@@ -108,6 +114,13 @@ services:
     env_file: .env.worker
     environment:
       ALIGN_WORKER_QUEUE: ${REDIS_QUEUE_PREFIX}.general
+      PARSER_NATIVE_MEMORY_BYTES: "2147483648"
+      PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES:-${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-4294967296}}
+      PARSER_LIGHT_MEMORY_BYTES: "4294967296"
+      PARSER_NODE_MEMORY_BUDGET_BYTES: "4294967296"
+      PARSER_NODE_HEADROOM_BYTES: "1073741824"
+      PARSER_HEAVY_MAX_PER_NODE: "1"
+      PARSER_PAGE_BATCH_SIZE: "1"
     command: ["sh", "-lc", "uv run --no-sync --package align-worker celery -A align_worker.celery_app:celery_app worker --loglevel=INFO --concurrency=2 --queues=$${ALIGN_WORKER_QUEUE}"]
     depends_on:
       migrate:
@@ -125,7 +138,13 @@ services:
     environment:
       ALIGN_WORKER_QUEUE: ${REDIS_QUEUE_PREFIX}.parser
       PARSER_NODE_ID: ${PARSER_NODE_ID:-align-dev-node}
-      PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-8589934592}
+      PARSER_NATIVE_MEMORY_BYTES: "2147483648"
+      PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES:-${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-4294967296}}
+      PARSER_LIGHT_MEMORY_BYTES: "4294967296"
+      PARSER_NODE_MEMORY_BUDGET_BYTES: "4294967296"
+      PARSER_NODE_HEADROOM_BYTES: "1073741824"
+      PARSER_HEAVY_MAX_PER_NODE: "1"
+      PARSER_PAGE_BATCH_SIZE: "1"
       PROVIDER_MODE: ${PROVIDER_MODE:-mock}
       DATA_MODE: ${DATA_MODE:-synthetic}
       MODEL_EFFICIENT: ${MODEL_EFFICIENT:-}
@@ -133,7 +152,7 @@ services:
     healthcheck:
       test: ["CMD", "uv", "run", "--no-sync", "--package", "align-worker", "python", "-m", "align_worker.runtime_check", "--healthcheck"]
       interval: 10s
-      timeout: 4s
+      timeout: 10s
       retries: 3
       start_period: 20s
     depends_on:
@@ -142,7 +161,7 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
-    mem_limit: 9g
+    mem_limit: 5g
     cpus: 2.0
     pids_limit: 128
     stop_grace_period: 30s
@@ -158,7 +177,13 @@ services:
       REDIS_QUEUE_PREFIX: align-test
       ALIGN_WORKER_QUEUE: align-test.parser
       PARSER_NODE_ID: align-b5-test-node
-      PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-8589934592}
+      PARSER_NATIVE_MEMORY_BYTES: "2147483648"
+      PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES:-${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-4294967296}}
+      PARSER_LIGHT_MEMORY_BYTES: "4294967296"
+      PARSER_NODE_MEMORY_BUDGET_BYTES: "4294967296"
+      PARSER_NODE_HEADROOM_BYTES: "1073741824"
+      PARSER_HEAVY_MAX_PER_NODE: "1"
+      PARSER_PAGE_BATCH_SIZE: "1"
       PROVIDER_MODE: ${PROVIDER_MODE:-mock}
       DATA_MODE: ${DATA_MODE:-synthetic}
       MODEL_EFFICIENT: ${MODEL_EFFICIENT:-}
@@ -166,7 +191,7 @@ services:
     healthcheck:
       test: ["CMD", "uv", "run", "--no-sync", "--package", "align-worker", "python", "-m", "align_worker.runtime_check", "--healthcheck"]
       interval: 10s
-      timeout: 4s
+      timeout: 10s
       retries: 3
       start_period: 20s
     depends_on:
@@ -175,7 +200,7 @@ services:
       redis:
         condition: service_healthy
     restart: "no"
-    mem_limit: 9g
+    mem_limit: 5g
     cpus: 2.0
     pids_limit: 128
     stop_grace_period: 30s
@@ -240,6 +265,13 @@ services:
     env_file: .env.tests
     environment:
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      PARSER_NATIVE_MEMORY_BYTES: "2147483648"
+      PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES:-${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-4294967296}}
+      PARSER_LIGHT_MEMORY_BYTES: "4294967296"
+      PARSER_NODE_MEMORY_BUDGET_BYTES: "4294967296"
+      PARSER_NODE_HEADROOM_BYTES: "1073741824"
+      PARSER_HEAVY_MAX_PER_NODE: "1"
+      PARSER_PAGE_BATCH_SIZE: "1"
       REDIS_URL: redis://redis:6379/0
       REDIS_QUEUE_PREFIX: align-test
       S3_ENDPOINT: http://object-storage:9090
@@ -281,6 +313,8 @@ services:
 
   proxy:
     image: caddy:2.10.2-alpine
+    environment:
+      ALIGN_HOST_PORT: ${ALIGN_HOST_PORT:-3000}
     ports:
       - "127.0.0.1:${ALIGN_HOST_PORT:-3000}:80"
     volumes:

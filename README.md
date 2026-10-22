@@ -25,6 +25,8 @@ Toolchain mengunci Node `22.22.0`, uv `0.8.22`, Python `3.12.11`, dan pnpm `10.1
 
 Buka `http://localhost:3000`. Akun demo disediakan oleh seed; password hanya ada di `.env` privat checkout. API/database/broker/object storage tetap berada di jaringan internal Compose. Mode mock tidak memerlukan API key dan provider berbayar tetap dibatasi guard.
 
+Compose development memakai profil parser dokumen 4 GiB, batas container 5 GiB, dan cadangan RAM host 1 GiB. `scripts/ci.ps1 -DeployDevelopment` menguji parser Docling/OCR serta alur browser sebelum promosi, lalu hanya menyelaraskan release kosong atau B0 sintetis bawaan. Kapasitas parser produksi 8 GiB tersedia lewat `docker-compose.production.yml`.
+
 ## Pemeriksaan dan pekerjaan operator
 
 ```sh

@@ -25,10 +25,10 @@ class _RedisStub:
 @pytest.mark.parametrize(
     ("host_available", "container_available"),
     [
-        (9 * 1024**3 - 1, 8 * 1024**3),
-        (9 * 1024**3, 8 * 1024**3 - 1),
+        (5 * 1024**3 - 1, 4 * 1024**3),
+        (5 * 1024**3, 4 * 1024**3 - 1),
         (None, None),
-        (None, 8 * 1024**3),
+        (None, 4 * 1024**3),
     ],
 )
 def test_document_profile_fails_closed_without_required_capacity(

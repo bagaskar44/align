@@ -1,0 +1,25 @@
+# Production parser capacity profile. Combine with docker-compose.yml only in
+# production deployments after setting APP_ORIGIN to the required HTTPS origin.
+services:
+  api:
+    environment:
+      PARSER_DOCUMENT_MEMORY_BYTES: "8589934592"
+      PARSER_NODE_MEMORY_BUDGET_BYTES: "8589934592"
+  worker:
+    environment:
+      PARSER_DOCUMENT_MEMORY_BYTES: "8589934592"
+      PARSER_NODE_MEMORY_BUDGET_BYTES: "8589934592"
+  parser-worker:
+    environment:
+      PARSER_DOCUMENT_MEMORY_BYTES: "8589934592"
+      PARSER_NODE_MEMORY_BUDGET_BYTES: "8589934592"
+    mem_limit: 9g
+  test-parser-worker:
+    environment:
+      PARSER_DOCUMENT_MEMORY_BYTES: "8589934592"
+      PARSER_NODE_MEMORY_BUDGET_BYTES: "8589934592"
+    mem_limit: 9g
+  test-runner:
+    environment:
+      PARSER_DOCUMENT_MEMORY_BYTES: "8589934592"
+      PARSER_NODE_MEMORY_BUDGET_BYTES: "8589934592"

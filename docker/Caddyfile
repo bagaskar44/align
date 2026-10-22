@@ -1,4 +1,12 @@
 :80 {
+	@loopbackAlias {
+		host 127.0.0.1
+		method GET HEAD
+	}
+	handle @loopbackAlias {
+		redir http://localhost:{$ALIGN_HOST_PORT:3000}{uri} 307
+	}
+
 	@api path /api/v1 /api/v1/*
 	handle @api {
 		reverse_proxy api:8000
