@@ -180,9 +180,20 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
 
   await queue.locator(".submission-file-select").filter({ hasText: "complex-submission.xlsx" }).click();
   const xlsxViewer = queue.locator(".submission-detail-card > .submission-viewer-panel");
-  await xlsxViewer.getByRole("tab", { name: /Catatan internal.*tersembunyi/ }).click();
+  const hiddenSheetTab = xlsxViewer.getByRole("tab", { name: /Catatan internal.*tersembunyi/ });
+  await hiddenSheetTab.click();
   await expect(xlsxViewer.getByRole("region", { name: "Grid Catatan internal" })).toBeVisible();
-  await xlsxViewer.getByRole("tab", { name: "Ringkasan" }).click();
+  const summarySheetTab = xlsxViewer.getByRole("tab", { name: "Ringkasan" });
+  const sheetTabs = xlsxViewer.getByRole("tablist", { name: "Sheet workbook" }).getByRole("tab");
+  const sheetNames = (await sheetTabs.allTextContents()).map((name) => name.trim());
+  const selectedSheetIndex = await sheetTabs.evaluateAll((tabs) => tabs.findIndex((tab) => tab.getAttribute("aria-selected") === "true"));
+  const nextSheet = sheetTabs.nth((selectedSheetIndex + 1) % sheetNames.length);
+  await sheetTabs.nth(selectedSheetIndex).focus();
+  await sheetTabs.nth(selectedSheetIndex).press("ArrowRight");
+  await expect(nextSheet).toHaveAttribute("aria-selected", "true");
+  await summarySheetTab.click();
+  await expect(summarySheetTab).toHaveAttribute("aria-selected", "true");
+  await expect(xlsxViewer.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", /tab-/);
   const formulaCell = xlsxViewer.getByRole("button", { name: /D3: formula =SUM/ });
   await expect(formulaCell).toBeVisible();
   await formulaCell.click();
@@ -198,6 +209,49 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await reviewWorkspace.getByRole("button", { name: "Jalankan analisis" }).click();
   await expect(reviewWorkspace.getByRole("status").filter({ hasText: /Run (partial|completed)/ })).toBeVisible({ timeout: 240_000 });
   await expect(reviewWorkspace).toContainText("provider mock · data synthetic");
+  for (const width of [360, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const viewportWidth = await page.evaluate(() => document.documentElement.clientWidth);
+    const documentWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+    const overflowingElements = documentWidth > viewportWidth + 1
+      ? await page.evaluate(() => Array.from(document.querySelectorAll("body *"))
+        .map((element) => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return {
+            tag: element.tagName.toLowerCase(),
+            className: typeof element.className === "string" ? element.className : "",
+            left: Math.round(rect.left),
+            right: Math.round(rect.right),
+            width: Math.round(rect.width),
+            scrollWidth: element.scrollWidth,
+            clientWidth: element.clientWidth,
+            overflowX: style.overflowX,
+          };
+        })
+        .filter((item) => item.right > window.innerWidth + 1 || item.left < -1)
+        .sort((left, right) => right.right - left.right)
+        .slice(0, 12))
+      : [];
+    expect(documentWidth, `horizontal overflow at ${width}px: ${JSON.stringify(overflowingElements)}`)
+      .toBeLessThanOrEqual(viewportWidth + 1);
+    if (width < 768) {
+      const reviewTabs = reviewWorkspace.getByRole("tablist", { name: "Panel review" });
+      const inspectTab = reviewTabs.getByRole("tab", { name: "Pemeriksaan" });
+      const evidenceTab = reviewTabs.getByRole("tab", { name: "Bukti" });
+      await inspectTab.focus();
+      await inspectTab.press("ArrowRight");
+      await expect(evidenceTab).toHaveAttribute("aria-selected", "true");
+      await expect(reviewWorkspace.getByRole("tabpanel", { name: "Bukti" })).toBeVisible();
+      await evidenceTab.press("Home");
+      await expect(inspectTab).toHaveAttribute("aria-selected", "true");
+    }
+    await reviewWorkspace.screenshot({
+      path: test.info().outputPath(`b7-review-${width}.png`),
+      animations: "disabled",
+    });
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await queue.locator(".submission-file-select").filter({ hasText: "native-two-pages.pdf" }).click();
   const originalViewer = queue.locator(".submission-detail-card > .submission-viewer-panel");
   await originalViewer.getByRole("navigation", { name: "Unit sumber" }).getByRole("button", { name: /page PDF p\.1/ }).click();
@@ -213,6 +267,11 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await reviewWorkspace.getByRole("button", { name: "Nonaktifkan anotasi" }).last().click();
   await expect(reviewWorkspace.getByRole("status").filter({ hasText: "Anotasi dinonaktifkan" })).toBeVisible();
   await expect(reviewWorkspace.getByText("Lihat histori append-only").first()).toBeVisible();
+  const bindingAnnotation = reviewWorkspace.locator(".b4-annotation-card").last();
+  await bindingAnnotation.getByText("Lihat histori append-only").click();
+  await bindingAnnotation.locator("details").getByRole("button", { name: "Buka sumber asli untuk revisi #1" }).click();
+  await expect(reviewWorkspace.getByRole("region", { name: "Sumber anotasi terpilih" })).toContainText("PDF hlm. 1");
+  await expect(reviewWorkspace.locator(".source-unit-content")).toContainText("PDF p.1");
   const elementCount = await reviewWorkspace.locator(".b4-element-button").count();
   expect(elementCount).toBeGreaterThan(0);
   for (let index = 0; index < elementCount; index += 1) {

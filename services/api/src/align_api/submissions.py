@@ -61,6 +61,7 @@ from align_api.models import (
     User,
 )
 from align_api.parser_profiles import profile_payload, register_manifest
+from align_api.retention import raise_source_purged, source_purged
 from align_api.storage import storage_client
 
 router = APIRouter(tags=["submissions", "evidence"])
@@ -829,7 +830,7 @@ def get_submission_content(
         .join(SubmissionVersionFile, SubmissionVersionFile.file_asset_id == FileAsset.id)
         .join(SubmissionVersion, SubmissionVersion.id == SubmissionVersionFile.submission_version_id)
         .join(Submission, Submission.id == SubmissionVersion.submission_id)
-        .where(FileAsset.id == file_id, FileAsset.validation_state == "validated")
+        .where(FileAsset.id == file_id)
     ).first()
     if row is None:
         raise HTTPException(status_code=404, detail="file not found")
@@ -841,6 +842,10 @@ def get_submission_content(
             SubmissionVersionMember.user_id == identity.user.id,
         )) is None:
             raise HTTPException(status_code=404, detail="file not found")
+    if source_purged(db, file_asset_id=asset.id):
+        raise_source_purged()
+    if asset.validation_state != "validated":
+        raise HTTPException(status_code=404, detail="file not found")
     staged = _verified_object(db, asset, settings)
     range_header = request.headers.get("range")
     start, end, status_code = 0, asset.size_bytes - 1, 200
@@ -906,6 +911,8 @@ def get_submission_evidence(
         raise HTTPException(status_code=404, detail="evidence not found")
     asset = db.get(FileAsset, evidence.file_asset_id)
     unit = db.get(SourceUnit, evidence.source_unit_id)
+    if asset is not None and source_purged(db, file_asset_id=asset.id):
+        raise_source_purged()
     if asset is None or unit is None or evidence.source_sha256 != asset.sha256 or evidence.anchor_json != unit.anchor_json or not _verify_source_anchor(unit.anchor_json, asset):
         raise HTTPException(status_code=409, detail="source integrity check failed")
     _verified_object(db, asset, settings).close()
@@ -935,6 +942,8 @@ def list_submission_source_units(
     assignment, role = _submission_access(db, submission, identity, version_id=version.id)
     if role not in {"lecturer", "admin"}:
         raise HTTPException(status_code=404, detail="file not found")
+    if source_purged(db, file_asset_id=asset.id):
+        raise_source_purged()
     artifact = db.scalar(select(ParseArtifact).where(
         ParseArtifact.file_asset_id == asset.id, ParseArtifact.submission_version_id == version.id
     ))
@@ -978,6 +987,8 @@ def list_submission_spreadsheet_cells(
     _assignment, role = _submission_access(db, submission, identity, version_id=version.id)
     if role != "lecturer" or asset.mime != "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
         raise HTTPException(status_code=404, detail="spreadsheet source not found")
+    if source_purged(db, file_asset_id=asset.id):
+        raise_source_purged()
     sheets = asset.preflight_json.get("sheets", [])
     sheet = next((item for item in sheets if isinstance(item, dict) and item.get("name") == sheet_name), None)
     if sheet is None:
@@ -1035,6 +1046,8 @@ def render_submission_source_unit(
     _assignment, role = _submission_access(db, submission, identity, version_id=version.id)
     if role != "lecturer":
         raise HTTPException(status_code=404, detail="source unit not found")
+    if source_purged(db, file_asset_id=asset.id):
+        raise_source_purged()
     if (
         artifact.status not in {"parsed", "partially_parsed", "unreadable", "unsupported", "failed", "blocked"}
         or not _verify_source_anchor(unit.anchor_json, asset)

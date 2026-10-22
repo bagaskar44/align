@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { PdfSourceViewer } from "./PdfSourceViewer";
 
 type Unit = { id: string; unit_type: string; anchor: Record<string, unknown>; parse_status: string; limitations: Array<Record<string, unknown>> };
@@ -13,7 +13,13 @@ type SpreadsheetPage = { sheet: { name: string; state: string }; items: Spreadsh
 async function requestJson<T>(url: string): Promise<T> {
   const response = await fetch(url, { cache: "no-store", credentials: "same-origin" });
   const value = (await response.json().catch(() => ({}))) as T;
-  if (!response.ok) throw new Error("Sumber tidak dapat dibuka atau anchor tidak lagi valid.");
+  if (!response.ok) {
+    const payload = value as T & { detail?: { code?: string; message?: string } };
+    if (response.status === 410 && payload.detail?.code === "SOURCE_PURGED") {
+      throw new Error(payload.detail.message ?? "Sumber dihapus sesuai kebijakan retensi.");
+    }
+    throw new Error("Sumber tidak dapat dibuka atau anchor tidak lagi valid.");
+  }
   return value;
 }
 
@@ -174,6 +180,7 @@ function orientBox(box: number[], width: number, height: number, orientation: nu
 function SpreadsheetDocumentViewer({ fileId, preflight, anchor, onSelectSource }: {
   fileId: string; preflight: Record<string, unknown>; anchor: Record<string, unknown>; onSelectSource: (id: string) => void;
 }) {
+  const tabsId = useId();
   const sheets = Array.isArray(preflight.sheets) ? preflight.sheets.filter((item): item is { name: string; state?: string } =>
     typeof item === "object" && item !== null && typeof (item as { name?: unknown }).name === "string") : [];
   const initialSheet = typeof anchor.sheet_name === "string" && sheets.some((item) => item.name === anchor.sheet_name)
@@ -210,13 +217,30 @@ function SpreadsheetDocumentViewer({ fileId, preflight, anchor, onSelectSource }
   const columnNumbers = [...new Set(sheetItems.map((item) => Number(item.content.column)).filter(Number.isInteger))].sort((a, b) => a - b);
   const selected = cellByCoordinate.get(String(anchor.cell_range));
 
+  function moveSheetFocus(event: React.KeyboardEvent<HTMLButtonElement>, currentIndex: number) {
+    let next = currentIndex;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (currentIndex + 1) % sheets.length;
+    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (currentIndex - 1 + sheets.length) % sheets.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = sheets.length - 1;
+    else return;
+    event.preventDefault();
+    const sheet = sheets[next];
+    if (!sheet) return;
+    setLoading(true); setError(""); setSheetName(sheet.name);
+    document.getElementById(`${tabsId}-tab-${next}`)?.focus();
+  }
+
   return <article className="spreadsheet-cell-viewer">
     <div className="spreadsheet-sheet-tabs" role="tablist" aria-label="Sheet workbook">
-      {sheets.map((sheet) => <button key={sheet.name} type="button" role="tab" aria-selected={sheetName === sheet.name}
+      {sheets.map((sheet, index) => <button key={sheet.name} id={`${tabsId}-tab-${index}`} type="button" role="tab"
+        aria-selected={sheetName === sheet.name} aria-controls={`${tabsId}-panel`} tabIndex={sheetName === sheet.name ? 0 : -1}
+        onKeyDown={(event) => moveSheetFocus(event, index)}
         className={`spreadsheet-sheet-tab${sheetName === sheet.name ? " is-selected" : ""}`} onClick={() => { setLoading(true); setError(""); setSheetName(sheet.name); }}>
         {sheet.name}{sheet.state && sheet.state !== "visible" ? ` · tersembunyi (${sheet.state})` : ""}
       </button>)}
     </div>
+    <div id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-tab-${Math.max(0, sheets.findIndex((sheet) => sheet.name === sheetName))}`} tabIndex={0}>
     <p className="help-text">{sheetName} · {loading ? "Memuat grid…" : `${sheetItems.length} sel dimuat`} · inventori preflight: {String(preflight.nonempty_cells ?? "—")} sel</p>
     {error && <p className="form-error" role="alert">{error}</p>}
     <div className="spreadsheet-grid-scroll" role="region" aria-label={`Grid ${sheetName}`} tabIndex={0}>
@@ -245,6 +269,7 @@ function SpreadsheetDocumentViewer({ fileId, preflight, anchor, onSelectSource }
     </div>}
     {cursor !== null && <button type="button" className="button button-quiet" disabled={loading} onClick={() => void loadMore()}>{loading ? "Memuat…" : "Muat sel berikutnya"}</button>}
     <p className="help-text">Viewer read-only. ALIGN tidak menjalankan macro, external workbook, atau formula. Sheet hidden tetap diberi label; cache formula tidak diverifikasi.</p>
+    </div>
   </article>;
 }
 

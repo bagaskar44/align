@@ -4,7 +4,7 @@ import argparse
 import hashlib
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation, localcontext
 from pathlib import Path
 from typing import Any
@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 
 from alembic import command
 from alembic.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session as DbSession
 from sqlalchemy.orm import sessionmaker
@@ -19,22 +20,29 @@ from sqlalchemy.orm import sessionmaker
 from align_api.config import get_settings
 from align_api.db import SessionFactory
 from align_api.models import (
+    AnalysisRun,
     AuditEvent,
     BudgetAccount,
     BudgetTopup,
     Course,
     Enrollment,
+    FileAsset,
     MethodManifest,
     Operation,
     OutboxEvent,
+    ParseArtifact,
     PolicyValidationReport,
     ReleaseManifest,
+    ReviewVersion,
+    Submission,
+    SubmissionVersion,
     UsageEntry,
     UsageReconciliation,
     UsageReservation,
     User,
 )
 from align_api.security import hash_password, normalize_email
+from align_api.storage import storage_client
 
 RELEASE_MANIFEST_COLUMNS = {
     "parser": "parser_manifest_id",
@@ -804,6 +812,93 @@ def _operator_session_factory() -> tuple[Any, Any]:
     return engine, sessionmaker(bind=engine, class_=DbSession, autoflush=False, expire_on_commit=False)
 
 
+def purge_submission_retention(submission_id: str, policy_ref: str, *, execute: bool) -> None:
+    settings = get_settings()
+    if settings.data_mode != "synthetic":
+        raise SystemExit("retention purge CLI is restricted to synthetic data mode")
+    try:
+        parsed_id = UUID(submission_id)
+    except ValueError as exc:
+        raise SystemExit("submission_id must be a UUID") from exc
+    normalized_policy = policy_ref.strip()
+    if not normalized_policy or len(normalized_policy) > 240:
+        raise SystemExit("policy_ref must be a nonblank reference of at most 240 characters")
+    if not normalized_policy.startswith("synthetic:"):
+        raise SystemExit("policy_ref must start with synthetic:")
+
+    now = datetime.now(UTC)
+    actor_id: UUID
+    object_keys: set[str] = set()
+    with SessionFactory() as db:
+        actor = _operator(db)
+        if actor is None:
+            raise SystemExit("an active admin operator account is required")
+        actor_id = actor.id
+        submission = db.get(Submission, parsed_id)
+        if submission is None:
+            raise SystemExit("submission not found")
+        assets = list(db.scalars(select(FileAsset).where(FileAsset.submission_id == parsed_id)))
+        if not assets:
+            raise SystemExit("submission has no source assets to purge")
+        source_cutoff = now - timedelta(days=settings.retention_source_days)
+        if any(_as_utc(asset.created_at) > source_cutoff for asset in assets):
+            raise SystemExit("source retention period has not elapsed for every source asset")
+        versions = list(db.scalars(select(SubmissionVersion).where(SubmissionVersion.submission_id == parsed_id)))
+        version_ids = [item.id for item in versions]
+        reviews = list(db.scalars(select(ReviewVersion).where(
+            ReviewVersion.submission_version_id.in_(version_ids)
+        ))) if version_ids else []
+        review_cutoff = now - timedelta(days=settings.retention_review_days)
+        if any(_as_utc(item.created_at) > review_cutoff for item in reviews):
+            raise SystemExit("review retention period has not elapsed for every review")
+        parse_artifacts = list(db.scalars(select(ParseArtifact).where(
+            ParseArtifact.file_asset_id.in_([item.id for item in assets])
+        )))
+        if any(item.status in {"queued", "running"} for item in parse_artifacts):
+            raise SystemExit("submission has queued or running parser work")
+        analysis_runs = list(db.scalars(select(AnalysisRun).where(
+            AnalysisRun.submission_version_id.in_(version_ids)
+        ))) if version_ids else []
+        if any(item.status in {"queued", "running"} for item in analysis_runs):
+            raise SystemExit("submission has queued or running analysis work")
+        object_keys.update(item.object_key for item in assets)
+        object_keys.update(item.artifact_object_key for item in parse_artifacts if item.artifact_object_key)
+
+    if not execute:
+        print(json.dumps({"status": "eligible_for_operator_purge", "submission_id": submission_id,
+                          "source_asset_count": len(assets), "parser_artifact_count": len(parse_artifacts),
+                          "stored_object_count": len(object_keys), "data_mode": "synthetic",
+                          "dry_run": True}))
+        return
+
+    storage = storage_client(settings)
+    try:
+        for key in sorted(object_keys):
+            storage.delete_object(Bucket=settings.s3_bucket, Key=key)
+    except (BotoCoreError, ClientError, OSError) as exc:
+        raise SystemExit("storage purge failed; retry is safe because object deletes are idempotent") from exc
+
+    engine, factory = _operator_session_factory()
+    try:
+        with factory.begin() as db:
+            result = db.execute(text("""
+                SELECT retention_purge_submission(:submission_id,:actor_id,:policy_ref,:source_days,:review_days)
+            """), {"submission_id": parsed_id, "actor_id": actor_id,
+                   "policy_ref": normalized_policy, "source_days": settings.retention_source_days,
+                   "review_days": settings.retention_review_days}).scalar_one()
+    except Exception as exc:
+        raise SystemExit("database redaction failed after object deletion; rerun the same operator command") from exc
+    finally:
+        engine.dispose()
+    print(json.dumps({"status": "purged", "submission_id": submission_id,
+                      "result": result, "stored_objects_deleted": len(object_keys),
+                      "data_mode": "synthetic"}))
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
 def confirm_budget_topup(amount: str, confirmation_ref: str, reason: str) -> None:
     value = Decimal(amount)
     if not value.is_finite() or value <= 0 or len(amount) > 32:
@@ -998,6 +1093,29 @@ def _parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--profile", required=True)
     benchmark.add_argument("--fixtures", required=True, type=Path)
     benchmark.add_argument("--output", required=True, type=Path)
+
+    retention = subparsers.add_parser("retention", help="synthetic data retention and source purge")
+    retention_sub = retention.add_subparsers(dest="retention_command", required=True)
+    purge = retention_sub.add_parser("purge-submission", help="purge expired synthetic submission data")
+    purge.add_argument("--submission-id", required=True)
+    purge.add_argument("--policy-ref", default="synthetic:configured-retention-defaults")
+    purge.add_argument("--execute", action="store_true", help="delete stored objects and redact scoped records")
+
+    backup = subparsers.add_parser("backup", help="synthetic object snapshot and restore reconciliation")
+    backup_sub = backup.add_subparsers(dest="backup_command", required=True)
+    export_objects = backup_sub.add_parser("objects-export", help="write a verified object-store tar archive")
+    export_objects.add_argument("--output", required=True, type=Path)
+    import_objects = backup_sub.add_parser("objects-import", help="restore objects into an empty bucket")
+    import_objects.add_argument("--input", required=True, type=Path)
+    backup_sub.add_parser("reconcile", help="check database pointers, object hashes, tombstones, and liabilities")
+
+    evaluate = subparsers.add_parser("evaluate", help="offline robustness and protocol evaluations")
+    evaluate_sub = evaluate.add_subparsers(dest="evaluate_command", required=True)
+    robustness = evaluate_sub.add_parser("robustness", help="validate and run compiler/DAG robustness checks")
+    robustness.add_argument("--protocol", required=True, type=Path)
+    robustness.add_argument("--dataset-manifest", required=True, type=Path)
+    robustness.add_argument("--release", required=True)
+    robustness.add_argument("--output", required=True, type=Path)
     return parser
 
 
@@ -1033,6 +1151,66 @@ def main() -> None:
         from align_worker.benchmark import run_parser_benchmark
 
         run_parser_benchmark(args.profile, args.fixtures, args.output)
+    elif args.command == "evaluate" and args.evaluate_command == "robustness":
+        from align_api.robustness import (
+            ProtocolError,
+            evaluate_robustness_files,
+            parse_release_id,
+        )
+
+        release_id = parse_release_id(args.release)
+        with SessionFactory() as db:
+            release_row = db.get(ReleaseManifest, release_id)
+            if release_row is None:
+                raise SystemExit("release is not registered")
+            manifest_hashes: dict[str, str] = {}
+            for kind, column in RELEASE_MANIFEST_COLUMNS.items():
+                manifest_id = getattr(release_row, column)
+                manifest = db.get(MethodManifest, manifest_id) if manifest_id else None
+                if manifest is None or manifest.kind != kind:
+                    raise SystemExit("registered release has an incomplete method manifest binding")
+                if sha256_json(manifest.content_json) != manifest.sha256:
+                    raise SystemExit("registered method manifest content hash is invalid")
+                manifest_hashes[kind] = manifest.sha256
+            if release_row.manifest_payload.get("method_manifest_sha256") != manifest_hashes:
+                raise SystemExit("registered release manifest hashes do not match linked immutable methods")
+            release = {
+                "id": str(release_row.id),
+                "config_hash": release_row.config_hash,
+                "method_manifest_sha256": manifest_hashes,
+            }
+            try:
+                report = evaluate_robustness_files(
+                    args.protocol, args.dataset_manifest, args.output, release
+                )
+            except ProtocolError as exc:
+                raise SystemExit(str(exc)) from exc
+        print(json.dumps({"status": report["status"], "method": report["method"],
+                          "output": str(args.output), "report_type": report["report_type"]}))
+    elif args.command == "retention" and args.retention_command == "purge-submission":
+        purge_submission_retention(args.submission_id, args.policy_ref, execute=args.execute)
+    elif args.command == "backup":
+        from align_api.storage_backup import (
+            export_storage_archive,
+            import_storage_archive,
+            reconcile_restored_state,
+        )
+
+        settings = get_settings()
+        if settings.data_mode != "synthetic":
+            raise SystemExit("this backup/restore workflow accepts synthetic data only")
+        try:
+            if args.backup_command == "objects-export":
+                result = export_storage_archive(settings, args.output)
+            elif args.backup_command == "objects-import":
+                result = import_storage_archive(settings, args.input)
+            else:
+                result = reconcile_restored_state(settings)
+        except (BotoCoreError, ClientError, OSError, ValueError) as exc:
+            raise SystemExit(f"synthetic object backup operation failed: {exc}") from exc
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        if args.backup_command == "reconcile" and result["status"] != "reconciled":
+            raise SystemExit("restored state is incomplete; keep service closed")
     else:
         raise SystemExit("unknown command")
 

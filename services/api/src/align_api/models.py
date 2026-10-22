@@ -582,6 +582,27 @@ class FileAsset(RevisionMixin, Base):
     quarantined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class RetentionTombstone(TimestampMixin, Base):
+    __tablename__ = "retention_tombstones"
+    __table_args__ = (
+        UniqueConstraint("file_asset_id", name="uq_retention_tombstones_file_asset"),
+        CheckConstraint("source_sha256 ~ '^[a-f0-9]{64}$'", name="ck_retention_tombstone_sha256"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    file_asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("file_assets.id", ondelete="RESTRICT"), nullable=False
+    )
+    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    policy_ref: Mapped[str] = mapped_column(String(240), nullable=False)
+    purged_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class NormativeFileLink(TimestampMixin, Base):
     __tablename__ = "normative_file_links"
     __table_args__ = (

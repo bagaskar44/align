@@ -81,6 +81,25 @@ services:
     restart: unless-stopped
     networks: [private]
 
+  operator:
+    profiles: [operator]
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    env_file: .env.api
+    environment:
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      OPERATOR_DATABASE_URL: postgresql+psycopg://align_operator:${OPERATOR_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    entrypoint: ["uv", "run", "--no-sync", "--package", "align-api", "align"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      object-storage:
+        condition: service_started
+    networks: [private]
+
   worker:
     build:
       context: .
@@ -202,6 +221,8 @@ services:
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
       REDIS_URL: redis://redis:6379/0
       REDIS_QUEUE_PREFIX: align-test
+      S3_ENDPOINT: http://object-storage:9090
+      OPERATOR_DATABASE_URL: postgresql+psycopg://align_operator:${OPERATOR_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
     command: ["uv", "run", "--no-sync", "pytest", "tests/integration"]
     depends_on:
       migrate:

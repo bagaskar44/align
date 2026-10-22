@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import re
 from datetime import UTC, datetime
@@ -82,6 +83,7 @@ from align_api.models import (
     SupportBinding,
     User,
 )
+from align_api.retention import raise_source_purged, source_purged
 from align_api.submissions import _verify_source_anchor
 from align_domain.assignment_contracts import REQUIRED_ROLES
 from align_domain.executor import FeedbackDraftPayload
@@ -98,6 +100,14 @@ router = APIRouter(tags=["reviews", "feedback", "publications"])
 Category = Literal["missing_requirement", "rubric_coverage_gap", "numerical_inconsistency"]
 Resolution = Literal["observed_no_issue", "confirmed_issue", "not_applicable", "unable_to_conclude"]
 Action = Literal["accept", "edit", "reject", "defer"]
+
+
+def _markdown_literal(value: str) -> str:
+    """Render user-authored labels/claims as literal text in Markdown exports."""
+    escaped_html = html.escape(value, quote=False)
+    escaped_html = re.sub(r"(https?)(:)(//)", r"\1\\\2\3", escaped_html, flags=re.IGNORECASE)
+    escaped_html = re.sub(r"\b(www)(\.)", r"\1\\\2", escaped_html, flags=re.IGNORECASE)
+    return re.sub(r"([\\`*_{}\[\]()#+\-.!|>])", r"\\\1", escaped_html)
 
 
 def _uuid(value: Any) -> Any:
@@ -271,6 +281,8 @@ def _access(db: DbSession, review: ReviewVersion, identity: Identity) -> tuple[S
         .join(User, User.id == Enrollment.user_id))
     if role != "lecturer" or not db.scalar(select(Course.active).where(Course.id == assignment.course_id)):
         raise _hidden()
+    if source_purged(db, submission_id=submission.id):
+        raise_source_purged()
     return sv, submission, assignment, version
 
 
@@ -2345,6 +2357,9 @@ def _student_snapshot(db: DbSession, publication: Publication) -> dict[str, Any]
             "message": "Hasil ditarik untuk koreksi",
             "submission_version": source.version_no if source else None,
             "withdrawn_at": latest.event_at.isoformat() if latest else None}
+    if latest.event == "purged":
+        return {"publication_id": str(publication.id), "status": "purged",
+            "message": "Sumber dihapus sesuai kebijakan retensi."}
     snap = publication.snapshot_json
     safe_findings = []
     for finding in snap["confirmed_findings"]:
@@ -2400,11 +2415,15 @@ def published_result(submission_id: UUID, publication_id: UUID | None = None,
                 SubmissionVersionMember.user_id == identity.user.id)) is not None
         if not is_student or not allowed:
             raise _hidden()
+        if source_purged(db, submission_id=submission.id):
+            raise_source_purged()
         return {"submission_id": str(submission.id), "status": "not_published", "message": "Feedback belum diterbitkan"}
     publication = db.get(Publication, selected)
     if not publication or publication.submission_id != submission.id:
         raise _hidden()
     _student_access(db, identity, publication)
+    if source_purged(db, submission_id=submission.id):
+        raise_source_purged()
     return _student_snapshot(db, publication)
 
 
@@ -2455,9 +2474,12 @@ def get_publication(publication_id: UUID, identity: Annotated[Identity, Depends(
     review = _review(db, publication.review_version_id)
     try:
         _access(db, review, identity)
-    except HTTPException:
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
         _student_access(db, identity, publication)
-        return _student_snapshot(db, publication)
+    if source_purged(db, submission_id=publication.submission_id):
+        raise_source_purged()
     _released, latest = _pub_events(db, publication.id)
     return {"publication_id": str(publication.id), "status": latest.event if latest else "unknown",
         "snapshot_hash": publication.snapshot_hash, "snapshot": publication.snapshot_json,
@@ -2475,9 +2497,13 @@ def export_publication(publication_id: UUID, format: Literal["json", "md"] = Que
     try:
         _access(db, review, identity)
         payload = _student_snapshot(db, publication)
-    except HTTPException:
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
         _student_access(db, identity, publication)
         payload = _student_snapshot(db, publication)
+    if source_purged(db, submission_id=publication.submission_id):
+        raise_source_purged()
     if payload.get("status") != "released":
         raise _err("only released publications can be exported", 409)
     if format == "json":
@@ -2492,7 +2518,7 @@ def export_publication(publication_id: UUID, format: Literal["json", "md"] = Que
             lines.extend(["## Batas pemeriksaan", *[f"- {item}" for item in payload["limitations"]], ""])
         if payload["confirmed_findings"]:
             lines.extend(["## Temuan yang dikonfirmasi", *[
-                f"- **{item['criterion_title']}** ({item['category']}): {item['claim']}"
+                f"- **{_markdown_literal(str(item['criterion_title']))}** ({item['category']}): {_markdown_literal(str(item['claim']))}"
                 for item in payload["confirmed_findings"]], ""])
         content, media, suffix = "\n".join(lines), "text/markdown; charset=utf-8", "md"
     return Response(content=content, media_type=media,

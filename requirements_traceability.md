@@ -1,7 +1,7 @@
-# Requirements traceability B0–B6
+# Requirements traceability B0–B7
 
 Sumber normatif: `ALIGN_IMPLEMENTATION_SPEC.md` v2 dan alokasi tahap pada `docs/implementation/README.md`.
-Bagian matriks mencatat baseline B0/B1 per 21 Oktober 2026; overlay B2–B6 memperbarui bukti tahap berikutnya tanpa mengubah acceptance normatif. Software B4 berjalan provider-off, B5 memakai mock/fake non-network, dan B6 diuji dengan synthetic fixtures serta PostgreSQL terisolasi. Provider nyata, tarif aktual, mutu semantik, dan hasil optimasi empiris belum terbukti. Mock/synthetic bukan bukti inference live atau performa maksimum. Hasil dan batas ada di handover tiap tahap.
+Bagian matriks mencatat baseline B0/B1 per 21 Oktober 2026; overlay B2–B7 memperbarui bukti tahap berikutnya tanpa mengubah acceptance normatif. B4 berjalan provider-off; B5–B7 memakai mock/fake non-network dan synthetic fixtures/PostgreSQL terisolasi. Provider nyata, tarif aktual, adjudication semantik manusia, dan hasil optimasi empiris belum terbukti. Mock/synthetic bukan bukti inference live atau performa maksimum. Hasil dan batas ada di handover tiap tahap.
 
 ## Overlay implementasi B2
 
@@ -126,6 +126,23 @@ Status per 22 Oktober 2026: jalur software B6 telah diuji; tidak ada provider be
 | AC-RES-04 | Infrastruktur ledger biaya tersedia; bukti biaya studi empiris pending | Software dapat mencatat reservation/usage/reconciliation dan ekspor evidence ledger, tetapi tidak ada pengeluaran provider nyata atau laporan biaya eksperimen aktual. Lihat handover B6 dan B8 evaluator/eligibility. |
 
 Integration suite terisolasi terakhir: **36 passed, 7 skipped, 1 warning**. Enam skip membutuhkan parser-runtime opt-in dengan model/capacity; satu memerlukan disposable Linux container dengan memory cap untuk OOM. Skip parser tersebut bukan tes B6 dan tidak dihitung sebagai pass. Unit suite: **122 passed**; `ruff`, `mypy` (47 source files), web lint/typecheck, Docker production build, serta `git diff --check` lulus. Playwright tidak dijalankan khusus B6; manual/exhaustion flow diuji integration. Handover B6 mencatat hasil perintah persis.
+
+## Overlay implementasi B7
+
+Status per 22 Oktober 2026: jalur software B7 diuji dengan synthetic data/provider mock dan isolated Compose/PostgreSQL. Tidak ada provider berbayar, akun institusi, atau klaim penelitian. Detail command, percobaan yang ditolak, metrik kapasitas dan residual ada di [handover B7](docs/handover/B7.md).
+
+| ID | Status B7 aktual | Bukti / batas |
+|---|---|---|
+| FR-17, FR-19, AC-MVP-42 | Review journey responsif dan keyboard diuji pada scope yang tersedia | Playwright auth/admin `9 passed` dan assignment→submission→review→publication→student result `1 passed`. Tanpa horizontal overflow dan screenshot pada 360/768/1440; review-tab ArrowRight/Home diuji pada mobile 360, workbook sheet keyboard pada viewer desktop. Image/DOCX/PDF/XLSX viewer/anchor diuji. Assistive technology dan sentuh fisik tidak diuji; lint memiliki satu warning `<img>`. |
+| FR-23, INV-02, AC-MVP-60 | Linked annotation history membuka sumber historis yang benar pada alur browser | PDF page-1 evidence dibuat dan dipilih dari `evidence_id` response, diikat ke elemen, dinonaktifkan, lalu histori membuka original PDF page/hash/anchor yang sama. DOCX header, XLSX sheet/formula dan image viewer ikut E2E; tidak mengklaim semua gestur touch/reader selesai. `apps/web/src/components/ReviewWorkspace.tsx`; `apps/web/e2e/assignments.spec.ts`. |
+| INV-03, INV-06, INV-09, INV-10, INV-14, INV-16; AC-MVP-13, AC-MVP-40 | Regresi integrasi lintas tahap pada PostgreSQL | Full isolated integration: **37 passed, 7 skipped**. Enam opt-in Docling parser-runtime tetap skipped; OOM yang skipped dalam suite dijalankan terpisah dengan cgroup 1 GiB (**1 passed**). Role/source isolation, broker/job recovery, immutable review history, budgets dan report/release hash guards tetap ada. Skip tidak dianggap pass. |
+| AC-MVP-43 | Backup/restore serta retensi/tombstone lulus pada fixture sintetis bersih | Retention integration `1 passed`; encrypted CMS snapshot memuat DB owners + object inventory; restore menunggu Postgres sehat, mengimpor, merekonsiliasi sebelum `up`, migration head, API/web healthy, tombstone count `1`, source HTTP `410` untuk lecturer dan `404` outsider. Percobaan pada database integrasi gabungan ditolak karena 1 missing object/1 hash mismatch; snapshot tidak dipulihkan. |
+| AC-MVP-44, INV-09 | Audit scope tidak menemukan fitur di luar master | Route/page inventory hanya auth/admin/course/workspace/results; pencarian source tidak menemukan gradebook, dashboard nilai, external search, materi pembelajaran atau Moodle passback. Tidak ada fitur tersebut ditambahkan pada B7. |
+| AC-MVP-63, AC-RES-06 | Robustness CLI development-only menjalankan compiler dan executor report mode | Protokol terikat ke release ID/config hash/semua manifest aktif. Compiler JSON `software_gate_only`; equivalence fixture menunjukkan structural match, bukan keputusan semantik. Executor Markdown `incomplete`, `executor_runtime=not_run`; frozen-test ditolak; partition leak, unreviewed equivalence, parent mismatch dan DAG diuji unit. Tidak ada provider call/stochastic run/research score. `services/api/src/align_api/robustness.py`; `tests/unit/test_b7_robustness.py`. |
+| AC-MVP-38–39, AC-MVP-58; AC-MVP-43 | Budget, unknown billing dan restore reservation | Integrasi/unit B6 diregresikan. Restore mempertahankan pending/held liability fields dan `automatic_unknown_billing_retry=false`; fixture bersih memiliki nilai nol. Snapshot integrasi yang tidak konsisten ditolak dan tidak dipakai untuk menyimpulkan billing selesai. |
+| AC-MVP-45, AC-MVP-64 | Pending B8 | Evaluator metrik contoh 3 unit, full evaluator/policy CLI, eligibility dan handover evidence AC-MVP-64 tetap belum dijalankan pada tahap ini. B7 robustness executor runtime incomplete bukan report empiris dan tidak eligible. |
+
+Capacity synthetic: 20 independent cookie/session logins dari akun dosen sintetis yang sama × 5 putaran (100 sampel per operasi) pada Docker Engine 29.9.1, 8 CPU, RAM `12,526,637,056` bytes. p95 course list `109.47 ms`, context list `210.25 ms`, draft save `242.90 ms`; target lokal `<1000 ms` tercapai. Parser tidak dimasukkan; cold startup, queue/active parse time dan peak resource tidak diukur. OOM child test terpisah dijalankan pada cgroup 1 GiB. Unit suite **132 passed**, Ruff/mypy (51 files), web typecheck/lint lulus (1 `<img>` warning), `git diff --check` lulus. B6 overlay di atas mempertahankan hasil historis tahap tersebut dan tidak diganti oleh angka B7.
 
 ## Functional requirements
 

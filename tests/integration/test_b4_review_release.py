@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
@@ -45,8 +46,10 @@ from align_api.models import (
     MethodManifest,
     NumericPolicyVersion,
     ParseArtifact,
+    ParserCheckpoint,
     Publication,
     Requirement,
+    RetentionTombstone,
     ReviewVersion,
     SourceUnit,
     SpecificationVersion,
@@ -76,7 +79,7 @@ def _headers(csrf: str, key: str | None = None) -> dict[str, str]:
 
 
 @pytest.fixture
-def _scenario():
+def _scenario(request):
     suffix = uuid4().hex
     source_bytes = Path("tests/fixtures/b1/native-two-pages.pdf").read_bytes()
     source_digest = hashlib.sha256(source_bytes).hexdigest()
@@ -210,7 +213,9 @@ def _scenario():
         asset = FileAsset(course_id=course.id, submission_id=submission.id, assignment_id=None,
             purpose="submission", uploaded_by=student.id, original_name="b4-source.pdf", size_bytes=len(source_bytes),
             mime="application/pdf", sha256=digest, object_key=f"b4/{suffix}/source.pdf",
-            validation_state="validated", preflight_json={"parser_profile": "native_pdf_v1", "pages": 2})
+            validation_state="validated", preflight_json={"parser_profile": "native_pdf_v1", "pages": 2},
+            created_at=(datetime.now(UTC) - timedelta(days=400) if getattr(request, "param", None) == "b7-retention"
+                        else datetime.now(UTC)))
         db.add(asset)
         db.flush()
         source_manifest_files = [{"file_asset_id": str(asset.id), "sha256": digest}]
@@ -239,6 +244,18 @@ def _scenario():
             limitations_json=[])
         db.add(unit)
         db.flush()
+        if getattr(request, "param", None) == "b7-retention":
+            parse_job = Job(type="b7_retention_parser_fixture", subject_id=asset.id,
+                scope_json={"synthetic": True}, input_fingerprint=canonical_hash({
+                    "fixture": "B7 retention parser fixture", "submission_version": str(source.id)}),
+                status="ready_for_review", job_limits_json={})
+            db.add(parse_job)
+            db.flush()
+            db.add(ParserCheckpoint(job_id=parse_job.id, parse_artifact_id=artifact.id,
+                task_key="retention-test", file_hash=digest, namespace_version_id=source.id,
+                canonical_unit_locator_json={"source_path": "private synthetic source locator"},
+                stage="parse", status="succeeded", output_refs_json={"text": "private text"},
+                covered_unit_refs_json=[{"source_unit": "private source unit"}], limitations_json=[]))
         evidence = EvidenceItem(source_unit_id=unit.id, submission_version_id=source.id,
             context_version_id=None, assignment_version_id=None, file_asset_id=asset.id,
             source_sha256=digest, type="paragraph", anchor_json=anchor,
@@ -876,3 +893,148 @@ def test_worker_can_write_analysis_candidates_but_not_lecturer_decisions_or_publ
                 assert actual is expected, f"unexpected align_worker {privilege} privilege on {table}"
     finally:
         engine.dispose()
+
+
+@pytest.mark.parametrize("_scenario", ["b7-retention"], indirect=True)
+def test_b7_synthetic_retention_scrubs_source_and_preserves_authorized_tombstones(_scenario) -> None:
+    from align_api.cli import purge_submission_retention
+    from align_api.models import (
+        FeedbackDraft,
+        ManualEvidence,
+        Publication,
+        ReviewAnnotationRevision,
+    )
+
+    scenario = _scenario
+    lecturer = scenario["clients"]["lecturer"]
+    student = scenario["clients"]["student"]
+    outsider = scenario["clients"]["outsider"]
+    submission_id = scenario["submission"].id
+    source = scenario["source"]
+    asset = scenario["asset"]
+    evidence = scenario["evidence"]
+    element = scenario["element"]
+    headers = _headers(scenario["csrf"]["lecturer"])
+
+    # Synthetic vector rows prove purge removes derived embeddings as well as source text.
+    chunk_id = uuid4()
+    vector_literal = "[" + ",".join(["0"] * 1536) + "]"
+    with SessionFactory.begin() as db:
+        db.execute(text("""
+            INSERT INTO retrieval_chunks (
+              id,submission_version_id,submission_id,course_id,assignment_id,evidence_item_id,
+              source_sha256,chunk_no,tokenizer_manifest,token_start,token_end,chunk_text,
+              chunk_hash,anchor_json,source_order,structural_metadata_json
+            ) VALUES (
+              :id,:version_id,:submission_id,:course_id,:assignment_id,:evidence_id,
+              :sha,0,'b7-retention-test',0,5,'private synthetic vector source text',
+              :chunk_hash,CAST(:anchor AS jsonb),1,'{}'::jsonb
+            )
+        """), {"id": chunk_id, "version_id": source.id, "submission_id": submission_id,
+            "course_id": scenario["course"].id, "assignment_id": scenario["assignment"].id,
+            "evidence_id": evidence.id, "sha": asset.sha256,
+            "chunk_hash": canonical_hash("private synthetic vector source text"),
+            "anchor": json.dumps(evidence.anchor_json)})
+        db.execute(text("""
+            INSERT INTO evidence_embeddings (
+              chunk_id,submission_version_id,course_id,assignment_id,owner_submission_id,
+              embedding_manifest,dimension,content_hash,embedding
+            ) VALUES (
+              :chunk_id,:version_id,:course_id,:assignment_id,:submission_id,
+              'b7-retention-test',1536,:content_hash,CAST(:embedding AS vector)
+            )
+        """), {"chunk_id": chunk_id, "version_id": source.id, "course_id": scenario["course"].id,
+            "assignment_id": scenario["assignment"].id, "submission_id": submission_id,
+            "content_hash": canonical_hash("private synthetic vector source text"),
+            "embedding": vector_literal})
+
+    created = lecturer.post(f"/api/v1/submission-versions/{source.id}/reviews", headers=headers,
+        json={"analysis_run_id": None})
+    assert created.status_code == 201, created.text
+    review_id, review_revision = created.json()["id"], created.json()["revision"]
+    annotation = lecturer.post(f"/api/v1/reviews/{review_id}/manual-evidence", headers=_headers(scenario["csrf"]["lecturer"]),
+        json={"file_id": str(asset.id), "source_sha256": asset.sha256, "anchor": evidence.anchor_json,
+            "transcription": "Private synthetic correction text.", "original_evidence_id": str(evidence.id),
+            "reason": "Private synthetic annotation reason.", "element_ids": [str(element.element_id)],
+            "review_finding_id": None, "relationship_code": None, "role": None,
+            "expected_revision": review_revision})
+    assert annotation.status_code == 201, annotation.text
+    decision = lecturer.put(f"/api/v1/reviews/{review_id}/element-decisions/{element.element_id}",
+        headers=_headers(scenario["csrf"]["lecturer"]), json={"review_status": "reviewed",
+                "resolution": "confirmed_issue", "applicability_override": None, "reason": None,
+            "evidence_ids": [annotation.json()["evidence_id"]], "expected_revision": annotation.json()["revision"]})
+    assert decision.status_code == 200, decision.text
+    finding = lecturer.post(f"/api/v1/reviews/{review_id}/manual-findings",
+        headers=_headers(scenario["csrf"]["lecturer"]), json={"action": "accept",
+            "primary_category": "missing_requirement", "primary_criterion_id": str(scenario["criterion"].id),
+            "claim": "Private synthetic finding claim.", "element_ids": [str(element.element_id)],
+            "requirement_ids": [str(scenario["requirement"].id)], "criterion_ids": [],
+            "evidence_ids": [annotation.json()["evidence_id"]], "coverage_attestation": None,
+            "numeric": None, "reason": None, "expected_revision": decision.json()["revision"]})
+    assert finding.status_code == 201, finding.text
+    completed = lecturer.post(f"/api/v1/reviews/{review_id}/complete",
+        headers=_headers(scenario["csrf"]["lecturer"]), json={"expected_revision": finding.json()["revision"]})
+    assert completed.status_code == 200, completed.text
+    draft = lecturer.post(f"/api/v1/reviews/{review_id}/feedback-drafts",
+        headers=_headers(scenario["csrf"]["lecturer"]), json={"mode": "manual",
+            "body_markdown": "Private synthetic feedback text.",
+            "blocks": [{"criterion_id": str(scenario["criterion"].id),
+                "review_finding_ids": [finding.json()["finding"]["id"]],
+                "evidence_ids": [annotation.json()["evidence_id"]],
+                "message": "Private synthetic feedback text.", "next_action": "Periksa sumber asli.",
+                "limitation": None}],
+            "included_review_finding_ids": [finding.json()["finding"]["id"]], "exclusion_reasons": {},
+            "expected_revision": completed.json()["revision"]})
+    assert draft.status_code == 201, draft.text
+    approved = lecturer.post(f"/api/v1/feedback-drafts/{draft.json()['id']}/approve",
+        headers=_headers(scenario["csrf"]["lecturer"]), json={"expected_revision": draft.json()["revision"],
+            "expected_review_revision": completed.json()["revision"]})
+    assert approved.status_code == 200, approved.text
+    published = lecturer.post(f"/api/v1/reviews/{review_id}/publish",
+        headers=_headers(scenario["csrf"]["lecturer"]), json={"feedback_draft_id": draft.json()["id"],
+            "expected_revision": completed.json()["revision"],
+            "expected_feedback_revision": approved.json()["revision"]})
+    assert published.status_code == 201, published.text
+
+    # The default 365-day review retention is respected; the fixture itself is synthetic.
+    with SessionFactory.begin() as db:
+        review_row = db.get(ReviewVersion, UUID(review_id))
+        assert review_row is not None
+        review_row.created_at = datetime.now(UTC) - timedelta(days=400)
+
+    try:
+        purge_submission_retention(str(submission_id), "synthetic:b7-test", execute=True)
+    except SystemExit as exc:
+        database_error = getattr(exc.__cause__, "orig", exc.__cause__)
+        raise AssertionError(str(database_error)) from exc
+    with SessionFactory() as db:
+        tombstone = db.scalar(select(RetentionTombstone).where(RetentionTombstone.file_asset_id == asset.id))
+        stored_asset = db.get(FileAsset, asset.id)
+        stored_evidence = db.get(EvidenceItem, evidence.id)
+        stored_checkpoint = db.scalar(select(ParserCheckpoint).where(ParserCheckpoint.parse_artifact_id == scenario["artifact"].id))
+        stored_draft = db.get(FeedbackDraft, UUID(draft.json()["id"]))
+        stored_publication = db.get(Publication, UUID(published.json()["id"]))
+        stored_manual = db.scalar(select(ManualEvidence).where(ManualEvidence.review_version_id == UUID(review_id)))
+        stored_annotation = db.scalar(select(ReviewAnnotationRevision).where(
+            ReviewAnnotationRevision.annotation_id == UUID(annotation.json()["annotation_id"])))
+        remaining_embeddings = db.scalar(text("SELECT count(*) FROM evidence_embeddings WHERE submission_version_id=:id"),
+            {"id": source.id})
+        stored_chunk_text = db.scalar(text("SELECT chunk_text FROM retrieval_chunks WHERE id=:id"), {"id": chunk_id})
+        assert tombstone is not None and stored_asset is not None and stored_asset.validation_state == "quarantined"
+        assert stored_asset.original_name == "SOURCE_PURGED" and stored_asset.object_key == f"purged/{asset.id}"
+        assert stored_evidence is not None and stored_evidence.content_original_json == {}
+        assert stored_checkpoint is not None and stored_checkpoint.canonical_unit_locator_json == {"purged": True}
+        assert stored_draft is not None and stored_draft.body_markdown == "SOURCE_PURGED"
+        assert stored_draft.included_review_finding_ids_json == [] and stored_draft.exclusion_reasons_json == {}
+        assert stored_publication is not None and stored_publication.snapshot_json == {"status": "purged", "source_purged": True}
+        assert stored_manual is not None and stored_manual.transcription is None and stored_manual.source_anchor_json == {}
+        assert stored_annotation is not None and stored_annotation.transcription is None and stored_annotation.anchor_json is None
+        assert remaining_embeddings == 0 and stored_chunk_text == ""
+
+    assert lecturer.get(f"/api/v1/files/{asset.id}/source-units").status_code == 410
+    assert lecturer.get(f"/api/v1/files/{asset.id}/content").status_code == 410
+    assert student.get(f"/api/v1/files/{asset.id}/content").status_code == 410
+    assert student.get(f"/api/v1/submissions/{submission_id}/published-result").status_code == 410
+    assert outsider.get(f"/api/v1/files/{asset.id}/source-units").status_code == 404
+    assert outsider.get(f"/api/v1/files/{asset.id}/content").status_code == 404
+    assert outsider.get(f"/api/v1/submissions/{submission_id}/published-result").status_code == 404

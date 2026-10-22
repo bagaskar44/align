@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { SubmissionFileViewer, type ManualAnchorSelection } from "./SubmissionViewer";
 
 type FinalVersion = { id: string; version_no: number; manifest_hash: string; finalized_at: string };
@@ -56,6 +56,7 @@ type SourceFile = { id: string; name: string; mime: string; sha256: string; pref
 type AnnotationRevision = {
   id: string; revision_no: number; operation: "upsert" | "remove"; file_id: string;
   source_sha256: string; anchor: Record<string, unknown>; transcription: string | null;
+  original_evidence_id: string | null; corrected_evidence_id: string | null;
   reason: string | null;
   targets: Array<{ check_element_id: string | null; review_finding_id: string | null; relationship_code: string | null; role: string | null }>;
 };
@@ -135,6 +136,7 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
   submission: Submission; csrfToken: string; manualAnchorSelection: ManualAnchorSelection | null;
   onManualAnchorSelection: (selection: ManualAnchorSelection | null) => void;
 }) {
+  const reviewTabsId = useId();
   const [review, setReview] = useState<Review | null>(null);
   const [evidence, setEvidence] = useState<Evidence[]>([]);
   const [numericPolicies, setNumericPolicies] = useState<NumericPolicy[]>([]);
@@ -146,6 +148,10 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
   const [releaseError, setReleaseError] = useState("");
   const [selectedElementId, setSelectedElementId] = useState("");
   const [selectedEvidenceId, setSelectedEvidenceId] = useState("");
+  const [annotationSource, setAnnotationSource] = useState<{
+    fileId: string; sourceSha256: string; sourceUnitId?: string; anchor: Record<string, unknown>;
+    revisionNo: number; operation: "upsert" | "remove";
+  } | null>(null);
   const [selectedFindingId, setSelectedFindingId] = useState("");
   const [selectedRelationshipCode, setSelectedRelationshipCode] = useState("");
   const [selectedRole, setSelectedRole] = useState("");
@@ -491,6 +497,24 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
       "Publikasi ditarik. Latest pointer tetap menunjuk snapshot withdrawn.", false);
   }
 
+  function openAnnotationSource(revision: AnnotationRevision) {
+    const linkedId = revision.corrected_evidence_id ?? revision.original_evidence_id;
+    const linkedEvidence = linkedId ? evidence.find((item) => item.id === linkedId) : undefined;
+    if (linkedId && (!linkedEvidence || linkedEvidence.file_id !== revision.file_id
+        || linkedEvidence.source_sha256 !== revision.source_sha256)) {
+      setError("Tautan anotasi tidak cocok dengan berkas dan hash sumber review ini.");
+      return;
+    }
+    const matchingEvidence = linkedEvidence ?? evidence.find((item) => item.file_id === revision.file_id
+      && item.source_sha256 === revision.source_sha256);
+    setSelectedEvidenceId(linkedEvidence?.id ?? matchingEvidence?.id ?? "");
+    setAnnotationSource({ fileId: revision.file_id, sourceSha256: revision.source_sha256,
+      sourceUnitId: linkedEvidence?.source_unit_id ?? matchingEvidence?.source_unit_id,
+      anchor: revision.anchor, revisionNo: revision.revision_no, operation: revision.operation });
+    setMode("evidence");
+    setNotice(`Sumber anotasi revisi #${revision.revision_no} dibuka dari berkas dan hash yang terikat pada review.`);
+  }
+
   if (!activeVersion) return <p className="notice">Review tersedia setelah submission difinalisasi.</p>;
   return <section className="b4-review-workspace" aria-labelledby="b4-review-title">
     <header className="workspace-heading">
@@ -516,11 +540,28 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
     {!review && !error && <p className="help-text" role="status">Membuat workspace review manual…</p>}
     {review && <>
       <nav className="b4-mobile-tabs" role="tablist" aria-label="Panel review">
-        {([["inspect", "Pemeriksaan"], ["evidence", "Bukti"], ["decision", "Keputusan"]] as const).map(([id, label]) =>
-          <button key={id} role="tab" aria-selected={mode === id} className={`button ${mode === id ? "button-primary" : "button-quiet"}`} onClick={() => setMode(id)}>{label}</button>)}
+        {([["inspect", "Pemeriksaan"], ["evidence", "Bukti"], ["decision", "Keputusan"]] as const).map(([id, label], index) =>
+          <button key={id} id={`${reviewTabsId}-tab-${id}`} type="button" role="tab" aria-selected={mode === id}
+            aria-controls={`${reviewTabsId}-panel-${id}`} tabIndex={mode === id ? 0 : -1}
+            className={`button ${mode === id ? "button-primary" : "button-quiet"}`}
+            onKeyDown={(event) => {
+              const modes = ["inspect", "evidence", "decision"] as const;
+              let next = index;
+              if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % modes.length;
+              else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index - 1 + modes.length) % modes.length;
+              else if (event.key === "Home") next = 0;
+              else if (event.key === "End") next = modes.length - 1;
+              else return;
+              event.preventDefault();
+              const nextMode = modes[next];
+              if (nextMode) {
+                setMode(nextMode);
+                document.getElementById(`${reviewTabsId}-tab-${nextMode}`)?.focus();
+              }
+            }} onClick={() => setMode(id)}>{label}</button>)}
       </nav>
       <div className="b4-review-columns">
-        <section className={`b4-review-panel${mode !== "inspect" ? " b4-mobile-hidden" : ""}`} aria-labelledby="b4-elements-title">
+        <section id={`${reviewTabsId}-panel-inspect`} role="tabpanel" tabIndex={0} aria-labelledby={`${reviewTabsId}-tab-inspect`} className={`b4-review-panel${mode !== "inspect" ? " b4-mobile-hidden" : ""}`}>
           <h4 id="b4-elements-title">Elemen spesifikasi</h4>
           <div className="b4-element-list" role="list" aria-label="Daftar elemen pemeriksaan">
             {review.elements.map((item) => <button key={item.id} type="button" role="listitem" aria-current={selectedElement?.id === item.id ? "true" : undefined}
@@ -608,7 +649,7 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
             <button className="button button-quiet" type="button" disabled={busy || !findingClaim.trim() || (!findingEvidenceIds.length && !(coverageNote.trim() && coverageFileIds.length))} onClick={() => void createManualFinding()}>Simpan temuan manual</button>
           </div>
         </section>
-        <section className={`b4-review-panel${mode !== "evidence" ? " b4-mobile-hidden" : ""}`} aria-labelledby="b4-evidence-title">
+        <section id={`${reviewTabsId}-panel-evidence`} role="tabpanel" tabIndex={0} aria-labelledby={`${reviewTabsId}-tab-evidence`} className={`b4-review-panel${mode !== "evidence" ? " b4-mobile-hidden" : ""}`}>
           <h4 id="b4-evidence-title">Sumber dan bukti</h4>
           <label className="field-label">Evidence final
             <select value={selectedEvidenceId} onChange={(event) => setSelectedEvidenceId(event.target.value)}>
@@ -618,17 +659,29 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
           {selectedEvidence && <>
             <p className="help-text">{selectedEvidence.parse_status}{selectedEvidence.limitations.length ? ` · ${selectedEvidence.limitations.map((item) => String(item.message ?? item.code)).join("; ")}` : ""}</p>
             <pre className="b4-evidence-content">{String(selectedEvidence.content.text ?? selectedEvidence.content.value ?? JSON.stringify(selectedEvidence.content, null, 2))}</pre>
-            <SubmissionFileViewer key={`${selectedEvidence.file_id}:${selectedEvidence.source_unit_id}`} fileId={selectedEvidence.file_id} initialSourceUnitId={selectedEvidence.source_unit_id} onManualAnchor={(selection) => {
+            {!annotationSource && <SubmissionFileViewer key={`${selectedEvidence.file_id}:${selectedEvidence.source_unit_id}`} fileId={selectedEvidence.file_id} initialSourceUnitId={selectedEvidence.source_unit_id} onManualAnchor={(selection) => {
               onManualAnchorSelection(selection);
               setNotice(`Lokasi ${anchorText(selection.anchor)} dari berkas asli terpilih untuk evidence manual.`);
-            }} />
+            }} />}
           </>}
+          {annotationSource && <section className="b4-action-card" aria-label="Sumber anotasi terpilih">
+            <h5>Sumber anotasi · revisi #{annotationSource.revisionNo}</h5>
+            <p className="help-text">{anchorText(annotationSource.anchor)} · {annotationSource.operation} · SHA-256 {annotationSource.sourceSha256.slice(0, 12)}</p>
+            <button type="button" className="text-button" onClick={() => setAnnotationSource(null)}>Tutup sumber anotasi</button>
+            <SubmissionFileViewer key={`${annotationSource.fileId}:${annotationSource.sourceUnitId ?? "first-unit"}`}
+              fileId={annotationSource.fileId} initialSourceUnitId={annotationSource.sourceUnitId}
+              onManualAnchor={(selection) => {
+                onManualAnchorSelection(selection);
+                setNotice(`Lokasi ${anchorText(selection.anchor)} dari berkas asli terpilih untuk evidence manual.`);
+              }} />
+          </section>}
           <ManualEvidenceForm review={review} files={review.source_files} elements={review.elements} sourceSelection={manualAnchorSelection}
             onSourceSelection={onManualAnchorSelection} csrfToken={csrfToken} busy={busy}
             relationships={relationships} relationshipCode={activeRelationshipCode} role={activeRole}
             selectedElementId={selectedElement?.id ?? ""} onElementChange={selectElement}
             onRelationshipChange={(code, nextRole) => { setSelectedRelationshipCode(code); setSelectedRole(nextRole); }}
           onSaved={(result) => {
+            setSelectedEvidenceId(result.evidence_id);
             setReview((current) => current ? { ...current, revision: result.revision, content_hash: result.content_hash, state: "draft" } : current);
             setRefreshKey((value) => value + 1);
           }} onBusy={setBusy} onError={setError} onNotice={setNotice} />
@@ -646,7 +699,15 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
               {annotation.current && <>
                 <p>{anchorText(annotation.current.anchor)}{annotation.current.transcription ? ` · ${annotation.current.transcription}` : ""}</p>
                 <small>{annotation.current.reason ?? "Tanpa alasan"} · hash sumber {annotation.current.source_sha256.slice(0, 12)}</small>
-                <details><summary>Lihat histori append-only</summary><ol>{annotation.history.map((item) => <li key={item.id}>#{item.revision_no} {item.operation} · {anchorText(item.anchor)} · {item.reason ?? "tanpa alasan"}</li>)}</ol></details>
+                <button type="button" className="text-button" onClick={() => openAnnotationSource(annotation.current!)}>
+                  Buka sumber asli untuk revisi #{annotation.current.revision_no}
+                </button>
+                <details><summary>Lihat histori append-only</summary><ol>{annotation.history.map((item) => <li key={item.id}>
+                  #{item.revision_no} {item.operation} · {anchorText(item.anchor)} · {item.reason ?? "tanpa alasan"}
+                  <button type="button" className="text-button" onClick={() => openAnnotationSource(item)}>
+                    Buka sumber asli untuk revisi #{item.revision_no}
+                  </button>
+                </li>)}</ol></details>
                 <div className="button-row">
                   <button type="button" className="button button-quiet" disabled={busy || annotation.current.operation !== "upsert" || !annotationReason.trim()} onClick={() => void reviseAnnotation(annotation, "remove")}>Nonaktifkan anotasi</button>
                   <button type="button" className="button button-quiet" disabled={busy || annotation.current.operation !== "upsert" || (annotation.kind !== "evidence_binding" && !manualAnchorSelection)} onClick={() => void reviseAnnotation(annotation, "upsert")}>Simpan revisi terpilih</button>
@@ -657,7 +718,7 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
           </section>
         </section>
       </div>
-      <section className={`b4-review-panel${mode !== "decision" ? " b4-mobile-hidden" : ""}`} aria-labelledby="b4-finding-title">
+      <section id={`${reviewTabsId}-panel-decision`} role="tabpanel" tabIndex={0} aria-labelledby={`${reviewTabsId}-tab-decision`} className={`b4-review-panel${mode !== "decision" ? " b4-mobile-hidden" : ""}`}>
         <h4 id="b4-finding-title">Kandidat dan keputusan akhir</h4>
         {review.findings.length ? review.findings.map((finding) => <article className="b4-finding-card" key={finding.id}>
           <div><strong>{finding.origin === "lecturer" ? "Temuan manual dosen" : "Kandidat analisis"} · {finding.category}</strong>
@@ -746,7 +807,7 @@ function ManualEvidenceForm({ review, files, elements, selectedElementId, onElem
   selectedElementId: string; onElementChange: (id: string) => void;
   relationships: Relationship[]; relationshipCode: string; role: string; onRelationshipChange: (code: string, role: string) => void;
   sourceSelection: ManualAnchorSelection | null; onSourceSelection: (selection: ManualAnchorSelection | null) => void;
-  onSaved: (result: { revision: number; content_hash: string }) => void;
+  onSaved: (result: { evidence_id: string; revision: number; content_hash: string }) => void;
   onBusy: (busy: boolean) => void; onError: (message: string) => void; onNotice: (message: string) => void;
 }) {
   const [fileId, setFileId] = useState(files[0]?.id ?? "");
@@ -758,7 +819,7 @@ function ManualEvidenceForm({ review, files, elements, selectedElementId, onElem
     if (!file) return;
     onBusy(true); onError(""); onNotice("");
     try {
-      const result = await request<{ revision: number; content_hash: string }>(`/reviews/${review.id}/manual-evidence`, csrfToken, "POST", {
+      const result = await request<{ evidence_id: string; revision: number; content_hash: string }>(`/reviews/${review.id}/manual-evidence`, csrfToken, "POST", {
         file_id: sourceSelection?.file_id ?? file.id,
         source_sha256: sourceSelection?.source_sha256 ?? file.sha256,
         anchor: sourceSelection?.anchor ?? { format: "file", source_sha256: file.sha256, locator_note: locatorNote.trim() },

@@ -1,4 +1,4 @@
-# Catatan keputusan teknis B0–B3
+# Catatan keputusan teknis B0–B7
 
 ## TD-B0-01 — Storage lokal untuk development
 
@@ -134,3 +134,14 @@
 - Keputusan: hanya mulai unit bila sisa budget dapat mereservasi setidaknya satu detik; reservation hard dibatasi ke sisa detik penuh dan unit selanjutnya berhenti `processing_limit`.
 - Dampak: kurang dari satu detik yang tidak dapat dipakai dengan aman dibiarkan sebagai headroom; cap tidak diperpanjang agar setiap halaman/retry mendapat timeout baru.
 - Bukti: `test_aggregate_active_budget_never_starts_without_positive_reservation` menguji 0, 999, 1.000, 1.999, 120.000 dan 150.000 ms; 69 unit test lulus.
+
+## TD-B7-01 — Snapshot sintetis, tombstone, dan evaluator robustness offline
+
+- Status: accepted.
+- Konteks: B7 perlu membuktikan purge dan restore tanpa menyentuh data akademik development atau membuat klaim provider/riset dari mock.
+- Keputusan operasional lokal: CLI backup dibatasi ke `DATA_MODE=synthetic`, Compose project `align-b7-*`, snapshot setelah writers/parser children dikuras, inventory objek dibatasi 20 GiB, dan arsip dienkripsi CMS dengan sertifikat penerima operator. Dump PostgreSQL mempertahankan ownership role agar migrator/API/worker tetap mempunyai privilege sesudah restore. Restore menolak target bervolume, menunggu PostgreSQL sehat, mengimpor objek dan merekonsiliasi tombstone/hash/child/ledger sebelum service dibuka.
+- Keputusan retensi: purge tetap operator-only dan memakai retention defaults synthetic; route sumber yang sama mengembalikan `410 SOURCE_PURGED` untuk pihak berizin dan `404` untuk outsider. Tidak ditambah endpoint public purge atau dashboard.
+- Keputusan evaluator lokal: robustness protocol dibatasi ke development/validation, exact release dan method-manifest hashes, partition/group dan parent guards, fixture reviewer label untuk data synthetic, typed obligation comparison dan DAG order. Output `software_gate_only` untuk compiler tidak mengklaim semantik; executor tanpa provider runtime tetap `incomplete`. Frozen-test ditolak.
+- Keputusan pengukuran: 20 cookie/session dari satu akun synthetic mengukur metadata/context/draft-save tanpa file/parser/provider. P95 lokal tidak dipakai sebagai kapasitas institusi; cold startup, queue delay dan parse throughput tetap dicatat sebagai tidak diukur.
+- Alasan: menjaga recovery fail-closed, account scope dan provenance tetap eksplisit saat demonstrasi/benchmark tidak memuat izin atau data penelitian nyata.
+- Bukti: `scripts/backup-synthetic.sh`, `scripts/restore-synthetic.sh`, `services/api/src/align_api/storage_backup.py`, `services/api/src/align_api/robustness.py`, `scripts/b7-capacity.py`; hasil dan percobaan gagal ada di `docs/handover/B7.md`.

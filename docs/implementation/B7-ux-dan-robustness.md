@@ -1,6 +1,6 @@
 # B7 — UX dan Robustness
 
-**Status implementasi: BELUM DIMULAI. Hasil pengujian: BELUM DIJALANKAN.**
+**Status implementasi: jalur software B7 teruji pada mock/synthetic; hasil, skip, dan batas ukur tercatat di handover B7. Tidak ada provider berbayar atau data institusi yang digunakan.**
 
 [Indeks dan matriks](README.md) · [Master](../../ALIGN_IMPLEMENTATION_SPEC.md) · [Predecessor: B6](B6-numeric-dan-biaya.md) · [Berikutnya: B8](B8-handover-dan-pilot-readiness.md)
 
@@ -91,16 +91,28 @@ Perubahan parser/profile/routing/batching/grounding/prompt membuat manifest/run 
 | Robustness | Equivalent/inequivalent variants, parent partition leak, DAG invalid, mock repeats/incomplete live, separate compiler/executor outputs |
 | Capacity | Actual staging measurements dan limits; mock provider latency tidak disebut live inference performance |
 
+### Hasil aktual 22 Oktober 2026
+
+- Unit: `132 passed`; `ruff` lulus, `mypy` lulus pada 51 source files, web lint/typecheck lulus. Lint memiliki satu warning `<img>` pada viewer image. Production Docker build berhasil.
+- PostgreSQL integration B0–B6/B7: `37 passed, 7 skipped, 1 warning`. Enam opt-in Docling parser-runtime membutuhkan locked model resources/admission dan tetap skipped. Satu OOM case yang skipped dalam suite dijalankan terpisah pada disposable Linux Docker limit 1 GiB dan `1 passed`; enam parser-runtime skip tidak dihitung pass. Retention integration terpisah `1 passed`.
+- Playwright auth/admin/course `9 passed`; assignment-to-student-result `1 passed`. Flow kedua memeriksa PDF/DOCX/XLSX/image, overflow dan screenshot pada tiga lebar viewport, keyboard tab mobile serta keyboard sheet workbook, dan histori anotasi yang membuka PDF/anchor/hash yang terikat. Manual-evidence stale-selection ditemukan lalu diperbaiki menggunakan `evidence_id` response API. Mock/synthetic, bukan penelitian semantik.
+- Backup/restore: targeted purge fixture `1 passed`; source reconcile `0` object missing/mismatch, `0` child lease, `0` held processing reservation. Encrypted DB/object bundle dipulihkan ke project/volume baru; migration head, API/web health, tombstone count `1`, authorized HTTP `410`, outsider HTTP `404`. Reconcile pada project integrasi gabungan sebelumnya menolak snapshot karena `1` object hilang dan `1` hash mismatch; snapshot tersebut tidak dipulihkan.
+- Robustness CLI memakai baseline release synthetic terdaftar (`empirical_verification=false`): compiler JSON `software_gate_only`; executor Markdown `incomplete`/`executor_runtime=not_run`; frozen-test protocol ditolak. Rater equivalence berupa fixture; tidak ada adjudication semantik manusia atau provider inference.
+- Capacity: 20 login session independen dari akun dosen sintetis yang sama × 5 putaran; 100 observasi per operasi. p95 course list `109.47 ms`, context list `210.25 ms`, draft save `242.90 ms`, di bawah target lokal `1000 ms`. Beban ini tidak menjalankan parser/upload/provider; cold startup, waktu antre parser dan throughput dokumen tidak diukur. Docker Engine melaporkan 8 CPU dan `12,526,637,056` byte RAM; parser worker dibatasi concurrency 1, 2 CPU, 9 GiB; worker umum concurrency 2. `docker stats` diambil sesudah beban, bukan peak capture.
+- Audit scope menemukan hanya halaman auth/admin/course/workspace/result dan API ALIGN yang terdaftar; pencarian source B7 tidak menemukan gradebook, dashboard nilai, external search, learning-material retrieval atau Moodle passback. B7 tidak mengubah dependency/lockfile, kontrak akademik, model grading, atau baseline routing/batch.
+
+Interpretasi aksesibilitas dibatasi pada role/label, keyboard yang diuji dan overflow viewport otomatis; assistive technology dan interaksi sentuh fisik tidak diuji. AC-MVP-45 dan full evaluator/policy/handover AC-MVP-64 tetap pekerjaan B8. Enam parser-runtime test yang skipped tetap pending.
+
 Report membedakan software gate mock, actual parser/OCR, actual live synthetic, staging capacity dan penelitian belum tersedia. Traceability setiap relevant FR/INV/AC menaut test nyata serta hasil/limitation.
 
 ## 6. Gate dan handover
 
-- [ ] Core UI journeys accessible/responsive pada tiga viewport dan semua viewers/linked selections.
-- [ ] Concurrency/recovery/fencing/budget/source integrity/sanitization/retention invariants lulus.
-- [ ] Backup/restore sintetis dan tombstone reconciliation dibuktikan, bukan backup script saja.
-- [ ] Robustness CLI/fixtures/protocol guards memisahkan compiler/executor dan invalid equivalence.
-- [ ] Semua application AC yang tersedia diverifikasi; residual evaluator/handover AC-MVP-45/64 diteruskan eksplisit ke B8.
-- [ ] Capacity/test/traceability evidence dan `docs/handover/B7.md` berisi command/results/failures/untested capabilities sebenarnya.
+- [x] Core review journey, viewer lintas format, linked selection, mobile tab keyboard dan workbook keyboard diuji; overflow/screenshot diperiksa pada lebar 360/768/1440. Batas assistive technology/touch dijelaskan.
+- [x] Integration, OOM terisolasi, budget/unknown-billing, role/source isolation, sanitization dan retention diuji; enam opt-in parser-runtime skip tetap pending dan tidak dihitung lulus.
+- [x] Backup/restore sintetis berhasil pada fixture bersih, tombstone direkonsiliasi dan 410/404 diverifikasi sesudah restore; bundle gabungan yang tidak konsisten ditolak.
+- [x] Robustness CLI memisahkan compiler/executor, mengikat release/hash, memeriksa partition/equivalence/DAG dan menolak frozen-test; executor serta semantic equivalence tetap incomplete.
+- [x] Application AC yang dapat dijalankan diverifikasi pada synthetic; AC-MVP-45 dan full evaluator/handover AC-MVP-64 diteruskan eksplisit ke B8.
+- [x] Capacity, command/result, kegagalan awal, keputusan engineering dan residual tercatat di `docs/handover/B7.md`.
 
 **BERHENTI setelah B7; jangan mulai B8 otomatis.** Failure mandatory tidak menjadi passed karena UI terlihat rapi; empirical effectiveness tetap gate penelitian terpisah.
 
