@@ -163,10 +163,16 @@ def validate_playwright(
     expected = stats.get("expected")
     if not isinstance(expected, int) or expected != expected_passed:
         raise ReportError(f"{label}: expected {expected_passed} runnable tests, found {expected!r}")
-    for key in ("skipped", "unexpected", "flaky", "interrupted"):
+    # Playwright's JSON reporter omits `interrupted` for successful runs; treat
+    # that optional counter as zero and let the per-test result records prove
+    # that every expected test completed.
+    for key in ("skipped", "unexpected", "flaky"):
         value = stats.get(key)
         if not isinstance(value, int) or value != 0:
             raise ReportError(f"{label}: Playwright {key} count must be zero, found {value!r}")
+    interrupted = stats.get("interrupted", 0)
+    if not isinstance(interrupted, int) or interrupted != 0:
+        raise ReportError(f"{label}: Playwright interrupted count must be zero, found {interrupted!r}")
     if report.get("errors"):
         raise ReportError(f"{label}: Playwright reported top-level errors")
     cases = _playwright_cases(report.get("suites"))

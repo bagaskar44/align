@@ -85,10 +85,15 @@ def test_junit_rejects_a_report_with_an_incomplete_declared_test_count(tmp_path:
         validate_junit(report, label="incomplete")
 
 
-def playwright_report(*, skipped: int = 0, flaky: int = 0, status: str = "passed") -> dict[str, object]:
+def playwright_report(
+    *, skipped: int = 0, flaky: int = 0, status: str = "passed", interrupted: int | None = None
+) -> dict[str, object]:
+    stats: dict[str, object] = {"expected": 1, "skipped": skipped, "unexpected": 0, "flaky": flaky}
+    if interrupted is not None:
+        stats["interrupted"] = interrupted
     return {
         "errors": [],
-        "stats": {"expected": 1, "skipped": skipped, "unexpected": 0, "flaky": flaky, "interrupted": 0},
+        "stats": stats,
         "suites": [{"specs": [{"tests": [{"title": "case", "results": [{"status": status}]}]}]}],
     }
 
@@ -107,6 +112,7 @@ def test_playwright_requires_every_expected_case_to_pass(tmp_path: Path) -> None
     [
         playwright_report(skipped=1, status="skipped"),
         playwright_report(flaky=1),
+        playwright_report(interrupted=1),
         playwright_report(status="failed"),
         {"stats": {}, "suites": "invalid"},
     ],
