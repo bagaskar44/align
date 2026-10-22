@@ -89,6 +89,7 @@ def validate_policy_validation_report(
         "support_by_category", "metrics_by_category", "confidence_intervals_by_category",
         "actual_cost_usd_per_bundle", "pending_liability_count", "repeats",
         "critical_invariant_violations", "ledger_refs", "allowed_data_modes", "evaluation_kind",
+        "report_sha256",
     }
     if not required <= set(report) or report.get("schema_version") != 2:
         raise SystemExit("PolicyValidationReport schema is incomplete")
@@ -300,6 +301,14 @@ def validate_policy_validation_report(
         or (report["provider_mode"] == "mock" and allowed_modes != ["synthetic"])
     ):
         raise SystemExit("PolicyValidationReport allowed data modes are invalid")
+    report_sha256 = report.get("report_sha256")
+    if (
+        not isinstance(report_sha256, str)
+        or len(report_sha256) != 64
+        or any(char not in "0123456789abcdef" for char in report_sha256)
+        or report_sha256 != sha256_json({key: value for key, value in report.items() if key != "report_sha256"})
+    ):
+        raise SystemExit("PolicyValidationReport report hash does not match its immutable content")
 
 
 def require_release_validation_report(
@@ -1111,6 +1120,18 @@ def _parser() -> argparse.ArgumentParser:
 
     evaluate = subparsers.add_parser("evaluate", help="offline robustness and protocol evaluations")
     evaluate_sub = evaluate.add_subparsers(dest="evaluate_command", required=True)
+    metrics = evaluate_sub.add_parser("metrics", help="score gold labels and predictions offline")
+    metrics.add_argument("--dataset-manifest", required=True, type=Path)
+    metrics.add_argument("--output", required=True, type=Path)
+    metrics.add_argument("--bootstrap-resamples", type=int, default=10_000)
+    metrics.add_argument("--seed", type=int, default=20261018)
+    policies = evaluate_sub.add_parser("policies", help="compare candidate and baseline policy evidence offline")
+    policies.add_argument("--candidate", required=True)
+    policies.add_argument("--baseline", required=True)
+    policies.add_argument("--dataset-manifest", required=True, type=Path)
+    policies.add_argument("--output", required=True, type=Path)
+    policies.add_argument("--bootstrap-resamples", type=int, default=10_000)
+    policies.add_argument("--seed", type=int, default=20261018)
     robustness = evaluate_sub.add_parser("robustness", help="validate and run compiler/DAG robustness checks")
     robustness.add_argument("--protocol", required=True, type=Path)
     robustness.add_argument("--dataset-manifest", required=True, type=Path)
@@ -1151,6 +1172,41 @@ def main() -> None:
         from align_worker.benchmark import run_parser_benchmark
 
         run_parser_benchmark(args.profile, args.fixtures, args.output)
+    elif args.command == "evaluate" and args.evaluate_command == "metrics":
+        from align_api.evaluation import EvaluationError, evaluate_metrics_file
+
+        try:
+            report = evaluate_metrics_file(
+                args.dataset_manifest,
+                args.output,
+                bootstrap_resamples=args.bootstrap_resamples,
+                seed=args.seed,
+            )
+        except EvaluationError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(json.dumps({"status": report["status"], "output": str(args.output),
+                          "dataset_sha256": report["dataset_sha256"],
+                          "report_sha256": report["report_sha256"]}))
+    elif args.command == "evaluate" and args.evaluate_command == "policies":
+        from align_api.evaluation import EvaluationError, evaluate_policy_file
+
+        try:
+            report = evaluate_policy_file(
+                args.dataset_manifest,
+                args.output,
+                candidate_id=args.candidate,
+                baseline_id=args.baseline,
+                root=Path(__file__).resolve().parents[4],
+                bootstrap_resamples=args.bootstrap_resamples,
+                seed=args.seed,
+                ledger_verified=False,
+            )
+        except EvaluationError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(json.dumps({"status": report["status"], "output": str(args.output),
+                          "candidate_core_hash": report["candidate_core_hash"],
+                          "baseline_core_hash": report["baseline_core_hash"],
+                          "report_sha256": report["report_sha256"]}))
     elif args.command == "evaluate" and args.evaluate_command == "robustness":
         from align_api.robustness import (
             ProtocolError,

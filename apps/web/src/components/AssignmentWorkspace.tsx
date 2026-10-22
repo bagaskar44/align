@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from "react";
+import type { ApiMethod, ApiRequestPath } from "@/lib/api-contract.generated";
 import { CriteriaStructuredEditor, NumericPolicyStructuredEditor, SpecificationStructuredEditor } from "./AssignmentStructuredEditors";
 
 type ContextSummary = { id: string; version_no: number; state: string; content_hash: string | null };
@@ -145,9 +146,9 @@ type PublicPreview = {
 };
 
 async function apiRequest<T>(
-  path: string,
+  path: ApiRequestPath,
   csrfToken: string,
-  options: { method: string; body?: unknown; form?: FormData; idempotency?: boolean },
+  options: { method: ApiMethod; body?: unknown; form?: FormData; idempotency?: boolean },
 ): Promise<T> {
   const headers = new Headers({ "X-CSRF-Token": csrfToken });
   let body: BodyInit | undefined;

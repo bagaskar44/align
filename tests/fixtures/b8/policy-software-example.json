@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "dataset_id": "synthetic-b8-policy-software-example-v1",
+  "data_mode": "synthetic",
+  "provider_mode": "mock",
+  "partition": "validation",
+  "codebook_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "split_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "protocol_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "gold_adjudication_status": "synthetic_fixture_only",
+  "scope": {
+    "task_families": [
+      "numeric_consistency"
+    ],
+    "categories": [
+      "numerical_inconsistency"
+    ],
+    "modalities": [
+      "pdf"
+    ]
+  },
+  "repeats": {
+    "count": 1,
+    "subset_preselected": false,
+    "task_families": []
+  },
+  "cases": [
+    {
+      "case_id": "policy-example-bundle-v1",
+      "bundle_version": "policy-example-bundle-version-1",
+      "assignment_id": "policy-example-assignment-1",
+      "course_id": "synthetic-course-si-1",
+      "partition": "validation",
+      "modality": "pdf",
+      "task_family": "numeric_consistency",
+      "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "gold": [
+        {
+          "obligation_key": "revenue-year-one",
+          "issue_category": "numerical_inconsistency",
+          "numeric_context": {
+            "quantity": "revenue",
+            "period": "year_1",
+            "unit": "IDR"
+          },
+          "applicability": "applicable",
+          "gold_assessability": "assessable",
+          "issue_label": "issue_present",
+          "compatible_source_units": 2,
+          "inspected_source_units": 2,
+          "independent_rater_count": 0,
+          "adjudication_ref": "synthetic-fixture-only"
+        }
+      ],
+      "predictions_by_arm": {
+        "baseline": [
+          {
+            "prediction_id": "baseline-revenue-1",
+            "obligation_key": "revenue-year-one",
+            "issue_category": "numerical_inconsistency",
+            "numeric_context": {
+              "quantity": "revenue",
+              "period": "year_1",
+              "unit": "IDR"
+            },
+            "decision": "finding",
+            "anchors": [
+              true
+            ],
+            "evidence_support": "supported"
+          }
+        ],
+        "candidate": [
+          {
+            "prediction_id": "candidate-revenue-1",
+            "obligation_key": "revenue-year-one",
+            "issue_category": "numerical_inconsistency",
+            "numeric_context": {
+              "quantity": "revenue",
+              "period": "year_1",
+              "unit": "IDR"
+            },
+            "decision": "finding",
+            "anchors": [
+              true
+            ],
+            "evidence_support": "supported"
+          }
+        ]
+      },
+      "usage_by_arm": {
+        "baseline": {
+          "billing_status": "unknown",
+          "actual_cost_usd": null
+        },
+        "candidate": {
+          "billing_status": "unknown",
+          "actual_cost_usd": null
+        }
+      },
+      "critical_invariant_violations_by_arm": {
+        "baseline": [],
+        "candidate": []
+      },
+      "failure_events": []
+    }
+  ],
+  "paired_manifest_sha256_by_arm": {
+    "baseline": {
+      "batching": "0e2f09c89349cbc8f48c833f829d1503872e8dfad20cab5870749b555063450d",
+      "model": "8dc1a01ec954746528f16348e45cf59779da5da65a0d46a352a2314431a41b3d",
+      "parser": "dde47af4521959905610adf544bd00e0713dbb719c1a2dece201e5e22696cb88",
+      "parser_resource": "8ab60ff239110a67a45084883b0fb33e1f90d83b2e482f39956e6220acc3ec2a",
+      "prompt": "b01decb0230fa893cf16012fa46757ea55c09ebe332e5a53e3c26393ff1de92e",
+      "rates": "2004bf280765b9c18aebc5e683151622ffa4b84542b368b34566e0f0253871d3",
+      "retrieval": "c09caa5fae224833a89ecb6683ecb362b8e3b0852d901ea1241b9d3496b40adf",
+      "routing": "9a4bbbd41dfffa27d52245af3cae7c5d6017700fce5bed22c2ecf8b1622fafcf",
+      "rules": "385d5d84f73b0704767e6e0f0c0db311de759a09b0aa6408e38e6a537e2a186d"
+    },
+    "candidate": {
+      "batching": "0e2f09c89349cbc8f48c833f829d1503872e8dfad20cab5870749b555063450d",
+      "model": "8dc1a01ec954746528f16348e45cf59779da5da65a0d46a352a2314431a41b3d",
+      "parser": "dde47af4521959905610adf544bd00e0713dbb719c1a2dece201e5e22696cb88",
+      "parser_resource": "8ab60ff239110a67a45084883b0fb33e1f90d83b2e482f39956e6220acc3ec2a",
+      "prompt": "b01decb0230fa893cf16012fa46757ea55c09ebe332e5a53e3c26393ff1de92e",
+      "rates": "2004bf280765b9c18aebc5e683151622ffa4b84542b368b34566e0f0253871d3",
+      "retrieval": "c09caa5fae224833a89ecb6683ecb362b8e3b0852d901ea1241b9d3496b40adf",
+      "routing": "9a4bbbd41dfffa27d52245af3cae7c5d6017700fce5bed22c2ecf8b1622fafcf",
+      "rules": "385d5d84f73b0704767e6e0f0c0db311de759a09b0aa6408e38e6a537e2a186d"
+    }
+  }
+}

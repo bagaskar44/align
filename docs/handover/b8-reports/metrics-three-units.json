@@ -1,0 +1,226 @@
+{
+  "all_categories": {
+    "counts": {
+      "anchors_total": 1,
+      "anchors_valid": 1,
+      "compatible_source_units": 6,
+      "decisions": 2,
+      "duplicate_findings": 0,
+      "evidence_rated_findings": 1,
+      "evidence_supported_findings": 1,
+      "false_findings": 0,
+      "fn": 1,
+      "fp": 0,
+      "gold_positive": 2,
+      "gold_unassessable": 0,
+      "gold_unassessable_violations": 0,
+      "gold_units": 3,
+      "inspected_source_units": 5,
+      "tn": 1,
+      "tp": 1,
+      "wrong_decisions": 0
+    },
+    "metrics": {
+      "anchor_validity": 1.0,
+      "end_to_end_recall": 0.5,
+      "evidence_support_rate": 1.0,
+      "f1": 0.6666666666666666,
+      "gold_unassessable_decision_violation": null,
+      "precision": 1.0,
+      "selective_decision_coverage": 0.6666666666666666,
+      "selective_risk": 0.0,
+      "source_inspection_coverage": 0.8333333333333334
+    }
+  },
+  "bundle_count": 1,
+  "codebook_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "confidence_intervals": {
+    "method": "assignment_cluster_bootstrap_stratified_by_course",
+    "per_category": {
+      "numerical_inconsistency": {
+        "anchor_validity": {
+          "lower": 1.0,
+          "method": "assignment_cluster_bootstrap_stratified_by_course",
+          "status": "descriptive_unstable",
+          "upper": 1.0,
+          "valid_resamples": 10000,
+          "zero_denominator_resamples": 0
+        },
+        "end_to_end_recall": {
+          "lower": 0.5,
+          "method": "assignment_cluster_bootstrap_stratified_by_course",
+          "status": "descriptive_unstable",
+          "upper": 0.5,
+          "valid_resamples": 10000,
+          "zero_denominator_resamples": 0
+        },
+        "evidence_support_rate": {
+          "lower": 1.0,
+          "method": "assignment_cluster_bootstrap_stratified_by_course",
+          "status": "descriptive_unstable",
+          "upper": 1.0,
+          "valid_resamples": 10000,
+          "zero_denominator_resamples": 0
+        },
+        "gold_unassessable_decision_violation": {
+          "lower": null,
+          "method": "assignment_cluster_bootstrap_stratified_by_course",
+          "status": "descriptive_unstable",
+          "upper": null,
+          "valid_resamples": 0,
+          "zero_denominator_resamples": 10000
+        },
+        "precision": {
+          "lower": 1.0,
+          "method": "assignment_cluster_bootstrap_stratified_by_course",
+          "status": "descriptive_unstable",
+          "upper": 1.0,
+          "valid_resamples": 10000,
+          "zero_denominator_resamples": 0
+        },
+        "selective_decision_coverage": {
+          "lower": 0.6666666666666666,
+          "method": "assignment_cluster_bootstrap_stratified_by_course",
+          "status": "descriptive_unstable",
+          "upper": 0.6666666666666666,
+          "valid_resamples": 10000,
+          "zero_denominator_resamples": 0
+        },
+        "selective_risk": {
+          "lower": 0.0,
+          "method": "assignment_cluster_bootstrap_stratified_by_course",
+          "status": "descriptive_unstable",
+          "upper": 0.0,
+          "valid_resamples": 10000,
+          "zero_denominator_resamples": 0
+        },
+        "source_inspection_coverage": {
+          "lower": 0.8333333333333334,
+          "method": "assignment_cluster_bootstrap_stratified_by_course",
+          "status": "descriptive_unstable",
+          "upper": 0.8333333333333334,
+          "valid_resamples": 10000,
+          "zero_denominator_resamples": 0
+        }
+      }
+    },
+    "resamples": 10000,
+    "seed": 20261018
+  },
+  "correctly_supported_finding_count": 1,
+  "cost": {
+    "approved_feedback_count": 0,
+    "bundles_missing_cost": 1,
+    "bundles_with_settled_cost": 0,
+    "bundles_without_end_to_end_cost_scope": 0,
+    "end_to_end_complete": false,
+    "partial_settled_cost_usd": null,
+    "pending_liability_count": 0,
+    "settled_cost_per_approved_feedback_usd": null,
+    "settled_cost_per_bundle_usd": null,
+    "settled_cost_per_correctly_supported_finding_usd": null,
+    "settled_cost_usd": null
+  },
+  "data_mode": "synthetic",
+  "data_origin": "synthetic",
+  "dataset_file_sha256": "f6caa64a6a7b324ffdfb560203b597f45d3054076b6edb4c55bfee84831cdae0",
+  "dataset_id": "synthetic-b8-ac45-three-unit-example-v1",
+  "dataset_sha256": "6a6f5b475fc29fe40609bff148a9eeb8d5e5bc68f40dcb566c08c4899cfae799",
+  "environment": {
+    "cpu_count": 8,
+    "evaluator_source_sha256": "056850cdb5a861088dcc9f17c347789d1a07f35e68798a4c996bdf915e31068f",
+    "host_memory_bytes": 17179869184,
+    "machine": "arm64",
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "provider_compute_cost": "not_metered",
+    "python": "3.12.11",
+    "software_versions": {
+      "align-api": "0.1.0",
+      "align-domain": "0.1.0"
+    },
+    "uv_lock_sha256": "eee5c7af8580501b4bcb0fd8b4e47bb1c31fc3c7043b10e55b81db7ab3f59097"
+  },
+  "evaluation_kind": "software_example",
+  "failure_breakdown": {
+    "classification": "event_log_and_prediction_outcomes_reported_separately_to_avoid_double_counting",
+    "event_counts": {
+      "abstention": 0,
+      "acquisition": 0,
+      "interpretation": 0,
+      "unsupported": 0
+    },
+    "finding_support_counts": {
+      "supported": 1,
+      "unrated": 0,
+      "unsupported": 0
+    },
+    "modality_counts": {
+      "pdf": {
+        "cases": 1,
+        "gold_units": 3,
+        "predicted_findings": 1
+      }
+    },
+    "prediction_outcome_counts": {
+      "abstention_decisions": 1,
+      "unsupported_findings": 0
+    }
+  },
+  "false_findings_per_bundle": 0.0,
+  "finding_count": 1,
+  "independent_assignment_count": 1,
+  "limitations": [
+    "Synthetic fixture metrics verify denominator and report logic only; they are not research results.",
+    "Fewer than five independent assignments: cluster intervals are descriptive and unstable.",
+    "Full actual cost is unavailable for one or more bundles."
+  ],
+  "operational_document_coverage": {
+    "denominator": 1,
+    "estimate": 1.0,
+    "numerator": 1
+  },
+  "partition": "validation",
+  "per_category": {
+    "numerical_inconsistency": {
+      "counts": {
+        "anchors_total": 1,
+        "anchors_valid": 1,
+        "compatible_source_units": 6,
+        "decisions": 2,
+        "duplicate_findings": 0,
+        "evidence_rated_findings": 1,
+        "evidence_supported_findings": 1,
+        "false_findings": 0,
+        "fn": 1,
+        "fp": 0,
+        "gold_positive": 2,
+        "gold_unassessable": 0,
+        "gold_unassessable_violations": 0,
+        "gold_units": 3,
+        "inspected_source_units": 5,
+        "tn": 1,
+        "tp": 1,
+        "wrong_decisions": 0
+      },
+      "metrics": {
+        "anchor_validity": 1.0,
+        "end_to_end_recall": 0.5,
+        "evidence_support_rate": 1.0,
+        "f1": 0.6666666666666666,
+        "gold_unassessable_decision_violation": null,
+        "precision": 1.0,
+        "selective_decision_coverage": 0.6666666666666666,
+        "selective_risk": 0.0,
+        "source_inspection_coverage": 0.8333333333333334
+      }
+    }
+  },
+  "provider_mode": "mock",
+  "report_sha256": "48a8ef0ac03d26aaf97a035c1c4bd29d2d7ecbed3a47b8c6da6efed7f4e5cd1e",
+  "report_type": "align_offline_metrics_report",
+  "sample_count": 1,
+  "schema_version": 1,
+  "split_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "status": "software_gate_only",
+  "tuning_allowed": true
+}

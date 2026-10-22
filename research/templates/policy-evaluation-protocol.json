@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "protocol_id": "not_yet_available",
+  "partition": "validation",
+  "dataset_sha256": "not_yet_available",
+  "protocol_sha256": "not_yet_available",
+  "codebook_sha256": "not_yet_available",
+  "scope": {"task_families": [], "categories": [], "modalities": []},
+  "baseline_id": "routing-baseline-v2",
+  "candidate_id": "not_yet_available",
+  "pairing": "same bundles, source/spec/model/prompt/schema/resource limits; vary only the predeclared policy factor",
+  "repeats": {
+    "count": 3,
+    "subset_preselected": true,
+    "preselected_case_ids": [],
+    "task_families": [],
+    "runs": [
+      {"run_id": "not_yet_available", "case_ids": [], "task_families": [], "subset_sha256": "not_yet_available", "outputs_sha256": "not_yet_available", "critical_invariant_violations": []},
+      {"run_id": "not_yet_available", "case_ids": [], "task_families": [], "subset_sha256": "not_yet_available", "outputs_sha256": "not_yet_available", "critical_invariant_violations": []},
+      {"run_id": "not_yet_available", "case_ids": [], "task_families": [], "subset_sha256": "not_yet_available", "outputs_sha256": "not_yet_available", "critical_invariant_violations": []}
+    ]
+  },
+  "cases": [],
+  "not_yet_available_reason": "No live institutional validation set, authorization, settled ledger export, or preselected repeat evidence is present. This template is intentionally not an eligible report."
+}

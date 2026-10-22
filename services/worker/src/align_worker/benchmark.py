@@ -398,12 +398,24 @@ def run_parser_benchmark(profile_id: str, fixtures_path: Path, output_path: Path
     memory_limit = int(profile["memory_limit_bytes"])
     report: dict[str, Any] = {
         "schema_version": 1,
+        "report_type": "align_parser_benchmark_report",
         "generated_at": datetime.now(UTC).isoformat(),
+        "status": "incomplete",
+        "measurement_mode": "actual_bounded_parser_child",
+        "data_origin": "synthetic_fixture",
+        "provider_mode": "not_used",
+        "provider_calls": 0,
+        "provider_actual_cost_usd": "0.00",
+        "infrastructure_cost": {"amount": None, "currency": None, "status": "not_metered"},
         "profile_id": profile_id,
         "profile_sha256": hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
         "parser_mode": "actual-isolated-parser-child; mock=false",
         "hardware": _hardware(),
         "packages": _versions(),
+        "versions": {
+            "uv_lock_sha256": _sha256(Path("uv.lock")),
+            "resource_manifest_sha256": _sha256(Path("config/parser-context-resources.json")),
+        },
         "resources": profile,
         "fixtures": [],
         "support_limits": [
@@ -412,6 +424,7 @@ def run_parser_benchmark(profile_id: str, fixtures_path: Path, output_path: Path
             "Charts, drawings and embedded media are inventory items and remain unsupported unless the parser emits verified content.",
             "A successful sample is not evidence that every allowed 100-page or maximum-size bundle finishes within 600 active seconds.",
             "Docling 2.140.0 reports render/layout/OCR/table work as a combined conversion call; stage timings do not claim unexposed internal substage measurements.",
+            "Provider spend is zero because no provider is invoked; Docker/host electricity or compute cost is not metered.",
         ],
     }
     for path in candidates:
@@ -438,7 +451,16 @@ def run_parser_benchmark(profile_id: str, fixtures_path: Path, output_path: Path
     json_path = base.with_suffix(".json")
     markdown_path = base.with_suffix(".md")
     json_path.parent.mkdir(parents=True, exist_ok=True)
-    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    all_runs_completed = all(
+        run["status"] == "completed"
+        for fixture in report["fixtures"]
+        for run in fixture["runs"].values()
+    )
+    report["status"] = "measured" if all_runs_completed else "incomplete"
+    report["report_sha256"] = hashlib.sha256(
+        json.dumps(report, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     markdown_path.write_text(_markdown(report), encoding="utf-8")
     print(json.dumps({"json": str(json_path), "markdown": str(markdown_path), "fixtures": len(candidates)}))
     if any(run["status"] != "completed" for fixture in report["fixtures"] for run in fixture["runs"].values()):

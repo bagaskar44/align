@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import type { ApiMethod, ApiRequestPath } from "@/lib/api-contract.generated";
 
 type ConflictCandidate = { value: string; source_ref?: Record<string, unknown> };
 type ContextConflict = {
@@ -36,7 +37,7 @@ const FIELD_LABELS: Record<string, string> = {
   language: "Bahasa",
 };
 
-async function apiRequest<T>(path: string, csrfToken: string, options: { method: string; body?: unknown; idempotency?: boolean; form?: FormData }): Promise<T> {
+async function apiRequest<T>(path: ApiRequestPath, csrfToken: string, options: { method: ApiMethod; body?: unknown; idempotency?: boolean; form?: FormData }): Promise<T> {
   const headers = new Headers({ "X-CSRF-Token": csrfToken });
   let body: BodyInit | undefined;
   if (options.form) body = options.form;

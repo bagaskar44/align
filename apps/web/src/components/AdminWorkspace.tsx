@@ -1,13 +1,14 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import type { ApiMethod, ApiRequestPath } from "@/lib/api-contract.generated";
 
 type AdminUser = { id: string; email: string; display_name: string; global_role: "admin" | "member"; active: boolean; must_change_password: boolean; revision: number };
 type Course = { id: string; code: string; title: string; active: boolean; revision: number };
 type Enrollment = { user_id: string; display_name: string; role: "lecturer" | "student"; active: boolean };
 type Props = { csrfToken: string; initialUsers: AdminUser[]; initialCourses: Course[] };
 
-async function apiRequest<T>(path: string, csrfToken: string, options: { method: string; body?: unknown; idempotency?: boolean }): Promise<T> {
+async function apiRequest<T>(path: ApiRequestPath, csrfToken: string, options: { method: ApiMethod; body?: unknown; idempotency?: boolean }): Promise<T> {
   const headers = new Headers({ "Content-Type": "application/json", "X-CSRF-Token": csrfToken });
   if (options.idempotency) headers.set("Idempotency-Key", crypto.randomUUID());
   const response = await fetch(`/api/v1${path}`, {

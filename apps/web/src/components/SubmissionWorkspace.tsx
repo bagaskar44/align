@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import type { ApiMethod, ApiRequestPath } from "@/lib/api-contract.generated";
 
 type Assignment = { id: string; title: string; version_no?: number | null; due_at?: string; mode?: "individual" | "group" };
 type DraftFile = { id: string; name: string; size_bytes: number; mime: string; sha256: string; preflight: Record<string, unknown> };
@@ -29,7 +30,7 @@ type SubmissionStatus = {
 };
 type ApiError = { error?: { message?: string } };
 
-async function api<T>(path: string, csrf: string, method = "GET", body?: unknown, form?: FormData, idempotencyKey?: string): Promise<T> {
+async function api<T>(path: ApiRequestPath, csrf: string, method: ApiMethod = "GET", body?: unknown, form?: FormData, idempotencyKey?: string): Promise<T> {
   const headers = new Headers({ "X-CSRF-Token": csrf });
   let requestBody: BodyInit | undefined;
   if (form) requestBody = form;
@@ -71,9 +72,12 @@ export function SubmissionWorkspace({ assignments, csrfToken }: { assignments: A
 
   async function loadPublication(submissionId: string, publicationId?: string) {
     try {
-      const suffix = publicationId ? `?publication_id=${encodeURIComponent(publicationId)}` : "";
+      const publicationPath = `/submissions/${submissionId}/published-result` as ApiRequestPath;
+      const resultPath = publicationId
+        ? (`${publicationPath}?publication_id=${encodeURIComponent(publicationId)}` as ApiRequestPath)
+        : publicationPath;
       const [result, history] = await Promise.all([
-        api<StudentPublication>(`/submissions/${submissionId}/published-result${suffix}`, csrfToken),
+        api<StudentPublication>(resultPath, csrfToken),
         api<{ items: PublicationHistoryItem[] }>(`/submissions/${submissionId}/publications`, csrfToken),
       ]);
       setPublishedResult(result);

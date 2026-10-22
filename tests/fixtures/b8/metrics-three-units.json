@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "dataset_id": "synthetic-b8-ac45-three-unit-example-v1",
+  "data_mode": "synthetic",
+  "provider_mode": "mock",
+  "partition": "validation",
+  "codebook_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "split_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "cases": [
+    {
+      "case_id": "example-assignment-bundle-v1",
+      "bundle_version": "example-bundle-version-1",
+      "assignment_id": "example-assignment-1",
+      "course_id": "synthetic-course-si-1",
+      "partition": "validation",
+      "modality": "pdf",
+      "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "gold": [
+        {
+          "obligation_key": "numeric-revenue-year-one",
+          "issue_category": "numerical_inconsistency",
+          "numeric_context": {
+            "quantity": "revenue",
+            "period": "year_1",
+            "unit": "IDR"
+          },
+          "applicability": "applicable",
+          "gold_assessability": "assessable",
+          "issue_label": "issue_present",
+          "compatible_source_units": 2,
+          "inspected_source_units": 2,
+          "independent_rater_count": 0,
+          "adjudication_ref": "synthetic-fixture-only"
+        },
+        {
+          "obligation_key": "numeric-margin-year-one",
+          "issue_category": "numerical_inconsistency",
+          "numeric_context": {
+            "quantity": "margin",
+            "period": "year_1",
+            "unit": "percent"
+          },
+          "applicability": "applicable",
+          "gold_assessability": "assessable",
+          "issue_label": "issue_present",
+          "compatible_source_units": 2,
+          "inspected_source_units": 1,
+          "independent_rater_count": 0,
+          "adjudication_ref": "synthetic-fixture-only"
+        },
+        {
+          "obligation_key": "numeric-cost-year-one",
+          "issue_category": "numerical_inconsistency",
+          "numeric_context": {
+            "quantity": "cost",
+            "period": "year_1",
+            "unit": "IDR"
+          },
+          "applicability": "applicable",
+          "gold_assessability": "assessable",
+          "issue_label": "issue_absent",
+          "compatible_source_units": 2,
+          "inspected_source_units": 2,
+          "independent_rater_count": 0,
+          "adjudication_ref": "synthetic-fixture-only"
+        }
+      ],
+      "predictions": [
+        {
+          "prediction_id": "prediction-revenue-1",
+          "obligation_key": "numeric-revenue-year-one",
+          "issue_category": "numerical_inconsistency",
+          "numeric_context": {
+            "quantity": "revenue",
+            "period": "year_1",
+            "unit": "IDR"
+          },
+          "decision": "finding",
+          "anchors": [
+            true
+          ],
+          "evidence_support": "supported"
+        },
+        {
+          "prediction_id": "prediction-margin-1",
+          "obligation_key": "numeric-margin-year-one",
+          "issue_category": "numerical_inconsistency",
+          "numeric_context": {
+            "quantity": "margin",
+            "period": "year_1",
+            "unit": "percent"
+          },
+          "decision": "abstain",
+          "anchors": [],
+          "evidence_support": "unrated"
+        },
+        {
+          "prediction_id": "prediction-cost-1",
+          "obligation_key": "numeric-cost-year-one",
+          "issue_category": "numerical_inconsistency",
+          "numeric_context": {
+            "quantity": "cost",
+            "period": "year_1",
+            "unit": "IDR"
+          },
+          "decision": "no_issue",
+          "anchors": [],
+          "evidence_support": "unrated"
+        }
+      ],
+      "documents": [
+        {
+          "accepted": true,
+          "source_units_total": 2,
+          "source_units_complete": 2
+        }
+      ],
+      "failure_events": []
+    }
+  ]
+}

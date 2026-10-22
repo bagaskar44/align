@@ -148,14 +148,29 @@ function ImageViewer({ src, name, preflight, anchor, zoom, setZoom }: {
   src: string; name: string; preflight: Record<string, unknown>; anchor: Record<string, unknown>;
   zoom: number; setZoom: (value: number | ((current: number) => number)) => void;
 }) {
+  const frameRef = useRef<HTMLDivElement>(null);
+  const [frameWidth, setFrameWidth] = useState(0);
   const width = Number(preflight.width ?? 0); const height = Number(preflight.height ?? 0);
   const orientation = Number(preflight.orientation ?? 1);
   const box = Array.isArray(anchor.bbox) ? anchor.bbox.map(Number) : [0, 0, width, height];
   const oriented = orientBox(box, width, height, orientation);
   const viewWidth = orientation >= 5 ? height : width; const viewHeight = orientation >= 5 ? width : height;
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame) return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) setFrameWidth(entry.contentRect.width);
+    });
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, []);
+  const fitScale = frameWidth > 0 ? Math.min(1, frameWidth / Math.max(1, viewWidth)) : 1;
+  const renderedWidth = Math.max(1, Math.round(viewWidth * fitScale * zoom));
+  const renderedHeight = Math.max(1, Math.round(viewHeight * fitScale * zoom));
   return <section className="image-source-viewer">
     <div className="source-viewer-toolbar"><button type="button" className="button button-quiet" onClick={() => setZoom((value) => Math.max(0.5, value - 0.25))}>−</button><span>{Math.round(zoom * 100)}%</span><button type="button" className="button button-quiet" onClick={() => setZoom((value) => Math.min(4, value + 0.25))}>+</button></div>
-    <div className="image-source-frame"><div className="image-source-content" style={{ width: `${Math.max(1, viewWidth * zoom)}px`, height: `${Math.max(1, viewHeight * zoom)}px` }}>
+    <div ref={frameRef} className="image-source-frame"><div className="image-source-content" style={{ width: `${renderedWidth}px`, height: `${renderedHeight}px` }}>
       <img src={src} alt={`Sumber asli ${name}`} style={{ width: "100%", height: "100%", objectFit: "contain", imageOrientation: "from-image" }} />
       {oriented && <div className="image-anchor-overlay" style={{ left: `${oriented[0] / Math.max(1, viewWidth) * 100}%`, top: `${oriented[1] / Math.max(1, viewHeight) * 100}%`, width: `${(oriented[2] - oriented[0]) / Math.max(1, viewWidth) * 100}%`, height: `${(oriented[3] - oriented[1]) / Math.max(1, viewHeight) * 100}%` }} />}
     </div></div>

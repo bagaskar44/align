@@ -8,7 +8,11 @@ AI/provider executor; those remain explicit report limitations.
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
+import os
+import platform
+import sys
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -26,6 +30,37 @@ class ProtocolError(ValueError):
 def _canonical_hash(value: Any) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _environment_metadata() -> dict[str, Any]:
+    root = Path(__file__).resolve().parents[4]
+    memory_bytes: int | None = None
+    try:
+        memory_line = next(
+            line for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines()
+            if line.startswith("MemTotal:")
+        )
+        memory_bytes = int(memory_line.split()[1]) * 1024
+    except (OSError, StopIteration, ValueError, IndexError):
+        try:
+            memory_bytes = int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
+        except (OSError, ValueError, TypeError):
+            pass
+    try:
+        api_version = importlib.metadata.version("align-api")
+    except importlib.metadata.PackageNotFoundError:
+        api_version = "workspace-source"
+    return {
+        "python": sys.version.split()[0],
+        "align_api": api_version,
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "cpu_count": os.cpu_count(),
+        "host_or_vm_memory_bytes": memory_bytes,
+        "uv_lock_sha256": hashlib.sha256((root / "uv.lock").read_bytes()).hexdigest()
+        if (root / "uv.lock").is_file() else None,
+        "implementation_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    }
 
 
 def _sha256(value: Any, label: str) -> str:
@@ -119,6 +154,18 @@ def validate_protocol(
     repeats = protocol.get("repeat_count")
     if type(repeats) is not int or not 1 <= repeats <= 20:
         raise ProtocolError("repeat_count must be an integer from 1 to 20")
+    scenario_fields = (
+        "executor_repeat_scenarios",
+        "format_variation_scenarios",
+        "source_corruption_scenarios",
+        "repeat_dependence_scenarios",
+    )
+    declared_scenarios: dict[str, list[dict[str, Any]]] = {}
+    for field in scenario_fields:
+        scenarios = protocol.get(field, [])
+        if not isinstance(scenarios, list) or any(not isinstance(item, dict) for item in scenarios):
+            raise ProtocolError(f"{field} must be a list of scenario objects")
+        declared_scenarios[field] = scenarios
 
     samples = dataset.get("samples")
     if not isinstance(samples, list) or not samples:
@@ -284,6 +331,30 @@ def validate_protocol(
             })
 
     status = "incomplete" if repeats < 3 or method == "executor" else "software_gate_only"
+    robustness_dimensions = {
+        "compiler_fidelity": {"status": "checked", "case_count": len(results)},
+        "executor_variation": {
+            "status": "declared_not_run" if declared_scenarios["executor_repeat_scenarios"] else "not_run",
+            "declared_scenario_count": len(declared_scenarios["executor_repeat_scenarios"]),
+            "runtime_cases": 0,
+        },
+        "format_variation": {
+            "status": "declared_not_run" if declared_scenarios["format_variation_scenarios"] else "not_run",
+            "declared_scenario_count": len(declared_scenarios["format_variation_scenarios"]),
+            "runtime_cases": 0,
+        },
+        "source_corruption": {
+            "status": "declared_not_run" if declared_scenarios["source_corruption_scenarios"] else "not_run",
+            "declared_scenario_count": len(declared_scenarios["source_corruption_scenarios"]),
+            "runtime_cases": 0,
+        },
+        "repeat_dependence": {
+            "status": "deterministic_applicability_only",
+            "deterministic_rule_repeats": repeats,
+            "declared_scenario_count": len(declared_scenarios["repeat_dependence_scenarios"]),
+            "stochastic_runtime_repeats": 0,
+        },
+    }
     return {
         "schema_version": 1,
         "report_type": "align_robustness_protocol_report",
@@ -292,6 +363,12 @@ def validate_protocol(
         "method": method,
         "partition": partition,
         "data_mode": data_mode,
+        "data_origin": "synthetic_fixture" if data_mode == "synthetic" else "institutional_protocol",
+        "provider_mode": "not_used",
+        "provider_calls": 0,
+        "provider_actual_cost_usd": "0.00",
+        "infrastructure_cost": {"amount": None, "currency": None, "status": "not_metered"},
+        "environment": _environment_metadata(),
         "evidence_class": "synthetic_fixture_software_gate" if data_mode == "synthetic" else "institutional_protocol_only",
         "status": status,
         "release_id": release["id"],
@@ -302,9 +379,12 @@ def validate_protocol(
         "seed": protocol["seed"],
         "repeat_count": repeats,
         "cases": results,
+        "robustness_dimensions": robustness_dimensions,
         "limitations": [
             "Structural obligation comparison is not a human semantic-equivalence verdict.",
             "No provider call, evidence-level executor decision, stochastic stability, cost, or research metric was run.",
+            "No source-corruption or file-format variation scenario was executed by this CLI run.",
+            "Repeat count covers deterministic applicability replay only, not executor or source-level repeat dependence.",
             "Fixture reviewer labels are synthetic test metadata, not human study adjudication.",
         ],
     }
@@ -318,6 +398,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Method: `{report['method']}`",
         f"- Partition: `{report['partition']}`",
         f"- Evidence class: `{report['evidence_class']}`",
+        f"- Provider/cost: `{report['provider_mode']}` / `{report['provider_actual_cost_usd']} USD`; infrastructure cost `{report['infrastructure_cost']['status']}`",
+        f"- Environment: `{report['environment']['platform']}` / `{report['environment']['machine']}` / Python `{report['environment']['python']}` / {report['environment']['cpu_count']} CPUs",
         f"- Protocol: `{report['protocol_id']}` / `{report['transformation_id']}`",
         f"- Release: `{report['release_id']}` (`{report['release_config_hash']}`)",
         f"- Dataset SHA-256: `{report['dataset_manifest_sha256']}`",
@@ -331,6 +413,16 @@ def render_markdown(report: dict[str, Any]) -> str:
     for case in report["cases"]:
         structural = case.get("structural_obligations_match", case.get("fidelity_change_present", "not compared"))
         lines.append(f"| `{case['case_id']}` | {case['case_class']} | {structural} | {case['executor_runtime']} |")
+    lines.extend([
+        "",
+        "## Robustness dimensions",
+        "",
+        "| Dimension | Status | Evidence / count |",
+        "|---|---|---|",
+    ])
+    for name, dimension in report["robustness_dimensions"].items():
+        details = ", ".join(f"{key}={value}" for key, value in dimension.items() if key != "status") or "none"
+        lines.append(f"| `{name}` | `{dimension['status']}` | {details} |")
     lines.extend(["", "## Limitations", "", *[f"- {item}" for item in report["limitations"]], ""])
     return "\n".join(lines)
 

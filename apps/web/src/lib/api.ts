@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import type { ApiMethod, ApiRequestPath } from "@/lib/api-contract.generated";
 
 export type UserSummary = {
   id: string;
@@ -54,13 +55,14 @@ function apiOrigin(): string {
   return process.env.API_INTERNAL_URL ?? "http://localhost:8000";
 }
 
-async function requestServer<T>(path: string): Promise<ApiResult<T>> {
+async function requestServer<T>(path: ApiRequestPath, method: ApiMethod = "GET"): Promise<ApiResult<T>> {
   const cookieStore = await cookies();
   const sessionCookie = cookieStore.get("align_session");
   if (!sessionCookie) return { kind: "unauthenticated" };
 
   try {
     const response = await fetch(`${apiOrigin()}/api/v1${path}`, {
+      method,
       headers: { Cookie: `align_session=${sessionCookie.value}` },
       cache: "no-store",
     });

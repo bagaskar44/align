@@ -6,14 +6,19 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await page.setViewportSize({ width: 1440, height: 1000 });
   page.setDefaultTimeout(10_000);
   const password = process.env.ALIGN_SEED_PASSWORD;
+  const lecturerEmail = process.env.ALIGN_DEMO_LECTURER_EMAIL ?? "dosen@align.local";
+  const studentEmail = process.env.ALIGN_DEMO_STUDENT_EMAIL ?? "mahasiswa@align.local";
+  const courseCode = process.env.ALIGN_DEMO_COURSE_CODE ?? "IF101";
+  const demoLabel = process.env.ALIGN_DEMO_LABEL ?? "B2 Playwright";
+  const courseLink = new RegExp(courseCode);
   if (!password) throw new Error("ALIGN_SEED_PASSWORD must be loaded from the local .env before the E2E flow.");
 
   await page.goto("/login");
-  await page.getByLabel("Email").fill("dosen@align.local");
+  await page.getByLabel("Email").fill(lecturerEmail);
   await page.getByLabel("Kata sandi", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Masuk" }).click();
   await expect(page.getByRole("heading", { name: "Mata kuliah" })).toBeVisible();
-  await page.getByRole("link", { name: /IF101/ }).click();
+  await page.getByRole("link", { name: courseLink }).click();
 
   // The synthetic seed intentionally contains no approved context. Create one
   // through the B1 lecturer flow, then reload so B2 receives that approved ID.
@@ -27,7 +32,7 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
 
   const workspace = page.getByRole("region", { name: "Tugas dan spesifikasi" });
   await expect(workspace).toBeVisible();
-  const assignmentTitle = `B2 Playwright ${Date.now()}`;
+  const assignmentTitle = `${demoLabel} ${Date.now()}`;
   await workspace.getByLabel("Judul tugas").fill(assignmentTitle);
   await workspace.getByRole("button", { name: "Buat draf tugas" }).click();
   await expect(workspace.getByRole("heading", { name: "Draf assignment" })).toBeVisible();
@@ -118,11 +123,11 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
 
   await page.getByRole("button", { name: "Keluar" }).click();
   await expect(page.getByLabel("Email")).toBeVisible();
-  await page.getByLabel("Email").fill("mahasiswa@align.local");
+  await page.getByLabel("Email").fill(studentEmail);
   await page.getByLabel("Kata sandi", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Masuk" }).click();
   await expect(page.getByRole("heading", { name: "Mata kuliah" })).toBeVisible();
-  await page.getByRole("link", { name: /IF101/ }).click();
+  await page.getByRole("link", { name: courseLink }).click();
   const studentWorkspace = page.getByRole("region", { name: "Tugas mata kuliah" });
   await expect(studentWorkspace.getByRole("heading", { name: "Tugas mata kuliah" })).toBeVisible();
   await studentWorkspace.getByRole("button", { name: assignmentTitle }).click();
@@ -156,10 +161,10 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await expect(submission).toContainText("complex-submission.xlsx");
 
   await page.getByRole("button", { name: "Keluar" }).click();
-  await page.getByLabel("Email").fill("dosen@align.local");
+  await page.getByLabel("Email").fill(lecturerEmail);
   await page.getByLabel("Kata sandi", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Masuk" }).click();
-  await page.getByRole("link", { name: /IF101/ }).click();
+  await page.getByRole("link", { name: courseLink }).click();
   const queue = page.getByRole("region", { name: "Submission mahasiswa" });
   await queue.getByLabel("Pilih tugas").selectOption({ label: assignmentTitle });
   const submissionRow = queue.locator(".submission-list-row").first();
@@ -307,10 +312,10 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await expect(reviewWorkspace.getByText("Snapshot publikasi immutable berhasil dibuat.")).toBeVisible();
 
   await page.getByRole("button", { name: "Keluar" }).click();
-  await page.getByLabel("Email").fill("mahasiswa@align.local");
+  await page.getByLabel("Email").fill(studentEmail);
   await page.getByLabel("Kata sandi", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Masuk" }).click();
-  await page.getByRole("link", { name: /IF101/ }).click();
+  await page.getByRole("link", { name: courseLink }).click();
   const releasedStudentWorkspace = page.getByRole("region", { name: "Tugas mata kuliah" });
   await releasedStudentWorkspace.getByRole("button", { name: assignmentTitle }).click();
   const studentSubmission = page.getByRole("region", { name: "Kumpulkan tugas" });
@@ -322,4 +327,33 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   const markdownDownload = page.waitForEvent("download");
   await officialResult.getByRole("link", { name: "Unduh Markdown" }).click();
   expect((await markdownDownload).suggestedFilename()).toMatch(/\.md$/);
+
+  const browser = page.context().browser();
+  if (!browser) throw new Error("Playwright browser context is unavailable for the touch/a11y check.");
+  const touchContext = await browser.newContext({ viewport: { width: 360, height: 800 }, hasTouch: true });
+  const touchPage = await touchContext.newPage();
+  try {
+    await touchPage.goto("/login");
+    await touchPage.getByLabel("Email").fill(lecturerEmail);
+    await touchPage.getByLabel("Kata sandi", { exact: true }).fill(password);
+    await touchPage.getByRole("button", { name: "Masuk" }).tap();
+    await expect(touchPage.getByRole("heading", { name: "Mata kuliah" })).toBeVisible();
+    await touchPage.getByRole("link", { name: courseLink }).tap();
+    const touchQueue = touchPage.getByRole("region", { name: "Submission mahasiswa" });
+    await touchQueue.getByLabel("Pilih tugas").selectOption({ label: assignmentTitle });
+    const touchSubmission = touchQueue.locator(".submission-list-row").first();
+    await expect(touchSubmission).toBeVisible();
+    await touchSubmission.tap();
+    const touchFile = touchQueue.locator(".submission-file-select").filter({ hasText: "native-two-pages.pdf" });
+    await touchFile.tap();
+    const touchViewer = touchQueue.locator(".submission-detail-card > .submission-viewer-panel");
+    const sourceNavigation = touchViewer.getByRole("navigation", { name: "Unit sumber" });
+    const pageTwo = sourceNavigation.getByRole("button", { name: /^page PDF p\.2/ });
+    const accessibleTree = await sourceNavigation.ariaSnapshot();
+    expect(accessibleTree).toContain('button "page PDF p.2');
+    await pageTwo.tap();
+    await expect(touchViewer).toContainText("Halaman 2 / 2");
+  } finally {
+    await touchContext.close();
+  }
 });

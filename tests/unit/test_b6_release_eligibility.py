@@ -31,7 +31,7 @@ def _report(release: dict[str, object], manifests: dict[str, dict[str, object]])
         "grounding_registry_version": release["grounding_registry_version"],
         "lint_registry_version": release["lint_registry_version"],
     })
-    return {
+    report: dict[str, object] = {
         "schema_version": 2,
         "status": "eligible",
         "provider_mode": "mock",
@@ -84,6 +84,8 @@ def _report(release: dict[str, object], manifests: dict[str, dict[str, object]])
         "ledger_refs": ["sha256:" + "f" * 64],
         "evaluation_kind": "empirical",
     }
+    report["report_sha256"] = sha256_json(report)
+    return report
 
 
 def test_release_pins_resource_and_rates_without_claiming_them_verified() -> None:
@@ -204,4 +206,12 @@ def test_report_rejects_low_support_pending_liability_and_mock_live_scope() -> N
     report = _report(release, manifests)
     report["allowed_data_modes"] = ["synthetic", "institutional"]
     with pytest.raises(SystemExit, match="allowed data modes"):
+        validate_policy_validation_report(report, release, manifests)
+
+
+def test_report_rejects_wrong_self_hash() -> None:
+    release, manifests = _baseline()
+    report = _report(release, manifests)
+    report["report_sha256"] = "0" * 64
+    with pytest.raises(SystemExit, match="report hash"):
         validate_policy_validation_report(report, release, manifests)

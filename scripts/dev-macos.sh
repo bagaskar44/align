@@ -38,19 +38,69 @@ case "${1:-help}" in
   verify)
     python3 "$script_dir/smoke-local.py" --project "$project" --docker "$docker_bin"
     ;;
+  release-baseline)
+    # Register the shipped mock/synthetic baseline for a fresh local stack.
+    # Keep any already-active release untouched in a developer database.
+    release_json=$(compose exec -T api align release register --file config/release.baseline.json)
+    baseline_id=$(printf '%s' "$release_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["release_id"])')
+    active_ids=$(db_query "SELECT id::text FROM release_manifests WHERE state='active' ORDER BY id")
+    if [ -z "$active_ids" ]; then
+      compose exec -T api align release activate "$baseline_id"
+    elif [ "$active_ids" = "$baseline_id" ]; then
+      echo 'The shipped synthetic baseline is already active.'
+    else
+      echo 'An existing active release was preserved; no release was activated.'
+    fi
+    ;;
   integration)
+    restore_integration_workers() {
+      status=$?
+      trap - EXIT
+      compose --profile test stop test-parser-worker test-outbox-dispatcher >/dev/null 2>&1 || true
+      compose start outbox-dispatcher >/dev/null 2>&1 || true
+      exit "$status"
+    }
+    # Both dispatchers read the shared database outbox. Pause the development
+    # dispatcher so test events reach the isolated align-test queues.
+    compose stop outbox-dispatcher
+    trap restore_integration_workers EXIT
+    compose --profile test up --build --detach --wait test-parser-worker test-outbox-dispatcher
     compose --profile test run --build --rm --no-deps test-runner
     ;;
   parser-up)
     compose up --build --detach parser-worker
     ;;
   parser-integration)
+    # The project dispatcher and the test dispatcher share the same database
+    # outbox but target different Redis queue prefixes. Keep the normal
+    # dispatcher from claiming test events during this isolated test window.
+    restore_dispatcher() {
+      status=$?
+      trap - EXIT
+      compose --profile test stop test-parser-worker test-outbox-dispatcher >/dev/null 2>&1 || true
+      compose start outbox-dispatcher >/dev/null 2>&1 || true
+      exit "$status"
+    }
+    compose stop outbox-dispatcher
+    trap restore_dispatcher EXIT
+    compose --profile test up --build --detach --wait test-parser-worker test-outbox-dispatcher
     compose --profile test run --build --rm --no-deps --env ALIGN_RUN_PARSER_INTEGRATION=true test-runner uv run --no-sync pytest tests/integration/test_b1_parser_runtime.py -v
+    ;;
+  parser-benchmark)
+    reports_dir="$(pwd)/docs/handover/b8-reports"
+    mkdir -p "$reports_dir"
+    compose --profile test run --build --rm --no-deps \
+      --volume "$(pwd)/tests/fixtures/b1:/fixtures:ro" \
+      --volume "$reports_dir:/reports" \
+      test-parser-worker \
+      uv run --no-sync --package align-api align parser benchmark \
+      --profile docling_native_v1 --fixtures /fixtures \
+      --output /reports/parser-capacity-current.json
     ;;
   stop)
     compose stop
     ;;
-  *) echo 'Usage: bash scripts/dev-macos.sh {bootstrap|install|up|seed|verify|integration|parser-up|parser-integration|stop}'
+  *) echo 'Usage: bash scripts/dev-macos.sh {bootstrap|install|up|seed|verify|release-baseline|integration|parser-up|parser-integration|parser-benchmark|stop}'
      echo 'Select isolation with ALIGN_COMPOSE_PROJECT and ALIGN_HOST_PORT (before bootstrap).'
      exit 1 ;;
 esac

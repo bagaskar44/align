@@ -1,32 +1,22 @@
 # Traceability penelitian dan DSRM
 
-Dokumen ini menyediakan kerangka pencatatan B0. Tidak ada dataset, label, benchmark, atau hasil empiris yang diklaim tersedia. Aktivitas ditandai belum dijalankan sampai ada artefak dan bukti yang dapat ditinjau.
+Status per 22 Oktober 2026: **tooling dan template tersedia; penelitian empiris belum dijalankan**. Artefak ini memisahkan bukti software mock/synthetic, runtime parser nyata pada fixture sintetis, provider live, dan evaluasi peserta. Tidak ada raw survey, dataset mahasiswa, adjudikasi, hasil belajar, atau komunikasi penelitian yang dibuat untuk melengkapi handover.
 
-| Aktivitas DSRM | Status | Artefak/bukti |
+| Aktivitas DSRM | Status | ID, sumber, versi, dan bukti aktual |
 |---|---|---|
-| Identifikasi masalah | Belum dijalankan | Catat kebutuhan dan bukti masalah dari pemilik/pengguna saat studi dimulai. |
-| Penetapan tujuan solusi | Belum dijalankan | Tautkan objective ke requirement serta keputusan produk yang disetujui. |
-| Desain dan pengembangan | Belum dijalankan | Catat versi source, manifest, fixture, dan keputusan engineering per iterasi. |
-| Demonstrasi | Belum dijalankan | Catat environment, skenario, data sintetis/berizin, dan command yang benar-benar dieksekusi. |
-| Evaluasi | Belum dijalankan | Simpan protokol, denominator, label, interval, limit, serta hasil software terpisah dari efektivitas metode. |
-| Komunikasi | Belum dijalankan | Tautkan laporan, batas klaim, dan penerima yang berwenang. |
+| Problem identification / motivation | `in_progress` | Problem scope dan daftar kebutuhan bersumber dari [master](../ALIGN_IMPLEMENTATION_SPEC.md) §§21, 24 serta permintaan pemilik produk. Master menyebut 21 responden kebutuhan awal (1 dosen, 20 asisten); record respons mentah, instrumen, tanggal survei, atau consent tidak tersedia dalam checkout. Angka tersebut adalah konteks yang dinyatakan master, bukan hasil survey yang diverifikasi di sini dan bukan efektivitas.
+| Solution objectives | `completed_with_evidence` | FR-24, INV-16, AC-MVP-45/64 dan AC-RES-01–07 diterjemahkan menjadi offline metrics/policy/robustness tooling, typed API contract, dan template. Target precision/recall/coverage bersifat prospektif di master §21.3, bukan hasil.
+| Design and development | `completed_with_software_evidence` | Sumber B8 meliputi `services/api/src/align_api/evaluation.py`, CLI `services/api/src/align_api/cli.py`, `services/api/src/align_api/robustness.py`, `services/worker/src/align_worker/benchmark.py`, `scripts/openapi_contract.py`, `research/templates/`, serta locks. Report fixture: [`metrics-three-units.json`](../docs/handover/b8-reports/metrics-three-units.json), [`policy-software-example.json`](../docs/handover/b8-reports/policy-software-example.json), parser report di direktori sama. Versi/hashes aktual dicatat pada [handover B8](../docs/handover/B8.md); revision kerja belum di-commit.
+| Demonstration | `completed_with_synthetic_evidence` | Dua E2E pada checkout dan project/database Docker sintetis terisolasi lulus 1/1 untuk Sistem Informasi dan 1/1 untuk Manajemen. Record menyertakan assignment/context/submission/version/file hashes/parse status/analysis/review/evidence/annotation/feedback/publication IDs yang dibaca dari DB setelah run: [SI](demos/B8-sistem-informasi.md), [Manajemen](demos/B8-manajemen.md). Tiap alur mengecek 360/768/1440, keyboard dan touch emulation, serta mahasiswa membuka hasil dan mengunduh Markdown. Ini bukan penelitian empiris atau validasi perangkat manusia.
+| Evaluation | `software_gate_only` | AC-MVP-45 tiga unit sintetis membuktikan denominator/abstention; policy report `incomplete`; robustness compiler `software_gate_only` dan executor `incomplete/not_run` dengan corruption/format dimensions eksplisit `not_run`; enam Docling runtime fixtures dan cold/warm benchmark mengukur parser nyata pada file sintetis. Tidak ada gold institusional, two-rater adjudication, live-provider study, participant study, empirical claim atau hasil efektivitas.
+| Communication | `in_progress_internal_handover` | [Handover B8](../docs/handover/B8.md), [requirements traceability](../requirements_traceability.md), README dan report JSON/Markdown menjadi komunikasi internal yang dapat direview. Belum ada paper, presentasi eksternal, stakeholder sign-off, atau komunikasi penelitian yang diklaim.
 
-Setiap catatan iterasi di `research/iterations/` menggunakan format berikut:
+## Status data dan protokol
 
-```text
-ID iterasi:
-Tanggal:
-Aktivitas DSRM:
-Masalah/objective:
-Requirement, invariant, acceptance IDs:
-Dataset dan izin:
-Source/config/manifest hashes:
-Protokol dan partition:
-Command dan environment:
-Hasil aktual dan denominator:
-Limitasi/risiko bias:
-Keputusan serta iterasi berikutnya:
-Artefak:
-```
+- Dataset empiris, izin institusi, codebook calibrated/frozen, split, student/group/template/near-duplicate audit, dan adjudication refs: `not_yet_available`.
+- Study targets 60 pilot + 180 development + 60 validation + 60 frozen test adalah rencana master, bukan inventaris observasi. Relasi pilot ke main partitions harus diaudit; template tidak menyatakan pilot course-disjoint tanpa bukti.
+- Baseline penelitian B0–B3 dan A1–A4 hanya protocol placeholders di `templates/baseline-ablation-plan.json`; tidak ada switch production untuk menonaktifkan guard.
+- Mode data: unit/software tests `synthetic`; Docling runtime `synthetic files / actual parser`; provider `mock` pada software report; paid provider calls 0. Provider live/evaluasi empiris tidak dilakukan.
+- Partisi frozen-test tidak digunakan untuk tuning. Input dengan mode/partition/hash yang salah ditolak atau incomplete oleh evaluator.
 
-Golden/regression data tidak boleh masuk prompt, retrieval, atau tuning. Parent identity, partition, equivalence review, denominator, serta compiler-fidelity dan executor-robustness dilaporkan sesuai master. Mock dan software correctness tidak menjadi bukti efektivitas empiris.
+Template aktivitas/iterasi lengkap ada di `research/templates/dsrm-activity.md` dan `research/templates/iteration.md`. Bukti B8 mengisi [iterasi software handover](iterations/B8-software-handover.md) dan dua demo di `research/demos/`; template tetap tersedia untuk iterasi berikutnya. Setiap perubahan/evaluasi berikutnya dicatat dengan provenance di `research/iterations/`.

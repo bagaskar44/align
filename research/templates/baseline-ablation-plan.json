@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "status": "protocol_template_not_run",
+  "data_mode": "not_yet_available",
+  "dataset_manifest_sha256": "not_yet_available",
+  "codebook_sha256": "not_yet_available",
+  "split_sha256": "not_yet_available",
+  "frozen_before_validation": false,
+  "arms": [
+    {
+      "id": "research-baseline-B0-deterministic-rules",
+      "method": "deterministic parser/rules",
+      "status": "not_run"
+    },
+    {
+      "id": "research-baseline-B1-direct-strong",
+      "method": "direct strong model with approved context",
+      "status": "not_run"
+    },
+    {
+      "id": "research-baseline-B2-filtered-rag-strong",
+      "method": "filtered bundle-only retrieval with the same strong model",
+      "status": "not_run"
+    },
+    {
+      "id": "research-baseline-B3-full-align",
+      "method": "full ALIGN",
+      "status": "not_run"
+    },
+    {
+      "id": "A1-no-deterministic-first-routing",
+      "changed_factor": "deterministic-first routing only",
+      "status": "not_run"
+    },
+    {
+      "id": "A2-no-negative-gate",
+      "changed_factor": "negative gate in the offline evaluator only",
+      "status": "not_run"
+    },
+    {
+      "id": "A3-no-structure-preserving-anchors",
+      "changed_factor": "structure-preserving source representation/anchors only",
+      "status": "not_run"
+    },
+    {
+      "id": "A4-fixed-strong-model",
+      "changed_factor": "adaptive roles replaced by one fixed strong model only",
+      "status": "not_run"
+    }
+  ],
+  "controls": {
+    "same_source_spec_model_prompt_schema_limits_except_declared_factor": true,
+    "same_paired_units_and_matching": true,
+    "production_guardrails_can_be_disabled": false,
+    "never_tune_on_frozen_test": true,
+    "mock_software_gate_is_not_empirical_evidence": true
+  },
+  "not_yet_available_reason": "No authorized research dataset, frozen split, live-provider budget, or preregistered evaluation is available in this checkout. These arm names are protocol placeholders, not implemented runtime policy switches or results."
+}

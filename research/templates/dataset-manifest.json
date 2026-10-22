@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "dataset_id": "not_yet_available",
+  "data_mode": "not_yet_available",
+  "authorization_ref": "not_yet_available",
+  "codebook_sha256": "not_yet_available",
+  "split_sha256": "not_yet_available",
+  "partition_plan": {
+    "pilot": {
+      "assignment_count_target": 60,
+      "course_relation_to_main_partitions": "not_asserted_requires_audit"
+    },
+    "development": {"assignment_count_target": 180},
+    "validation": {"assignment_count_target": 60},
+    "frozen_test": {"assignment_count_target": 60},
+    "main_partition_course_disjointness": "required_to_verify_before_freeze",
+    "status": "protocol_target_only_not_observed_data"
+  },
+  "cases": [],
+  "partition_inventory": [],
+  "not_yet_available_reason": "No authorized empirical dataset, rater labels, or verified split is present in this checkout. This placeholder is not accepted by the evaluator."
+}

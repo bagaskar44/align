@@ -1,0 +1,936 @@
+{
+  "schema_version": 1,
+  "report_type": "align_parser_benchmark_report",
+  "generated_at": "2026-10-22T04:56:39.603139+00:00",
+  "status": "measured",
+  "measurement_mode": "actual_bounded_parser_child",
+  "data_origin": "synthetic_fixture",
+  "provider_mode": "not_used",
+  "provider_calls": 0,
+  "provider_actual_cost_usd": "0.00",
+  "infrastructure_cost": {
+    "amount": null,
+    "currency": null,
+    "status": "not_metered"
+  },
+  "profile_id": "docling_native_v1",
+  "profile_sha256": "22794ebaa384b628d581a2a2620ddfaf89a182afaeb53ca01905569a0771f74c",
+  "parser_mode": "actual-isolated-parser-child; mock=false",
+  "hardware": {
+    "platform": "Linux-7.0.14-linuxkit-aarch64-with-glibc2.41",
+    "machine": "aarch64",
+    "processor": "unknown",
+    "cpu_count": 8,
+    "host_or_vm_memory_bytes": 12526637056,
+    "container_memory_limit_bytes": 9663676416,
+    "tesseract": "tesseract 5.5.0"
+  },
+  "packages": {
+    "docling": "not-installed",
+    "docling-core": "2.102.0",
+    "docling-slim": "2.140.0",
+    "python-docx": "1.2.0",
+    "openpyxl": "3.1.5",
+    "pillow": "12.3.0",
+    "pypdf": "6.21.1",
+    "torch": "2.14.1+cpu",
+    "torchvision": "0.29.1+cpu"
+  },
+  "versions": {
+    "uv_lock_sha256": "eee5c7af8580501b4bcb0fd8b4e47bb1c31fc3c7043b10e55b81db7ab3f59097",
+    "resource_manifest_sha256": "797d4b9731fec7722fbe9b3e266d6e65118f30979bd5118dafd5b58bc176d7fb"
+  },
+  "resources": {
+    "schema_version": 1,
+    "profile_key": "docling_native_v1",
+    "version_no": 1,
+    "backend": "docling",
+    "formats": [
+      "pdf",
+      "jpg",
+      "jpeg",
+      "png"
+    ],
+    "package_lock": {
+      "uv_lock_sha256": "eee5c7af8580501b4bcb0fd8b4e47bb1c31fc3c7043b10e55b81db7ab3f59097",
+      "docling-slim": "2.140.0",
+      "python-docx": "1.2.0",
+      "openpyxl": "3.1.5"
+    },
+    "implementation_sha256": "4d59ed4d58dfd27018596f7c6d4b31ff49f8a264d62a950215ff9978dd82534f",
+    "model_artifacts": [
+      {
+        "repo_id": "docling-project/docling-layout-heron",
+        "revision": "8f39ad3c0b4c58e9c2d2c84a38465abf757272d8",
+        "files": [
+          {
+            "path": "README.md",
+            "sha256": "175700839bc7808eac6af1d0c23e4f483606ab2276fe01122f4093e61a1a65b6",
+            "size_bytes": 3219
+          },
+          {
+            "path": "config.json",
+            "sha256": "fdea30805ce2f5666b147fca941dcdd27ad468e27d6ed21902207d3da056a97d",
+            "size_bytes": 3268
+          },
+          {
+            "path": "docling_heron_400.png",
+            "sha256": "e7f78610372b32a7938e480d2c7fa1c3037ee170bd82282a5bd026232f6e6f9e",
+            "size_bytes": 96925
+          },
+          {
+            "path": "model.safetensors",
+            "sha256": "00333a43451945aaf89db8ca9c0a17e75d1537c17db60fdb91aa95f4c7929e0c",
+            "size_bytes": 171658996
+          },
+          {
+            "path": "preprocessor_config.json",
+            "sha256": "cd38cd59999e7a95d68e487fbe5132df3d4e5c32a0836add57e6126ba0c4eaf1",
+            "size_bytes": 444
+          }
+        ]
+      },
+      {
+        "repo_id": "docling-project/docling-models",
+        "revision": "fc0f2d45e2218ea24bce5045f58a389aed16dc23",
+        "files": [
+          {
+            "path": "model_artifacts/tableformer/accurate/tableformer_accurate.safetensors",
+            "sha256": "2a7d6c924b3cd12fb99a09280ca9c33a89c5d60b93253617d2e088c1a40374d9",
+            "size_bytes": 212758388
+          },
+          {
+            "path": "model_artifacts/tableformer/accurate/tm_config.json",
+            "sha256": "984e122ceb8ccf84d84c9d2882f6f2302a44b4f1e577babd6289892c36f3cffd",
+            "size_bytes": 7060
+          }
+        ]
+      }
+    ],
+    "ocr": {
+      "engine": "tesseract",
+      "languages": [
+        "ind",
+        "eng"
+      ],
+      "artifacts": [
+        {
+          "path": "/usr/share/tesseract-ocr/5/tessdata/ind.traineddata",
+          "sha256": "69786901da87ab8766c1ea7fbb10b28f2110c14da3f6c8f2735df131fba95d88"
+        },
+        {
+          "path": "/usr/share/tesseract-ocr/5/tessdata/eng.traineddata",
+          "sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2"
+        }
+      ],
+      "version": "5.5.0"
+    },
+    "options": {
+      "layout": "layout_heron",
+      "table_mode": "accurate",
+      "ocr_mode": "native_text_or_full_page",
+      "remote_services": false
+    },
+    "options_hash": "ffa111253465f97feeaeb171d21bbcd921055cdf6b1c9a59510c5aab2faf99f6",
+    "memory_limit_bytes": 8589934592,
+    "soft_timeout_seconds": 120,
+    "hard_timeout_seconds": 150,
+    "initial_page_batch_size": 1,
+    "heavy": true
+  },
+  "fixtures": [
+    {
+      "name": "native-two-pages.pdf",
+      "relative_path": "native-two-pages.pdf",
+      "format": "pdf",
+      "sha256": "04ba3a7fc49f07b407a75ee2861737fe7d80aa7c70dcaf9f25a178cc28c55d6c",
+      "size_bytes": 1154,
+      "pages": 2,
+      "preflight": {
+        "pages": 2,
+        "page_sizes": [
+          [
+            612.0,
+            792.0
+          ],
+          [
+            612.0,
+            792.0
+          ]
+        ],
+        "parser_profile": "docling_native_v1",
+        "size_bytes": 1154,
+        "mime": "application/pdf"
+      },
+      "preflight_ms": 122,
+      "profile_memory_limit_bytes": 8589934592,
+      "runs": {
+        "cold": {
+          "status": "completed",
+          "parse_statuses": [
+            "parsed"
+          ],
+          "failures": [],
+          "tasks": [
+            {
+              "page": 1,
+              "wall_ms": 14988,
+              "stage_timings_ms": {
+                "resource_verification_and_runtime_setup": 4367.523,
+                "source_metadata_inventory": 39.011,
+                "docling_pipeline_conversion": 8820.572,
+                "anchor_and_evidence_assembly": 0.438
+              },
+              "failure_code": null,
+              "process_exit": "0",
+              "peak_rss_bytes": 1169874944,
+              "cgroup_oom_kills_before": 0,
+              "cgroup_oom_kills_after": 0,
+              "parse_status": "parsed",
+              "unit_count": 3,
+              "evidence_count": 1
+            },
+            {
+              "page": 2,
+              "wall_ms": 12232,
+              "stage_timings_ms": {
+                "resource_verification_and_runtime_setup": 3167.592,
+                "source_metadata_inventory": 33.502,
+                "docling_pipeline_conversion": 7645.619,
+                "anchor_and_evidence_assembly": 0.266
+              },
+              "failure_code": null,
+              "process_exit": "0",
+              "peak_rss_bytes": 1169788928,
+              "cgroup_oom_kills_before": 0,
+              "cgroup_oom_kills_after": 0,
+              "parse_status": "parsed",
+              "unit_count": 3,
+              "evidence_count": 1
+            }
+          ],
+          "unit_count": 5,
+          "evidence_count": 2,
+          "anchor_checks": {
+            "verified": 4,
+            "invalid": 0,
+            "unanchored_or_unsupported": 0
+          },
+          "table_evidence_count": 0,
+          "spreadsheet_header_context_count": 0,
+          "formula_cache_unverified_count": 0,
+          "stage_names": [
+            "assembly_page",
+            "layout",
+            "metadata_inventory",
+            "native_text",
+            "render",
+            "table_extraction",
+            "text"
+          ],
+          "container_cgroup_baseline_bytes": 131973120,
+          "container_cgroup_peak_observed_bytes": 1023700992,
+          "container_cgroup_peak_scope": "whole parser-worker container cgroup; includes the benchmark process and other resident container processes; sampled every 50 ms",
+          "cgroup_oom_kills_before": 0,
+          "cgroup_oom_kills_after": 0
+        },
+        "warm": {
+          "status": "completed",
+          "parse_statuses": [
+            "parsed"
+          ],
+          "failures": [],
+          "tasks": [
+            {
+              "page": 1,
+              "wall_ms": 12675,
+              "stage_timings_ms": {
+                "resource_verification_and_runtime_setup": 2912.922,
+                "source_metadata_inventory": 30.805,
+                "docling_pipeline_conversion": 7845.68,
+                "anchor_and_evidence_assembly": 0.964
+              },
+              "failure_code": null,
+              "process_exit": "0",
+              "peak_rss_bytes": 1164009472,
+              "cgroup_oom_kills_before": 0,
+              "cgroup_oom_kills_after": 0,
+              "parse_status": "parsed",
+              "unit_count": 3,
+              "evidence_count": 1
+            },
+            {
+              "page": 2,
+              "wall_ms": 11915,
+              "stage_timings_ms": {
+                "resource_verification_and_runtime_setup": 3194.273,
+                "source_metadata_inventory": 40.944,
+                "docling_pipeline_conversion": 7566.584,
+                "anchor_and_evidence_assembly": 0.097
+              },
+              "failure_code": null,
+              "process_exit": "0",
+              "peak_rss_bytes": 1170583552,
+              "cgroup_oom_kills_before": 0,
+              "cgroup_oom_kills_after": 0,
+              "parse_status": "parsed",
+              "unit_count": 3,
+              "evidence_count": 1
+            }
+          ],
+          "unit_count": 5,
+          "evidence_count": 2,
+          "anchor_checks": {
+            "verified": 4,
+            "invalid": 0,
+            "unanchored_or_unsupported": 0
+          },
+          "table_evidence_count": 0,
+          "spreadsheet_header_context_count": 0,
+          "formula_cache_unverified_count": 0,
+          "stage_names": [
+            "assembly_page",
+            "layout",
+            "metadata_inventory",
+            "native_text",
+            "render",
+            "table_extraction",
+            "text"
+          ],
+          "container_cgroup_baseline_bytes": 159227904,
+          "container_cgroup_peak_observed_bytes": 1023016960,
+          "container_cgroup_peak_scope": "whole parser-worker container cgroup; includes the benchmark process and other resident container processes; sampled every 50 ms",
+          "cgroup_oom_kills_before": 0,
+          "cgroup_oom_kills_after": 0
+        }
+      }
+    },
+    {
+      "name": "printed.jpeg",
+      "relative_path": "printed.jpeg",
+      "format": "jpeg",
+      "sha256": "cb2ee782a9c88c93d46496cd6fa6eb517f0d53b313518b8bb33d24109cbbba1c",
+      "size_bytes": 48555,
+      "pages": 1,
+      "preflight": {
+        "width": 1600,
+        "height": 600,
+        "pixels": 960000,
+        "orientation": 1,
+        "parser_profile": "docling_native_v1",
+        "size_bytes": 48555,
+        "mime": "image/jpeg"
+      },
+      "preflight_ms": 14,
+      "profile_memory_limit_bytes": 8589934592,
+      "runs": {
+        "cold": {
+          "status": "completed",
+          "parse_statuses": [
+            "parsed"
+          ],
+          "failures": [],
+          "tasks": [
+            {
+              "page": null,
+              "wall_ms": 12960,
+              "stage_timings_ms": {
+                "resource_verification_and_runtime_setup": 2931.166,
+                "source_metadata_inventory": 2.048,
+                "docling_pipeline_conversion": 8944.573,
+                "anchor_and_evidence_assembly": 0.2
+              },
+              "failure_code": null,
+              "process_exit": "0",
+              "peak_rss_bytes": 1168715776,
+              "cgroup_oom_kills_before": 0,
+              "cgroup_oom_kills_after": 0,
+              "parse_status": "parsed",
+              "unit_count": 7,
+              "evidence_count": 5
+            }
+          ],
+          "unit_count": 7,
+          "evidence_count": 5,
+          "anchor_checks": {
+            "verified": 6,
+            "invalid": 0,
+            "unanchored_or_unsupported": 0
+          },
+          "table_evidence_count": 0,
+          "spreadsheet_header_context_count": 0,
+          "formula_cache_unverified_count": 0,
+          "stage_names": [
+            "assembly_page",
+            "layout",
+            "metadata_inventory",
+            "ocr",
+            "render",
+            "table_extraction",
+            "text"
+          ],
+          "container_cgroup_baseline_bytes": 159162368,
+          "container_cgroup_peak_observed_bytes": 1126019072,
+          "container_cgroup_peak_scope": "whole parser-worker container cgroup; includes the benchmark process and other resident container processes; sampled every 50 ms",
+          "cgroup_oom_kills_before": 0,
+          "cgroup_oom_kills_after": 0
+        },
+        "warm": {
+          "status": "completed",
+          "parse_statuses": [
+            "parsed"
+          ],
+          "failures": [],
+          "tasks": [
+            {
+              "page": null,
+              "wall_ms": 12625,
+              "stage_timings_ms": {
+                "resource_verification_and_runtime_setup": 2690.576,
+                "source_metadata_inventory": 1.938,
+                "docling_pipeline_conversion": 8672.064,
+                "anchor_and_evidence_assembly": 0.197
+              },
+              "failure_code": null,
+              "process_exit": "0",
+              "peak_rss_bytes": 1168248832,
+              "cgroup_oom_kills_before": 0,
+              "cgroup_oom_kills_after": 0,
+              "parse_status": "parsed",
+              "unit_count": 7,
+              "evidence_count": 5
+            }
+          ],
+          "unit_count": 7,
+          "evidence_count": 5,
+          "anchor_checks": {
+            "verified": 6,
+            "invalid": 0,
+            "unanchored_or_unsupported": 0
+          },
+          "table_evidence_count": 0,
+          "spreadsheet_header_context_count": 0,
+          "formula_cache_unverified_count": 0,
+          "stage_names": [
+            "assembly_page",
+            "layout",
+            "metadata_inventory",
+            "ocr",
+            "render",
+            "table_extraction",
+            "text"
+          ],
+          "container_cgroup_baseline_bytes": 161718272,
+          "container_cgroup_peak_observed_bytes": 1126420480,
+          "container_cgroup_peak_scope": "whole parser-worker container cgroup; includes the benchmark process and other resident container processes; sampled every 50 ms",
+          "cgroup_oom_kills_before": 0,
+          "cgroup_oom_kills_after": 0
+        }
+      }
+    },
+    {
+      "name": "printed.jpg",
+      "relative_path": "printed.jpg",
+      "format": "jpg",
+      "sha256": "cb2ee782a9c88c93d46496cd6fa6eb517f0d53b313518b8bb33d24109cbbba1c",
+      "size_bytes": 48555,
+      "pages": 1,
+      "preflight": {
+        "width": 1600,
+        "height": 600,
+        "pixels": 960000,
+        "orientation": 1,
+        "parser_profile": "docling_native_v1",
+        "size_bytes": 48555,
+        "mime": "image/jpeg"
+      },
+      "preflight_ms": 5,
+      "profile_memory_limit_bytes": 8589934592,
+      "runs": {
+        "cold": {
+          "status": "completed",
+          "parse_statuses": [
+            "parsed"
+          ],
+          "failures": [],
+          "tasks": [
+            {
+              "page": null,
+              "wall_ms": 14292,
+              "stage_timings_ms": {
+                "resource_verification_and_runtime_setup": 3263.555,
+                "source_metadata_inventory": 2.118,
+                "docling_pipeline_conversion": 9650.808,
+                "anchor_and_evidence_assembly": 1.164
+              },
+              "failure_code": null,
+              "process_exit": "0",
+              "peak_rss_bytes": 1168064512,
+              "cgroup_oom_kills_before": 0,
+              "cgroup_oom_kills_after": 0,
+              "parse_status": "parsed",
+              "unit_count": 7,
+              "evidence_count": 5
+            }
+          ],
+          "unit_count": 7,
+          "evidence_count": 5,
+          "anchor_checks": {
+            "verified": 6,
+            "invalid": 0,
+            "unanchored_or_unsupported": 0
+          },
+          "table_evidence_count": 0,
+          "spreadsheet_header_context_count": 0,
+          "formula_cache_unverified_count": 0,
+          "stage_names": [
+            "assembly_page",
+            "layout",
+            "metadata_inventory",
+            "ocr",
+            "render",
+            "table_extraction",
+            "text"
+          ],
+          "container_cgroup_baseline_bytes": 159420416,
+          "container_cgroup_peak_observed_bytes": 1129607168,
+          "container_cgroup_peak_scope": "whole parser-worker container cgroup; includes the benchmark process and other resident container processes; sampled every 50 ms",
+          "cgroup_oom_kills_before": 0,
+          "cgroup_oom_kills_after": 0
+        },
+        "warm": {
+          "status": "completed",
+          "parse_statuses": [
+            "parsed"
+          ],
+          "failures": [],
+          "tasks": [
+            {
+              "page": null,
+              "wall_ms": 13392,
+              "stage_timings_ms": {
+                "resource_verification_and_runtime_setup": 3053.325,
+                "source_metadata_inventory": 2.427,
+                "docling_pipeline_conversion": 9178.077,
+                "anchor_and_evidence_assembly": 1.5
+              },
+              "failure_code": null,
+              "process_exit": "0",
+              "peak_rss_bytes": 1170034688,
+              "cgroup_oom_kills_before": 0,
+              "cgroup_oom_kills_after": 0,
+              "parse_status": "parsed",
+              "unit_count": 7,
+              "evidence_count": 5
+            }
+          ],
+          "unit_count": 7,
+          "evidence_count": 5,
+          "anchor_checks": {
+            "verified": 6,
+            "invalid": 0,
+            "unanchored_or_unsupported": 0
+          },
+          "table_evidence_count": 0,
+          "spreadsheet_header_context_count": 0,
+          "formula_cache_unverified_count": 0,
+          "stage_names": [
+            "assembly_page",
+            "layout",
+            "metadata_inventory",
+            "ocr",
+            "render",
+            "table_extraction",
+            "text"
+          ],
+          "container_cgroup_baseline_bytes": 162717696,
+          "container_cgroup_peak_observed_bytes": 1131515904,
+          "container_cgroup_peak_scope": "whole parser-worker container cgroup; includes the benchmark process and other resident container processes; sampled every 50 ms",
+          "cgroup_oom_kills_before": 0,
+          "cgroup_oom_kills_after": 0
+        }
+      }
+    },
+    {
+      "name": "printed.png",
+      "relative_path": "printed.png",
+      "format": "png",
+      "sha256": "f2843abac997a191a13cc50a72614774814bc1bcc8edb69ab107de5201b22405",
+      "size_bytes": 21129,
+      "pages": 1,
+      "preflight": {
+        "width": 1600,
+        "height": 600,
+        "pixels": 960000,
+        "orientation": 1,
+        "parser_profile": "docling_native_v1",
+        "size_bytes": 21129,
+        "mime": "image/png"
+      },
+      "preflight_ms": 10,
+      "profile_memory_limit_bytes": 8589934592,
+      "runs": {
+        "cold": {
+          "status": "completed",
+          "parse_statuses": [
+            "parsed"
+          ],
+          "failures": [],
+          "tasks": [
+            {
+              "page": null,
+              "wall_ms": 13591,
+              "stage_timings_ms": {
+                "resource_verification_and_runtime_setup": 2816.455,
+                "source_metadata_inventory": 11.374,
+                "docling_pipeline_conversion": 9245.139,
+                "anchor_and_evidence_assembly": 0.373
+              },
+              "failure_code": null,
+              "process_exit": "0",
+              "peak_rss_bytes": 1171197952,
+              "cgroup_oom_kills_before": 0,
+              "cgroup_oom_kills_after": 0,
+              "parse_status": "parsed",
+              "unit_count": 5,
+              "evidence_count": 3
+            }
+          ],
+          "unit_count": 5,
+          "evidence_count": 3,
+          "anchor_checks": {
+            "verified": 4,
+            "invalid": 0,
+            "unanchored_or_unsupported": 0
+          },
+          "table_evidence_count": 0,
+          "spreadsheet_header_context_count": 0,
+          "formula_cache_unverified_count": 0,
+          "stage_names": [
+            "assembly_page",
+            "layout",
+            "metadata_inventory",
+            "ocr",
+            "render",
+            "table_extraction",
+            "text"
+          ],
+          "container_cgroup_baseline_bytes": 162549760,
+          "container_cgroup_peak_observed_bytes": 1133682688,
+          "container_cgroup_peak_scope": "whole parser-worker container cgroup; includes the benchmark process and other resident container processes; sampled every 50 ms",
+          "cgroup_oom_kills_before": 0,
+          "cgroup_oom_kills_after": 0
+        },
+        "warm": {
+          "status": "completed",
+          "parse_statuses": [
+            "parsed"
+          ],
+          "failures": [],
+          "tasks": [
+            {
+              "page": null,
+              "wall_ms": 13913,
+              "stage_timings_ms": {
+                "resource_verification_and_runtime_setup": 3039.035,
+                "source_metadata_inventory": 12.314,
+                "docling_pipeline_conversion": 9297.988,
+                "anchor_and_evidence_assembly": 0.315
+              },
+              "failure_code": null,
+              "process_exit": "0",
+              "peak_rss_bytes": 1171890176,
+              "cgroup_oom_kills_before": 0,
+              "cgroup_oom_kills_after": 0,
+              "parse_status": "parsed",
+              "unit_count": 5,
+              "evidence_count": 3
+            }
+          ],
+          "unit_count": 5,
+          "evidence_count": 3,
+          "anchor_checks": {
+            "verified": 4,
+            "invalid": 0,
+            "unanchored_or_unsupported": 0
+          },
+          "table_evidence_count": 0,
+          "spreadsheet_header_context_count": 0,
+          "formula_cache_unverified_count": 0,
+          "stage_names": [
+            "assembly_page",
+            "layout",
+            "metadata_inventory",
+            "ocr",
+            "render",
+            "table_extraction",
+            "text"
+          ],
+          "container_cgroup_baseline_bytes": 163246080,
+          "container_cgroup_peak_observed_bytes": 1134333952,
+          "container_cgroup_peak_scope": "whole parser-worker container cgroup; includes the benchmark process and other resident container processes; sampled every 50 ms",
+          "cgroup_oom_kills_before": 0,
+          "cgroup_oom_kills_after": 0
+        }
+      }
+    },
+    {
+      "name": "rotated.jpeg",
+      "relative_path": "rotated.jpeg",
+      "format": "jpeg",
+      "sha256": "8cca617e70ac55a94863d5b278244e244678c08faff3e4414bcb4ee47b668606",
+      "size_bytes": 48806,
+      "pages": 1,
+      "preflight": {
+        "width": 600,
+        "height": 1600,
+        "pixels": 960000,
+        "orientation": 6,
+        "parser_profile": "docling_native_v1",
+        "size_bytes": 48806,
+        "mime": "image/jpeg"
+      },
+      "preflight_ms": 14,
+      "profile_memory_limit_bytes": 8589934592,
+      "runs": {
+        "cold": {
+          "status": "completed",
+          "parse_statuses": [
+            "parsed"
+          ],
+          "failures": [],
+          "tasks": [
+            {
+              "page": null,
+              "wall_ms": 13774,
+              "stage_timings_ms": {
+                "resource_verification_and_runtime_setup": 3016.537,
+                "source_metadata_inventory": 26.18,
+                "docling_pipeline_conversion": 9264.368,
+                "anchor_and_evidence_assembly": 0.453
+              },
+              "failure_code": null,
+              "process_exit": "0",
+              "peak_rss_bytes": 1176338432,
+              "cgroup_oom_kills_before": 0,
+              "cgroup_oom_kills_after": 0,
+              "parse_status": "parsed",
+              "unit_count": 7,
+              "evidence_count": 5
+            }
+          ],
+          "unit_count": 7,
+          "evidence_count": 5,
+          "anchor_checks": {
+            "verified": 6,
+            "invalid": 0,
+            "unanchored_or_unsupported": 0
+          },
+          "table_evidence_count": 0,
+          "spreadsheet_header_context_count": 0,
+          "formula_cache_unverified_count": 0,
+          "stage_names": [
+            "assembly_page",
+            "layout",
+            "metadata_inventory",
+            "ocr",
+            "render",
+            "table_extraction",
+            "text"
+          ],
+          "container_cgroup_baseline_bytes": 163995648,
+          "container_cgroup_peak_observed_bytes": 1138831360,
+          "container_cgroup_peak_scope": "whole parser-worker container cgroup; includes the benchmark process and other resident container processes; sampled every 50 ms",
+          "cgroup_oom_kills_before": 0,
+          "cgroup_oom_kills_after": 0
+        },
+        "warm": {
+          "status": "completed",
+          "parse_statuses": [
+            "parsed"
+          ],
+          "failures": [],
+          "tasks": [
+            {
+              "page": null,
+              "wall_ms": 15145,
+              "stage_timings_ms": {
+                "resource_verification_and_runtime_setup": 3118.823,
+                "source_metadata_inventory": 27.748,
+                "docling_pipeline_conversion": 10453.722,
+                "anchor_and_evidence_assembly": 0.429
+              },
+              "failure_code": null,
+              "process_exit": "0",
+              "peak_rss_bytes": 1176178688,
+              "cgroup_oom_kills_before": 0,
+              "cgroup_oom_kills_after": 0,
+              "parse_status": "parsed",
+              "unit_count": 7,
+              "evidence_count": 5
+            }
+          ],
+          "unit_count": 7,
+          "evidence_count": 5,
+          "anchor_checks": {
+            "verified": 6,
+            "invalid": 0,
+            "unanchored_or_unsupported": 0
+          },
+          "table_evidence_count": 0,
+          "spreadsheet_header_context_count": 0,
+          "formula_cache_unverified_count": 0,
+          "stage_names": [
+            "assembly_page",
+            "layout",
+            "metadata_inventory",
+            "ocr",
+            "render",
+            "table_extraction",
+            "text"
+          ],
+          "container_cgroup_baseline_bytes": 163913728,
+          "container_cgroup_peak_observed_bytes": 1137405952,
+          "container_cgroup_peak_scope": "whole parser-worker container cgroup; includes the benchmark process and other resident container processes; sampled every 50 ms",
+          "cgroup_oom_kills_before": 0,
+          "cgroup_oom_kills_after": 0
+        }
+      }
+    },
+    {
+      "name": "scanned.pdf",
+      "relative_path": "scanned.pdf",
+      "format": "pdf",
+      "sha256": "8be99fac9bca43912668bd3328f8e12bc6b66377a518a98b87943ed8db37c39d",
+      "size_bytes": 33867,
+      "pages": 1,
+      "preflight": {
+        "pages": 1,
+        "page_sizes": [
+          [
+            1152.0,
+            432.0
+          ]
+        ],
+        "parser_profile": "docling_native_v1",
+        "size_bytes": 33867,
+        "mime": "application/pdf"
+      },
+      "preflight_ms": 4,
+      "profile_memory_limit_bytes": 8589934592,
+      "runs": {
+        "cold": {
+          "status": "completed",
+          "parse_statuses": [
+            "parsed"
+          ],
+          "failures": [],
+          "tasks": [
+            {
+              "page": 1,
+              "wall_ms": 14790,
+              "stage_timings_ms": {
+                "resource_verification_and_runtime_setup": 3153.746,
+                "source_metadata_inventory": 32.569,
+                "docling_pipeline_conversion": 9331.643,
+                "anchor_and_evidence_assembly": 0.22
+              },
+              "failure_code": null,
+              "process_exit": "0",
+              "peak_rss_bytes": 1194455040,
+              "cgroup_oom_kills_before": 0,
+              "cgroup_oom_kills_after": 0,
+              "parse_status": "parsed",
+              "unit_count": 6,
+              "evidence_count": 4
+            }
+          ],
+          "unit_count": 6,
+          "evidence_count": 4,
+          "anchor_checks": {
+            "verified": 5,
+            "invalid": 0,
+            "unanchored_or_unsupported": 0
+          },
+          "table_evidence_count": 0,
+          "spreadsheet_header_context_count": 0,
+          "formula_cache_unverified_count": 0,
+          "stage_names": [
+            "assembly_page",
+            "layout",
+            "metadata_inventory",
+            "ocr",
+            "render",
+            "table_extraction",
+            "text"
+          ],
+          "container_cgroup_baseline_bytes": 164171776,
+          "container_cgroup_peak_observed_bytes": 1117593600,
+          "container_cgroup_peak_scope": "whole parser-worker container cgroup; includes the benchmark process and other resident container processes; sampled every 50 ms",
+          "cgroup_oom_kills_before": 0,
+          "cgroup_oom_kills_after": 0
+        },
+        "warm": {
+          "status": "completed",
+          "parse_statuses": [
+            "parsed"
+          ],
+          "failures": [],
+          "tasks": [
+            {
+              "page": 1,
+              "wall_ms": 13866,
+              "stage_timings_ms": {
+                "resource_verification_and_runtime_setup": 3542.891,
+                "source_metadata_inventory": 34.143,
+                "docling_pipeline_conversion": 8889.612,
+                "anchor_and_evidence_assembly": 2.033
+              },
+              "failure_code": null,
+              "process_exit": "0",
+              "peak_rss_bytes": 1194590208,
+              "cgroup_oom_kills_before": 0,
+              "cgroup_oom_kills_after": 0,
+              "parse_status": "parsed",
+              "unit_count": 6,
+              "evidence_count": 4
+            }
+          ],
+          "unit_count": 6,
+          "evidence_count": 4,
+          "anchor_checks": {
+            "verified": 5,
+            "invalid": 0,
+            "unanchored_or_unsupported": 0
+          },
+          "table_evidence_count": 0,
+          "spreadsheet_header_context_count": 0,
+          "formula_cache_unverified_count": 0,
+          "stage_names": [
+            "assembly_page",
+            "layout",
+            "metadata_inventory",
+            "ocr",
+            "render",
+            "table_extraction",
+            "text"
+          ],
+          "container_cgroup_baseline_bytes": 164360192,
+          "container_cgroup_peak_observed_bytes": 1119924224,
+          "container_cgroup_peak_scope": "whole parser-worker container cgroup; includes the benchmark process and other resident container processes; sampled every 50 ms",
+          "cgroup_oom_kills_before": 0,
+          "cgroup_oom_kills_after": 0
+        }
+      }
+    }
+  ],
+  "support_limits": [
+    "OCR output is an extracted technical artifact, not verified handwriting recognition.",
+    "Spreadsheet formulas are never executed; cached values remain unverified.",
+    "Charts, drawings and embedded media are inventory items and remain unsupported unless the parser emits verified content.",
+    "A successful sample is not evidence that every allowed 100-page or maximum-size bundle finishes within 600 active seconds.",
+    "Docling 2.140.0 reports render/layout/OCR/table work as a combined conversion call; stage timings do not claim unexposed internal substage measurements.",
+    "Provider spend is zero because no provider is invoked; Docker/host electricity or compute cost is not metered."
+  ],
+  "report_sha256": "a0c8f0844b23b5edf75976bd262cd7491375795e8f8bc8fb0486f99f15501b7e"
+}

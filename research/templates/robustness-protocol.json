@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "protocol_id": "not_yet_available",
+  "partition": "validation",
+  "dataset_sha256": "not_yet_available",
+  "equivalence_review": "not_yet_available",
+  "parent_variant_inventory": [],
+  "dag_expectations": [],
+  "compiler_fidelity_scenarios": [],
+  "executor_repeat_scenarios": [],
+  "format_variation_scenarios": [],
+  "source_corruption_scenarios": [],
+  "repeat_dependence_scenarios": [],
+  "not_yet_available_reason": "No empirical robustness protocol or human-confirmed semantic-equivalence set is available. Software safeguard fixtures are not executor-variation evidence."
+}

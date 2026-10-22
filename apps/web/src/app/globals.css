@@ -172,7 +172,7 @@ h1 { margin-bottom: 10px; font-size: clamp(30px, 5vw, 42px); line-height: 1.15; 
 .roster-row .field { font-size: 11px; }
 .roster-row .field select { min-height: 36px; padding: 6px 8px; }
 .roster-row small { display: block; color: var(--subtle); font-size: 10px; }
-.workspace-panel { display: grid; gap: 18px; margin-top: 20px; padding: clamp(18px, 3vw, 28px); background: var(--surface); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 8px 28px rgb(15 23 42 / 3%); }
+.workspace-panel { display: grid; gap: 18px; min-width: 0; max-width: 100%; margin-top: 20px; padding: clamp(18px, 3vw, 28px); background: var(--surface); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 8px 28px rgb(15 23 42 / 3%); }
 .workspace-heading, .workspace-subheading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 .workspace-heading h2, .workspace-subheading h3 { margin: 0; }
 .workspace-heading h2 { font-size: 22px; }
@@ -235,7 +235,7 @@ h1 { margin-bottom: 10px; font-size: clamp(30px, 5vw, 42px); line-height: 1.15; 
 .pdf-page-frame { position: relative; width: fit-content; max-width: 100%; overflow: auto; margin: 0 auto; border: 1px solid var(--border); background: #f1f5f9; }
 .pdf-page-frame canvas { display: block; max-width: none; }
 .pdf-anchor-overlay { position: absolute; border: 3px solid #dc2626; background: rgb(239 68 68 / 12%); pointer-events: none; }
-.submission-queue-layout { display: grid; grid-template-columns: minmax(220px, .7fr) minmax(0, 1.5fr); gap: 14px; align-items: start; }
+.submission-queue-layout { display: grid; grid-template-columns: minmax(0, .7fr) minmax(0, 1.5fr); gap: 14px; align-items: start; min-width: 0; max-width: 100%; }
 .submission-list { display: grid; gap: 8px; max-height: 620px; overflow: auto; }
 .submission-list-row, .submission-file-select { display: grid; gap: 5px; width: 100%; padding: 12px; text-align: left; background: #fff; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }
 .submission-list-row.is-selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgb(37 99 235 / 12%); }
@@ -248,7 +248,7 @@ h1 { margin-bottom: 10px; font-size: clamp(30px, 5vw, 42px); line-height: 1.15; 
 .submission-viewer-panel { display: grid; gap: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 .submission-viewer-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
 .submission-viewer-heading > span { color: var(--muted); font-size: 12px; }
-.source-unit-layout { display: grid; grid-template-columns: minmax(150px, .4fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+.source-unit-layout { display: grid; grid-template-columns: minmax(0, .4fr) minmax(0, 1fr); gap: 12px; align-items: start; min-width: 0; max-width: 100%; }
 .source-unit-list { display: grid; gap: 6px; max-height: 520px; overflow: auto; }
 .source-unit-button { display: grid; gap: 3px; padding: 8px; text-align: left; overflow-wrap: anywhere; border: 1px solid var(--border); border-radius: 8px; background: white; cursor: pointer; }
 .source-unit-button span, .source-unit-button small { color: var(--muted); font-size: 11px; }
@@ -304,6 +304,10 @@ h1 { margin-bottom: 10px; font-size: clamp(30px, 5vw, 42px); line-height: 1.15; 
   .b4-mobile-tabs .button { flex: 1 0 auto; }
   .b4-review-columns { grid-template-columns: minmax(0, 1fr); }
   .b4-mobile-hidden { display: none; }
+}
+
+@media (max-width: 900px) {
+  .submission-queue-layout, .source-unit-layout, .b4-review-columns { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 600px) {

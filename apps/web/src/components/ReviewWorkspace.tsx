@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useMemo, useState } from "react";
+import type { ApiMethod, ApiRequestPath } from "@/lib/api-contract.generated";
 import { SubmissionFileViewer, type ManualAnchorSelection } from "./SubmissionViewer";
 
 type FinalVersion = { id: string; version_no: number; manifest_hash: string; finalized_at: string };
@@ -112,7 +113,7 @@ type ResponseError = { detail?: string | { message?: string; pending?: string[] 
 type RuntimeRelease = { id: string; version_label: string; state: string; provider_mode: string; data_mode: string; paid_calls: string };
 type AnalysisRunStatus = { id: string; status: string; completion_kind: string | null; limitations: unknown[] };
 
-async function request<T>(path: string, csrfToken: string, method = "GET", body?: unknown): Promise<T> {
+async function request<T>(path: ApiRequestPath, csrfToken: string, method: ApiMethod = "GET", body?: unknown): Promise<T> {
   const headers = new Headers({ "X-CSRF-Token": csrfToken });
   if (body !== undefined) headers.set("Content-Type", "application/json");
   if (method !== "GET") headers.set("Idempotency-Key", crypto.randomUUID());

@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 import pytest
-from test_b2_assignment_contracts import spec_payload
+from tests.unit.test_b2_assignment_contracts import spec_payload
 
 from align_api.reviews import _markdown_literal
 from align_api.robustness import (
@@ -97,6 +97,30 @@ def test_executor_runner_checks_dependency_order_and_marks_runtime_incomplete() 
     assert report["status"] == "incomplete"
     assert report["cases"][1]["repeat_stability"]["stable_output"] is True
     assert report["cases"][1]["executor_runtime"] == "not_run"
+    assert report["robustness_dimensions"]["executor_variation"]["status"] == "not_run"
+    assert report["robustness_dimensions"]["source_corruption"]["status"] == "not_run"
+    assert report["robustness_dimensions"]["repeat_dependence"]["stochastic_runtime_repeats"] == 0
+
+
+def test_robustness_report_distinguishes_declared_but_unexecuted_scenarios() -> None:
+    protocol, dataset, release = protocol_fixture()
+    protocol["source_corruption_scenarios"] = [{"scenario_id": "truncated-pdf"}]
+    protocol["format_variation_scenarios"] = [{"scenario_id": "jpeg-to-png"}]
+    report = validate_protocol(protocol, dataset, release)
+
+    assert report["robustness_dimensions"]["source_corruption"] == {
+        "status": "declared_not_run", "declared_scenario_count": 1, "runtime_cases": 0,
+    }
+    assert report["robustness_dimensions"]["format_variation"]["runtime_cases"] == 0
+    assert "No source-corruption or file-format variation scenario was executed by this CLI run." in report["limitations"]
+
+
+def test_robustness_rejects_malformed_scenario_inventory() -> None:
+    protocol, dataset, release = protocol_fixture()
+    protocol["source_corruption_scenarios"] = "truncated-pdf"
+
+    with pytest.raises(ProtocolError, match="source_corruption_scenarios must be a list"):
+        validate_protocol(protocol, dataset, release)
 
 
 @pytest.mark.parametrize("mutation", ["frozen", "hash", "group", "unreviewed", "bad_dag"])
@@ -134,6 +158,8 @@ def test_markdown_output_is_supported_by_cli_renderer() -> None:
     content = render_markdown(report)
     assert "synthetic_fixture_software_gate" in content
     assert "stochastic stability" in content
+    assert "Robustness dimensions" in content
+    assert "deterministic_applicability_only" in content
 
 
 def test_feedback_export_treats_html_and_remote_markdown_links_as_literal_text() -> None:

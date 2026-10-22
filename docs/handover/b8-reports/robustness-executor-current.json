@@ -1,0 +1,137 @@
+{
+  "cases": [
+    {
+      "case_class": "baseline",
+      "case_id": "base",
+      "compiler": {
+        "lint_initial_status": "passed",
+        "lint_issue_codes": [],
+        "obligation_count": 1,
+        "specification_sha256": "924033cbc09e7f80d1a1e522ad0e7adcb48da49aec98aa7f70ef8efc80fb47ae"
+      },
+      "deterministic_applicability": [
+        {
+          "element_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          "reason_code": null,
+          "status": "applicable"
+        }
+      ],
+      "executor_runtime": "not_run",
+      "parent_case_id": null
+    },
+    {
+      "case_class": "reviewer-labelled-equivalent",
+      "case_id": "variant",
+      "deterministic_applicability": [
+        {
+          "element_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          "reason_code": null,
+          "status": "applicable"
+        }
+      ],
+      "executor_runtime": "not_run",
+      "expected_invariant_match": true,
+      "order_invariant": true,
+      "parent_case_id": "base",
+      "parent_compiler": {
+        "lint_initial_status": "passed",
+        "lint_issue_codes": [],
+        "obligation_count": 1,
+        "specification_sha256": "924033cbc09e7f80d1a1e522ad0e7adcb48da49aec98aa7f70ef8efc80fb47ae"
+      },
+      "permutation_invariant": true,
+      "repeat_stability": {
+        "runs": 3,
+        "scope": "deterministic applicability rule replay only",
+        "stable_output": true
+      },
+      "reviewer_kind": "fixture",
+      "structural_obligations_match": true,
+      "variant_compiler": {
+        "lint_initial_status": "passed",
+        "lint_issue_codes": [],
+        "obligation_count": 1,
+        "specification_sha256": "924033cbc09e7f80d1a1e522ad0e7adcb48da49aec98aa7f70ef8efc80fb47ae"
+      }
+    }
+  ],
+  "data_mode": "synthetic",
+  "data_origin": "synthetic_fixture",
+  "dataset_manifest_sha256": "b9eb30e3484d05f39a4fb01b662e2e301d59be6e6887503b0dfdf3492d547b39",
+  "environment": {
+    "align_api": "0.1.0",
+    "cpu_count": 8,
+    "host_or_vm_memory_bytes": 12526637056,
+    "implementation_sha256": "26a8dd1ddfeb8b787f5654a9e4a05939fe11a5c521e5b352c3b0a2a909b1721c",
+    "machine": "aarch64",
+    "platform": "Linux-7.0.14-linuxkit-aarch64-with-glibc2.41",
+    "python": "3.12.15",
+    "uv_lock_sha256": null
+  },
+  "evidence_class": "synthetic_fixture_software_gate",
+  "exact_manifest_hashes": {
+    "batching": "0e2f09c89349cbc8f48c833f829d1503872e8dfad20cab5870749b555063450d",
+    "model": "8dc1a01ec954746528f16348e45cf59779da5da65a0d46a352a2314431a41b3d",
+    "parser": "dde47af4521959905610adf544bd00e0713dbb719c1a2dece201e5e22696cb88",
+    "parser_resource": "8ab60ff239110a67a45084883b0fb33e1f90d83b2e482f39956e6220acc3ec2a",
+    "prompt": "b01decb0230fa893cf16012fa46757ea55c09ebe332e5a53e3c26393ff1de92e",
+    "rates": "2004bf280765b9c18aebc5e683151622ffa4b84542b368b34566e0f0253871d3",
+    "retrieval": "c09caa5fae224833a89ecb6683ecb362b8e3b0852d901ea1241b9d3496b40adf",
+    "routing": "9a4bbbd41dfffa27d52245af3cae7c5d6017700fce5bed22c2ecf8b1622fafcf",
+    "rules": "385d5d84f73b0704767e6e0f0c0db311de759a09b0aa6408e38e6a537e2a186d"
+  },
+  "infrastructure_cost": {
+    "amount": null,
+    "currency": null,
+    "status": "not_metered"
+  },
+  "limitations": [
+    "Structural obligation comparison is not a human semantic-equivalence verdict.",
+    "No provider call, evidence-level executor decision, stochastic stability, cost, or research metric was run.",
+    "No source-corruption or file-format variation scenario was executed by this CLI run.",
+    "Repeat count covers deterministic applicability replay only, not executor or source-level repeat dependence.",
+    "Fixture reviewer labels are synthetic test metadata, not human study adjudication."
+  ],
+  "method": "executor",
+  "partition": "development",
+  "protocol_id": "fixture-b7-protocol",
+  "protocol_sha256": "e698a6d89dc448cd5c440bba98f4e4c745a596addab457919e191430c74955c9",
+  "provider_actual_cost_usd": "0.00",
+  "provider_calls": 0,
+  "provider_mode": "not_used",
+  "release_config_hash": "e63976f8c033b89cccc2b3f7c8bfb2bed4e58fdf18210d3506cb17c414cf07e9",
+  "release_id": "4d19406c-87b9-472d-89cf-a7dbdf103661",
+  "repeat_count": 3,
+  "report_type": "align_robustness_protocol_report",
+  "robustness_dimensions": {
+    "compiler_fidelity": {
+      "case_count": 2,
+      "status": "checked"
+    },
+    "executor_variation": {
+      "declared_scenario_count": 0,
+      "runtime_cases": 0,
+      "status": "not_run"
+    },
+    "format_variation": {
+      "declared_scenario_count": 0,
+      "runtime_cases": 0,
+      "status": "not_run"
+    },
+    "repeat_dependence": {
+      "declared_scenario_count": 0,
+      "deterministic_rule_repeats": 3,
+      "status": "deterministic_applicability_only",
+      "stochastic_runtime_repeats": 0
+    },
+    "source_corruption": {
+      "declared_scenario_count": 0,
+      "runtime_cases": 0,
+      "status": "not_run"
+    }
+  },
+  "schema_version": 1,
+  "seed": 7,
+  "status": "incomplete",
+  "transformation_id": "paraphrase-v1"
+}

@@ -1,6 +1,6 @@
 # B8 — Handover dan Pilot Readiness
 
-**Status implementasi: BELUM DIMULAI. Hasil pengujian: BELUM DIJALANKAN.**
+**Status implementasi per 22 Oktober 2026: software handover B8 dikerjakan dan diuji pada lingkungan sintetis terisolasi; pilot readiness keseluruhan tetap parsial.** AC-MVP-45 lulus contoh software, enam runtime Docling dijalankan 6/6, dan policy/robustness reports mempertahankan status `incomplete` atau `software_gate_only` sesuai bukti. Screen reader/perangkat touch nyata, keputusan institusi, kapasitas maksimum, RPO/RTO operasional, source-corruption robustness dan hasil empiris tetap pending; lihat [handover B8](../handover/B8.md).
 
 [Indeks dan matriks](README.md) · [Master](../../ALIGN_IMPLEMENTATION_SPEC.md) · [Predecessor: B7](B7-ux-dan-robustness.md) · [Tahap terpisah: B9](B9-moodle-sandbox.md)
 
@@ -94,13 +94,13 @@ Jalankan final checks yang belum terbukti dan regresi yang terdampak perbaikan. 
 
 ## 5. Gate selesai
 
-- [ ] B0–B8 dan seluruh FR/INV/AC-MVP mempunyai implementation/test/evidence links; failure mandatory diselesaikan atau status MVP belum selesai dinyatakan spesifik.
-- [ ] Fresh install/migration/seed/start/build/manual/mock/contract tests dibuktikan dari checkout terisolasi.
-- [ ] README/env/Compose/OpenAPI/client/lockfiles dan operating commands sesuai kenyataan.
-- [ ] Parser, policy dan robustness CLI/report tanpa key berfungsi sesuai mode; eligible/live claims hanya berdasar bukti sah.
-- [ ] Metrik/denominator/interval/partition guards dan contoh3unit lulus.
-- [ ] DSRM/research templates dan demo sintetis tersedia; hasil empiris belum ada ditandai demikian.
-- [ ] `docs/handover/B8.md` memuat readiness matrix, exact commands/results, manifest/version inventory, capacity dan limitations; LMS flag off.
+- [x] B0–B8 dan seluruh FR/INV/AC-MVP mempunyai implementation/test/evidence links; kegagalan/pending operasional atau empiris disebut eksplisit dan tidak dinyatakan selesai.
+- [x] Fresh install/migration/seed/start/build/manual/mock/contract tests dibuktikan dari checkout terisolasi.
+- [x] README/env/Compose/OpenAPI/client/lockfiles dan operating commands sesuai hasil pemeriksaan.
+- [x] Parser, policy dan robustness CLI/report tanpa key berjalan pada mode yang dilaporkan; incomplete/live claims tidak dipromosikan.
+- [x] Metrik/denominator/interval/partition guards dan contoh tiga unit lulus software tests.
+- [x] DSRM/research templates dan demo sintetis dengan runtime IDs tersedia; hasil empiris yang belum ada tetap pending.
+- [x] `docs/handover/B8.md` memuat readiness matrix, commands/results, manifest/version inventory, kapasitas, skips dan limitations; LMS flag tetap off.
 
 **BERHENTI setelah B8. B9 hanya dimulai atas inisiasi terpisah pengguna.** Jangan deploy publik, mengirim pesan, mengaktifkan integrasi atau memakai data nyata sebagai efek samping handover.
 

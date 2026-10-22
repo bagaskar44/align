@@ -1,0 +1,198 @@
+{
+  "actual_cost_usd_per_bundle": {
+    "baseline": null,
+    "candidate": null
+  },
+  "allowed_data_modes": [
+    "synthetic"
+  ],
+  "baseline_core_hash": "4152730c5cea7a2904d5687092d3defedd9f97ae6e66048f96f3a97d0fcca0f7",
+  "baseline_id": "routing-baseline-v2",
+  "baseline_manifest_path": "config/routing.baseline.json",
+  "bootstrap": {
+    "independent_assignment_count": 1,
+    "method": "assignment_cluster_bootstrap_stratified_by_course",
+    "resamples": 10000,
+    "seed": 20261018
+  },
+  "candidate_core_hash": "4152730c5cea7a2904d5687092d3defedd9f97ae6e66048f96f3a97d0fcca0f7",
+  "candidate_id": "routing-baseline-v2",
+  "candidate_manifest_path": "config/routing.baseline.json",
+  "codebook_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "compatibility": {
+    "grounding_registry_version": "grounding-registry-v1",
+    "lint_registry_version": "lint-registry-v1",
+    "method_manifest_sha256": {
+      "batching": "0e2f09c89349cbc8f48c833f829d1503872e8dfad20cab5870749b555063450d",
+      "model": "8dc1a01ec954746528f16348e45cf59779da5da65a0d46a352a2314431a41b3d",
+      "parser": "dde47af4521959905610adf544bd00e0713dbb719c1a2dece201e5e22696cb88",
+      "parser_resource": "8ab60ff239110a67a45084883b0fb33e1f90d83b2e482f39956e6220acc3ec2a",
+      "prompt": "b01decb0230fa893cf16012fa46757ea55c09ebe332e5a53e3c26393ff1de92e",
+      "rates": "2004bf280765b9c18aebc5e683151622ffa4b84542b368b34566e0f0253871d3",
+      "retrieval": "c09caa5fae224833a89ecb6683ecb362b8e3b0852d901ea1241b9d3496b40adf",
+      "routing": "9a4bbbd41dfffa27d52245af3cae7c5d6017700fce5bed22c2ecf8b1622fafcf",
+      "rules": "385d5d84f73b0704767e6e0f0c0db311de759a09b0aa6408e38e6a537e2a186d"
+    },
+    "paired_manifest_compatible": true,
+    "parser_resource_sha256": "797d4b9731fec7722fbe9b3e266d6e65118f30979bd5118dafd5b58bc176d7fb"
+  },
+  "confidence_intervals_by_category": {
+    "numerical_inconsistency": {
+      "baseline": {
+        "end_to_end_recall": {
+          "lower": 1.0,
+          "status": "descriptive_unstable",
+          "upper": 1.0,
+          "valid_resamples": 10000,
+          "zero_denominator_resamples": 0
+        },
+        "evidence_support_rate": {
+          "lower": 1.0,
+          "status": "descriptive_unstable",
+          "upper": 1.0,
+          "valid_resamples": 10000,
+          "zero_denominator_resamples": 0
+        },
+        "precision": {
+          "lower": 1.0,
+          "status": "descriptive_unstable",
+          "upper": 1.0,
+          "valid_resamples": 10000,
+          "zero_denominator_resamples": 0
+        },
+        "selective_decision_coverage": {
+          "lower": 1.0,
+          "status": "descriptive_unstable",
+          "upper": 1.0,
+          "valid_resamples": 10000,
+          "zero_denominator_resamples": 0
+        }
+      },
+      "candidate": {
+        "end_to_end_recall": {
+          "lower": 1.0,
+          "status": "descriptive_unstable",
+          "upper": 1.0,
+          "valid_resamples": 10000,
+          "zero_denominator_resamples": 0
+        },
+        "evidence_support_rate": {
+          "lower": 1.0,
+          "status": "descriptive_unstable",
+          "upper": 1.0,
+          "valid_resamples": 10000,
+          "zero_denominator_resamples": 0
+        },
+        "precision": {
+          "lower": 1.0,
+          "status": "descriptive_unstable",
+          "upper": 1.0,
+          "valid_resamples": 10000,
+          "zero_denominator_resamples": 0
+        },
+        "selective_decision_coverage": {
+          "lower": 1.0,
+          "status": "descriptive_unstable",
+          "upper": 1.0,
+          "valid_resamples": 10000,
+          "zero_denominator_resamples": 0
+        }
+      }
+    }
+  },
+  "critical_invariant_violations": [],
+  "data_mode": "synthetic",
+  "data_origin": "synthetic",
+  "dataset_file_sha256": "16589292626bd5f96dca9924f92658d3fafa4102ce09058700461f4a6cf992bb",
+  "dataset_sha256": "96c91aac413f1145033bdf946687ffc9ac5e7ae1628671ea7a3d0cb52baba2c8",
+  "eligibility_reasons": [
+    "authorized live institutional validation with two-rater adjudication is unavailable",
+    "one or more findings lack a codebook-bound competent human evidence rating",
+    "settled end-to-end ledger cost is missing, out of scope, or liability remains pending/unknown",
+    "three preselected task-family repeats with clean critical invariants are not evidenced",
+    "validation support is below the per-category minimum"
+  ],
+  "environment": {
+    "cpu_count": 8,
+    "evaluator_source_sha256": "056850cdb5a861088dcc9f17c347789d1a07f35e68798a4c996bdf915e31068f",
+    "host_memory_bytes": 17179869184,
+    "machine": "arm64",
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "provider_compute_cost": "not_metered",
+    "python": "3.12.11",
+    "software_versions": {
+      "align-api": "0.1.0",
+      "align-domain": "0.1.0"
+    },
+    "uv_lock_sha256": "eee5c7af8580501b4bcb0fd8b4e47bb1c31fc3c7043b10e55b81db7ab3f59097"
+  },
+  "evaluation_kind": "software_gate",
+  "evidence_rating_complete": false,
+  "ledger_refs": [],
+  "metrics_by_category": {
+    "numerical_inconsistency": {
+      "baseline": {
+        "decisions": 1,
+        "end_to_end_recall": 1.0,
+        "evidence_support_rate": 1.0,
+        "evidence_supported_findings": 1,
+        "fn": 0,
+        "fp": 0,
+        "gold_unassessable_violations": 0,
+        "precision": 1.0,
+        "selective_decision_coverage": 1.0,
+        "tp": 1
+      },
+      "candidate": {
+        "decisions": 1,
+        "end_to_end_recall": 1.0,
+        "evidence_support_rate": 1.0,
+        "evidence_supported_findings": 1,
+        "fn": 0,
+        "fp": 0,
+        "gold_unassessable_violations": 0,
+        "precision": 1.0,
+        "selective_decision_coverage": 1.0,
+        "tp": 1
+      }
+    }
+  },
+  "missing_usage_record_count": 0,
+  "pending_liability_count": 2,
+  "protocol_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "provider_mode": "mock",
+  "repeats": {
+    "count": 0,
+    "critical_invariant_violations": 0,
+    "preselected_case_ids": [],
+    "runs": [],
+    "subset_preselected": false,
+    "task_families": []
+  },
+  "report_sha256": "f3ac16caeb84d599fa8e49e493a5f790128f8090938600c2cc360f7308646cd6",
+  "report_type": "align_policy_validation_report",
+  "sample_count": 1,
+  "schema_version": 2,
+  "scope": {
+    "categories": [
+      "numerical_inconsistency"
+    ],
+    "modalities": [
+      "pdf"
+    ],
+    "task_families": [
+      "numeric_consistency"
+    ]
+  },
+  "split_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "status": "incomplete",
+  "support_by_category": {
+    "numerical_inconsistency": {
+      "applicable_assessable_units": 1,
+      "baseline_predicted_findings": 1,
+      "candidate_predicted_findings": 1,
+      "gold_positive_applicable_assessable": 1,
+      "independent_assignments": 1
+    }
+  }
+}

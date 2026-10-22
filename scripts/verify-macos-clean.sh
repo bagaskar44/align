@@ -1,8 +1,9 @@
 #!/bin/bash
 # Test HEAD plus the candidate setup scripts in an empty snapshot; never copy ignored installs.
 set -euo pipefail
-# Source files must retain normal readable modes for the non-root Docker runtime.
-# Secret environments are created later with explicit mode 0600 by bootstrap.py.
+# Snapshot the current non-ignored source tree, including B8 work in progress,
+# while keeping machine-local IDE state out. Source files must retain normal
+# readable modes for the non-root Docker runtime.
 umask 022
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_dir=$(cd "$script_dir/.." && pwd)
@@ -13,9 +14,10 @@ mkdir "$checkout"
 cd "$repo_dir"
 git rev-parse HEAD > "$test_root/baseline-revision.txt"
 git archive HEAD | tar -xf - -C "$checkout"
-# Include only reviewable source changes, including new scripts that are not committed yet.
-git ls-files --cached --others --exclude-standard -- scripts README.md docs/handover/macos-local-setup.md > "$test_root/setup-source-files.txt"
-tar -cf - -T "$test_root/setup-source-files.txt" | tar -xf - -C "$checkout"
+git ls-files --deleted -z | while IFS= read -r -d '' deleted; do rm -f "$checkout/$deleted"; done
+git ls-files --cached --others --exclude-standard | rg -v '^\.vscode/' > "$test_root/checkout-source-files.txt"
+test -s "$test_root/checkout-source-files.txt"
+tar -cf - -T "$test_root/checkout-source-files.txt" | tar -xf - -C "$checkout"
 for absent in .env .venv node_modules .codex-tools .corepack-cache .playwright-browsers; do
   test ! -e "$checkout/$absent" || { echo "Snapshot unexpectedly contains $absent" >&2; exit 1; }
 done
@@ -27,6 +29,21 @@ export ALIGN_HOST_PORT=${ALIGN_REPRO_PORT:-3101}
 # Remove inherited host/project toolchain selection. HOME/Docker login remain untouched.
 export PATH="$(dirname "$docker_bin"):/usr/bin:/bin:/usr/sbin:/sbin"
 unset VIRTUAL_ENV PYTHONPATH NODE_PATH UV_PROJECT UV_PROJECT_ENVIRONMENT COMPOSE_FILE COMPOSE_PROJECT_NAME
+# This host's Docker default address pools are exhausted by retained project networks.
+# Give this disposable project its own private subnets without pruning user resources.
+cat > "$test_root/compose-network.yml" <<'EOF'
+services: {}
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: 10.231.0.0/24
+  private:
+    ipam:
+      config:
+        - subnet: 10.232.0.0/20
+EOF
+export COMPOSE_FILE="$checkout/docker-compose.yml:$test_root/compose-network.yml"
 echo "Evidence directory: $test_root"
 echo "Isolated Compose project: $ALIGN_COMPOSE_PROJECT; port: $ALIGN_HOST_PORT"
 printf '%s\n' "$ALIGN_COMPOSE_PROJECT" > "$test_root/compose-project.txt"
@@ -37,13 +54,14 @@ shasum -a 256 uv.lock pnpm-lock.yaml > "$test_root/lockfiles-before.txt"
 bash scripts/dev-macos.sh bootstrap
 bash scripts/dev-macos.sh install
 uv run --no-sync ruff check packages services tests migrations scripts
-uv run --no-sync pytest -q
+uv run --no-sync pytest -q --import-mode=importlib
 corepack pnpm --dir apps/web lint
 corepack pnpm --dir apps/web typecheck
 # Avoid depending on pre-existing application image layers or the running development database.
 "$docker_bin" compose --project-name "$ALIGN_COMPOSE_PROJECT" build --no-cache api worker web
 bash scripts/dev-macos.sh up
 bash scripts/dev-macos.sh seed
+bash scripts/dev-macos.sh release-baseline
 bash scripts/dev-macos.sh verify
 bash scripts/dev-macos.sh integration
 shasum -a 256 uv.lock pnpm-lock.yaml > "$test_root/lockfiles-after.txt"
