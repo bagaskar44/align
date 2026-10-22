@@ -451,7 +451,7 @@ try {
         Complete-QAStage -Name 'linux-unit' -Summary $stageResults['linux-unit']
         Write-Output '==> Full PostgreSQL integration suite with Linux process-isolation tests enabled'
         Start-QAStage -Name 'integration-suite' -Command 'pytest tests/integration --junitxml /qa-evidence/integration.xml (only 8 parser-runtime + 1 OOM opt-in skips allowed)'
-        Invoke-QACompose $integrationProject @('stop', 'outbox-dispatcher') | Out-Null
+        Invoke-QACompose $integrationProject @('stop', 'outbox-dispatcher', 'worker') | Out-Null
         Invoke-QACompose $integrationProject @('--profile', 'test', 'up', '--build', '--detach', '--wait', 'test-parser-worker', 'test-outbox-dispatcher') | Out-Null
         Invoke-QACompose $integrationProject @('stop', 'parser-worker') | Out-Null
         Invoke-QACompose $integrationProject @('--profile', 'test', 'run', '--rm', '--build', '--no-deps', '--volume', "${dockerEvidenceRoot}:/qa-evidence", '-e', 'ALIGN_RUN_INTEGRATION=true', '-e', "PARSER_DOCUMENT_MEMORY_BYTES=$env:ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES", 'test-runner', 'uv', 'run', '--no-sync', 'pytest', 'tests/integration', '-q', '--junitxml', '/qa-evidence/integration.xml') | Tee-Object -FilePath (Join-Path $evidenceRoot 'integration.log')
