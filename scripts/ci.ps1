@@ -575,9 +575,11 @@ try {
         Write-Output '==> Verify the parser healthcheck detects a nonresponsive worker in isolated QA'
         Start-QAStage -Name 'parser-healthcheck' -Command 'derive unhealthy/recovery deadlines from Docker healthcheck; pause, detect, resume and recover worker'
         $e2eParserContainer = (Invoke-QACompose $e2eProject @('--profile', 'test', 'ps', '-q', 'parser-worker') | Select-Object -Last 1).Trim()
-        $healthConfigJson = & docker inspect --format '{{json .Config.Healthcheck}}' $e2eParserContainer
+        $healthConfigJson = (& docker inspect --format '{{json .Config.Healthcheck}}' $e2eParserContainer | Select-Object -Last 1).Trim()
         if ($LASTEXITCODE -ne 0 -or -not $healthConfigJson) { throw 'Could not read Docker parser healthcheck configuration.' }
-        $deadlineOutput = & uv run --no-sync python scripts/qa_report_guard.py health-deadline --docker-config "$healthConfigJson"
+        $healthConfigPath = Join-Path $evidenceRoot 'parser-healthcheck-docker-config.json'
+        [System.IO.File]::WriteAllText($healthConfigPath, $healthConfigJson, [System.Text.UTF8Encoding]::new($false))
+        $deadlineOutput = & uv run --no-sync python scripts/qa_report_guard.py health-deadline --docker-config-file $healthConfigPath
         if ($LASTEXITCODE -ne 0) { throw 'Docker parser healthcheck configuration is invalid.' }
         $unhealthyDeadlineSeconds = [int](($deadlineOutput | Select-Object -Last 1 | ConvertFrom-Json).unhealthy_deadline_seconds)
         $healthStage = $stageResults['e2e']

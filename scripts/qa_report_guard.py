@@ -224,7 +224,9 @@ def main() -> int:
         else:
             child.add_argument("--expected-passed", type=int, required=True)
     health = subparsers.add_parser("health-deadline")
-    health.add_argument("--docker-config", required=True)
+    health_input = health.add_mutually_exclusive_group(required=True)
+    health_input.add_argument("--docker-config")
+    health_input.add_argument("--docker-config-file", type=Path)
     args = parser.parse_args()
 
     try:
@@ -253,7 +255,13 @@ def main() -> int:
                 args.report, label=args.label, expected_passed=args.expected_passed
             )
         else:
-            result = {"unhealthy_deadline_seconds": healthcheck_deadline_seconds(json.loads(args.docker_config))}
+            config_json = args.docker_config
+            if args.docker_config_file is not None:
+                try:
+                    config_json = args.docker_config_file.read_text(encoding="utf-8")
+                except OSError as exc:
+                    raise ReportError(f"could not read Docker healthcheck configuration: {exc}") from exc
+            result = {"unhealthy_deadline_seconds": healthcheck_deadline_seconds(json.loads(config_json))}
     except ReportError as exc:
         print(json.dumps({"status": "failed", "error": str(exc)}, sort_keys=True), file=sys.stderr)
         return 2

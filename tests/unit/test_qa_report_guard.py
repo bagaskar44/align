@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
 from scripts.qa_report_guard import (
     ReportError,
     healthcheck_deadline_seconds,
+    main,
     validate_junit,
     validate_playwright,
 )
@@ -131,6 +133,20 @@ def test_healthcheck_deadline_uses_docker_interval_timeout_retries_and_start_per
     config = {"Interval": 10_000_000_000, "Timeout": 10_000_000_000, "Retries": 3, "StartPeriod": 20_000_000_000}
 
     assert healthcheck_deadline_seconds(config) == 92
+
+
+def test_healthcheck_deadline_cli_reads_docker_json_from_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path = tmp_path / "docker-healthcheck.json"
+    config_path.write_text(
+        json.dumps({"Interval": 10_000_000_000, "Timeout": 10_000_000_000, "Retries": 3, "StartPeriod": 20_000_000_000}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "argv", ["qa_report_guard.py", "health-deadline", "--docker-config-file", str(config_path)])
+
+    assert main() == 0
+    assert json.loads(capsys.readouterr().out)["unhealthy_deadline_seconds"] == 92
 
 
 @pytest.mark.parametrize(
