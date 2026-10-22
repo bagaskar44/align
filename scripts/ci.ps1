@@ -9,6 +9,7 @@ Set-Location $repoRoot
 . (Join-Path $PSScriptRoot 'promotion-orchestration.ps1')
 $temporaryEnvironmentNames = @(
     'APP_ORIGIN', 'ALIGN_HOST_PORT', 'ALIGN_WEB_BASE_URL', 'ALIGN_ALIAS_BASE_URL',
+    'ALIGN_QA_REDIS_QUEUE_PREFIX',
     'ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES', 'ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES',
     'PARSER_NATIVE_MEMORY_BYTES', 'PARSER_DOCUMENT_MEMORY_BYTES', 'PARSER_NODE_MEMORY_BUDGET_BYTES',
     'PARSER_NODE_HEADROOM_BYTES', 'CI', 'UV_CACHE_DIR', 'PLAYWRIGHT_BROWSERS_PATH',
@@ -156,6 +157,7 @@ function Write-ValidationManifest {
         'docker-vm-capacity' = 'Docker Linux VM memory inspection'
         'integration-database' = 'fresh isolated PostgreSQL migrations'
         'parser-capacity-preflight' = 'Linux Docker free-memory check before parser tests'
+        'parser-capacity-runtime' = 'repeat Linux Docker free-memory check after isolating parser QA services'
         'integration-seed-release' = 'seed twice and idempotent baseline registration/activation'
         'linux-unit' = 'pytest tests/unit in Linux test image; JUnit XML gate'
         'integration-suite' = 'pytest tests/integration; exact opt-in skips only'
@@ -414,6 +416,7 @@ try {
         $env:ALIGN_WEB_BASE_URL = "http://localhost:$hostPort"
         $env:ALIGN_ALIAS_BASE_URL = "http://127.0.0.1:$hostPort"
         $env:APP_ORIGIN = $env:ALIGN_WEB_BASE_URL
+        $env:ALIGN_QA_REDIS_QUEUE_PREFIX = 'align-test'
 
         Write-Output '==> Create fresh isolated PostgreSQL integration QA project'
         Start-QAStage -Name 'integration-database' -Command 'docker compose --project-name <isolated> up --build --detach --wait; apply all migrations to fresh QA database'
@@ -450,6 +453,7 @@ try {
         Start-QAStage -Name 'integration-suite' -Command 'pytest tests/integration --junitxml /qa-evidence/integration.xml (only 8 parser-runtime + 1 OOM opt-in skips allowed)'
         Invoke-QACompose $integrationProject @('stop', 'outbox-dispatcher') | Out-Null
         Invoke-QACompose $integrationProject @('--profile', 'test', 'up', '--build', '--detach', '--wait', 'test-parser-worker', 'test-outbox-dispatcher') | Out-Null
+        Invoke-QACompose $integrationProject @('stop', 'parser-worker') | Out-Null
         Invoke-QACompose $integrationProject @('--profile', 'test', 'run', '--rm', '--build', '--no-deps', '--volume', "${dockerEvidenceRoot}:/qa-evidence", '-e', 'ALIGN_RUN_INTEGRATION=true', '-e', "PARSER_DOCUMENT_MEMORY_BYTES=$env:ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES", 'test-runner', 'uv', 'run', '--no-sync', 'pytest', 'tests/integration', '-q', '--junitxml', '/qa-evidence/integration.xml') | Tee-Object -FilePath (Join-Path $evidenceRoot 'integration.log')
         if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL integration suite failed.' }
         Invoke-JUnitGate -Label 'integration' -Report (Join-Path $evidenceRoot 'integration.xml') -SummaryPath (Join-Path $evidenceRoot 'integration-summary.json') -AllowedSkips @(
@@ -457,8 +461,19 @@ try {
             'test_b3_parser_oom::test_confirmed_cgroup_oom_maps_to_parser_memory_limit=1'
         )
         Complete-QAStage -Name 'integration-suite' -Summary $stageResults['integration']
-        Write-Output '==> Real Docling model/OCR integration tests (opt-in, must not be skipped)'
-        Start-QAStage -Name 'docling-parser' -Command 'pytest tests/integration/test_b1_parser_runtime.py --junitxml /qa-evidence/docling.xml; require 8 passes and 0 skips'
+        Invoke-QACompose $integrationProject @('stop', 'worker', 'scheduler', 'web', 'proxy') | Out-Null
+        Write-Output '==> Recheck live Linux Docker capacity after isolating parser QA services'
+        Start-QAStage -Name 'parser-capacity-runtime' -Command "docker compose --project-name $integrationProject --profile test run --rm --no-deps test-runner python scripts/parser_capacity_preflight.py --docker-total-bytes $dockerTotalBytes"
+        $runtimeCapacityOutput = Invoke-QACompose $integrationProject @('--profile', 'test', 'run', '--rm', '--build', '--no-deps', 'test-runner', 'python', 'scripts/parser_capacity_preflight.py', '--docker-total-bytes', "$dockerTotalBytes")
+        $runtimeCapacityReport = (($runtimeCapacityOutput | Where-Object { $_ -match '^\s*\{' } | Select-Object -Last 1) | ConvertFrom-Json)
+        $runtimeCapacityReport | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'parser-capacity-runtime.json') -Encoding UTF8
+        if ($runtimeCapacityReport.accepted -ne $true) {
+            $incompleteReason = 'Linux Docker VM lacks the required 4 GiB parser profile plus 1 GiB headroom after non-parser QA services were stopped.'
+            throw 'Live Linux Docker capacity is below the parser budget; real parser tests were not started.'
+        }
+        Complete-QAStage -Name 'parser-capacity-runtime' -Summary $runtimeCapacityReport
+        Write-Output '==> Real Docling model/OCR and XLSX submission integration tests (opt-in, must not be skipped)'
+        Start-QAStage -Name 'docling-parser' -Command 'pytest tests/integration/test_b1_parser_runtime.py tests/integration/test_b3_submission_flow.py --junitxml /qa-evidence/docling.xml; require 8 passes and 0 skips'
         $parserContainerId = (Invoke-QACompose $integrationProject @('--profile', 'test', 'ps', '-q', 'test-parser-worker') | Select-Object -Last 1).Trim()
         if (-not $parserContainerId) { throw 'The 4 GiB QA parser worker container was not running for health sampling.' }
         $healthMonitorStopPath = Join-Path $evidenceRoot 'stop-parser-health-monitor'
@@ -480,7 +495,7 @@ try {
             "$sample parser health pings passed over $([Math]::Round($watch.Elapsed.TotalSeconds, 1)) seconds during the real parser test."
         }
         try {
-            Invoke-QACompose $integrationProject @('--profile', 'test', 'run', '--rm', '--build', '--no-deps', '--volume', "${dockerEvidenceRoot}:/qa-evidence", '-e', 'ALIGN_RUN_PARSER_INTEGRATION=true', '-e', "PARSER_DOCUMENT_MEMORY_BYTES=$env:ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES", 'test-runner', 'uv', 'run', '--no-sync', 'pytest', 'tests/integration/test_b1_parser_runtime.py', '-v', '-s', '--junitxml', '/qa-evidence/docling.xml') | Tee-Object -FilePath (Join-Path $evidenceRoot 'docling-integration.log')
+            Invoke-QACompose $integrationProject @('--profile', 'test', 'run', '--rm', '--build', '--no-deps', '--volume', "${dockerEvidenceRoot}:/qa-evidence", '-e', 'ALIGN_RUN_INTEGRATION=true', '-e', 'ALIGN_RUN_PARSER_INTEGRATION=true', '-e', "PARSER_DOCUMENT_MEMORY_BYTES=$env:ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES", 'test-runner', 'uv', 'run', '--no-sync', 'pytest', 'tests/integration/test_b1_parser_runtime.py', 'tests/integration/test_b3_submission_flow.py', '-v', '-s', '--junitxml', '/qa-evidence/docling.xml') | Tee-Object -FilePath (Join-Path $evidenceRoot 'docling-integration.log')
             if ($LASTEXITCODE -ne 0) { throw 'Real parser integration failed.' }
         } finally {
             New-Item -ItemType File -Path $healthMonitorStopPath -Force | Out-Null
@@ -496,7 +511,7 @@ try {
         Invoke-JUnitGate -Label 'docling' -Report (Join-Path $evidenceRoot 'docling.xml') -SummaryPath (Join-Path $evidenceRoot 'docling-summary.json') -ExpectedTests 8 -ExpectedPassed 8
         $doclingText = Get-Content -LiteralPath (Join-Path $evidenceRoot 'docling-integration.log') -Raw
         $parserFingerprints = @([regex]::Matches($doclingText, 'parser_profile_fingerprint=[a-f0-9]{64}; memory_bytes=\d+; peak_memory_bytes=\d+; format=[^\r\n]+') | ForEach-Object { $_.Value })
-        if ($parserFingerprints.Count -ne 8) { throw "Expected eight real parser profile fingerprints; found $($parserFingerprints.Count)." }
+        if ($parserFingerprints.Count -ne 9) { throw "Expected nine real parser profile fingerprints across eight parser test cases; found $($parserFingerprints.Count)." }
         $parserFingerprints | Set-Content -LiteralPath (Join-Path $evidenceRoot 'parser-profile-fingerprints.log') -Encoding UTF8
         Complete-QAStage -Name 'docling-parser' -Summary ([ordered]@{ tests = 8; fingerprints = $parserFingerprints.Count; health_samples = (Get-Content -LiteralPath (Join-Path $evidenceRoot 'parser-health-samples.log')).Count })
         Write-Output '==> Confirm parser OOM attribution in a disposable 1 GiB Linux container'
@@ -513,6 +528,7 @@ try {
         $integrationStarted = $false
 
         Write-Output '==> Create a second, fresh QA database for browser E2E'
+        $env:ALIGN_QA_REDIS_QUEUE_PREFIX = 'align-e2e'
         Start-QAStage -Name 'e2e-database' -Command 'docker compose --project-name <isolated> up --build --detach --wait; fresh migrations, synthetic seed, idempotent release baseline'
         $e2eStarted = $true
         Invoke-QACompose $e2eProject @('config', '--quiet') | Out-Null

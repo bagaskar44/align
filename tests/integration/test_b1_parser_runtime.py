@@ -75,7 +75,6 @@ def await_context(client, context_id):
     ("printed.png", "image/png"), ("printed.jpg", "image/jpeg"),
     ("printed.jpeg", "image/jpeg"), ("rotated.jpeg", "image/jpeg"),
     ("complex-submission.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
-    ("complex-submission.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
 ])
 def test_real_docling_source_hash_original_anchor_and_checkpoint_replay(lecturer, filename, mime):
     client, course = lecturer

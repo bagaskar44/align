@@ -31,6 +31,7 @@ from align_api.models import (
     FileAsset,
     GroupMembership,
     Job,
+    MethodManifest,
     OutboxEvent,
     ParseArtifact,
     ParserCheckpoint,
@@ -405,10 +406,31 @@ def test_group_finalization_race_replay_roster_and_original_download(monkeypatch
                 )).all()
                 assert len(artifacts) == 2 and all(item.parser_resource_manifest_id for item in artifacts)
                 assert all(item.status in {"parsed", "partially_parsed"} for item in artifacts)
-                checkpoints = db.scalars(select(ParserCheckpoint).where(
-                    ParserCheckpoint.parse_artifact_id.in_([item.id for item in artifacts])
-                )).all()
-                assert checkpoints and all(item.status == "succeeded" for item in checkpoints)
+                filenames = {
+                    str(item.id): item.original_name
+                    for item in db.scalars(select(FileAsset).where(FileAsset.id.in_(file_ids))).all()
+                }
+                for artifact in artifacts:
+                    filename = filenames[str(artifact.file_asset_id)]
+                    resource_manifest = db.get(MethodManifest, artifact.parser_resource_manifest_id)
+                    assert resource_manifest is not None
+                    expected_memory = 4 * 1024**3 if filename.endswith((".png", ".jpg", ".jpeg")) else 2 * 1024**3
+                    assert resource_manifest.content_json["memory_limit_bytes"] == expected_memory
+                    checkpoints = db.scalars(select(ParserCheckpoint).where(
+                        ParserCheckpoint.parse_artifact_id == artifact.id
+                    )).all()
+                    assert checkpoints and all(item.status == "succeeded" for item in checkpoints)
+                    peaks = [
+                        item.peak_memory_bytes for item in checkpoints
+                        if isinstance(item.peak_memory_bytes, int)
+                        and 0 < item.peak_memory_bytes < expected_memory
+                    ]
+                    assert len(peaks) == len(checkpoints)
+                    print(
+                        "parser_profile_fingerprint="
+                        f"{resource_manifest.sha256}; memory_bytes={expected_memory}; "
+                        f"peak_memory_bytes={max(peaks)}; format={filename}"
+                    )
 
         lecturer_status = client_lecturer.get(f"/api/v1/submissions/{submission_id}/status")
         assert lecturer_status.status_code == 200
