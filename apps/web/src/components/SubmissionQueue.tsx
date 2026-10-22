@@ -114,7 +114,7 @@ export function SubmissionQueue({ assignments, csrfToken }: { assignments: Assig
               {file.limitations.map((limit, index) => <small key={`${String(limit.code)}-${index}`}>{String(limit.message ?? limit.code)}</small>)}
             </button>)}
           </div>
-          {activeFile && <SubmissionFileViewer fileId={activeFile.id} onManualAnchor={setManualAnchorSelection} />}
+          {activeFile && <SubmissionFileViewer key={activeFile.id} fileId={activeFile.id} onManualAnchor={setManualAnchorSelection} />}
           {selected.active_final_version && <ReviewWorkspace key={selected.active_final_version.id}
             submission={selected} csrfToken={csrfToken} manualAnchorSelection={manualAnchorSelection}
             onManualAnchorSelection={setManualAnchorSelection} />}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import logging
 import os
 import shutil
 import signal
@@ -50,6 +51,8 @@ from align_worker.parser_admission import (
     release_parser_lease,
     renew_parser_lease,
 )
+
+logger = logging.getLogger(__name__)
 
 MAX_CHILD_RESULT_BYTES = 64 * 1024 * 1024
 
@@ -619,7 +622,15 @@ def _download_and_run(asset: FileAsset, settings: Settings, lease: AdmissionLeas
         output_path = str(Path(temp_dir) / "result.json")
         try:
             storage_client(settings).download_file(settings.s3_bucket, asset.object_key, source_path)
-        except Exception:
+        except Exception as error:
+            response = getattr(error, "response", None)
+            error_code = response.get("Error", {}).get("Code") if isinstance(response, dict) else None
+            logger.warning(
+                "Parser source download failed asset_id=%s error_type=%s error_code=%s",
+                asset.id,
+                type(error).__name__,
+                error_code or "unknown",
+            )
             return None, "parser_storage_unavailable", None
         digest = hashlib.sha256()
         size = 0

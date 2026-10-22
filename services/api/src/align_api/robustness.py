@@ -42,10 +42,12 @@ def _environment_metadata() -> dict[str, Any]:
         )
         memory_bytes = int(memory_line.split()[1]) * 1024
     except (OSError, StopIteration, ValueError, IndexError):
-        try:
-            memory_bytes = int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
-        except (OSError, ValueError, TypeError):
-            pass
+        sysconf = getattr(os, "sysconf", None)
+        if callable(sysconf):
+            try:
+                memory_bytes = int(sysconf("SC_PAGE_SIZE") * sysconf("SC_PHYS_PAGES"))
+            except (OSError, ValueError, TypeError):
+                pass
     try:
         api_version = importlib.metadata.version("align-api")
     except importlib.metadata.PackageNotFoundError:

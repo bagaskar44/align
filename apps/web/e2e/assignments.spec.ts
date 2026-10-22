@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { resolve } from "node:path";
 
 test("lecturer builds and publishes a B2 task from shared rubric parser evidence", async ({ page }) => {
@@ -19,6 +19,7 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await page.getByRole("button", { name: "Masuk" }).click();
   await expect(page.getByRole("heading", { name: "Mata kuliah" })).toBeVisible();
   await page.getByRole("link", { name: courseLink }).click();
+  await page.getByRole("tab", { name: "Konteks" }).click();
 
   // The synthetic seed intentionally contains no approved context. Create one
   // through the B1 lecturer flow, then reload so B2 receives that approved ID.
@@ -144,6 +145,7 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await expect(studentTask).not.toContainText("fact_rule");
   await expect(studentTask).not.toContainText("grounding_contract");
 
+  await page.getByRole("tab", { name: "Pengumpulan" }).click();
   const submission = page.getByRole("region", { name: "Kumpulkan tugas" });
   await submission.getByRole("button", { name: assignmentTitle }).click();
   const repositoryRoot = resolve(test.info().project.testDir, "../../..");
@@ -170,6 +172,7 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await page.getByLabel("Kata sandi", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Masuk" }).click();
   await page.getByRole("link", { name: courseLink }).click();
+  await page.getByRole("tab", { name: "Pengumpulan" }).click();
   const queue = page.getByRole("region", { name: "Submission mahasiswa" });
   await queue.getByLabel("Pilih tugas").selectOption({ label: assignmentTitle });
   const submissionRow = queue.locator(".submission-list-row").first();
@@ -326,6 +329,7 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await page.getByRole("link", { name: courseLink }).click();
   const releasedStudentWorkspace = page.getByRole("region", { name: "Tugas mata kuliah" });
   await releasedStudentWorkspace.getByRole("button", { name: assignmentTitle }).click();
+  await page.getByRole("tab", { name: "Pengumpulan" }).click();
   const studentSubmission = page.getByRole("region", { name: "Kumpulkan tugas" });
   await studentSubmission.getByRole("button", { name: assignmentTitle }).click();
   const officialResult = studentSubmission.locator("section.student-publication");
@@ -347,6 +351,7 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
     await touchPage.getByRole("button", { name: "Masuk" }).tap();
     await expect(touchPage.getByRole("heading", { name: "Mata kuliah" })).toBeVisible();
     await touchPage.getByRole("link", { name: courseLink }).tap();
+    await touchPage.getByRole("tab", { name: "Pengumpulan" }).tap();
     const touchQueue = touchPage.getByRole("region", { name: "Submission mahasiswa" });
     await touchQueue.getByLabel("Pilih tugas").selectOption({ label: assignmentTitle });
     const touchSubmission = touchQueue.locator(".submission-list-row").first();

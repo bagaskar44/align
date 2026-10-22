@@ -76,11 +76,15 @@ export function SubmissionWorkspace({ assignments, csrfToken }: { assignments: A
       const resultPath = publicationId
         ? (`${publicationPath}?publication_id=${encodeURIComponent(publicationId)}` as ApiRequestPath)
         : publicationPath;
-      const [result, history] = await Promise.all([
-        api<StudentPublication>(resultPath, csrfToken),
-        api<{ items: PublicationHistoryItem[] }>(`/submissions/${submissionId}/publications`, csrfToken),
-      ]);
+      const result = await api<StudentPublication>(resultPath, csrfToken);
       setPublishedResult(result);
+      if (result.status === "not_published") {
+        setPublicationHistory([]);
+        return;
+      }
+      const history = await api<{ items: PublicationHistoryItem[] }>(
+        `/submissions/${submissionId}/publications`, csrfToken,
+      );
       setPublicationHistory(history.items);
     } catch {
       setPublishedResult(null);

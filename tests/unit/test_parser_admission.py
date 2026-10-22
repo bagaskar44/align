@@ -84,7 +84,7 @@ def test_cgroup_capacity_credits_only_clean_inactive_file_cache(monkeypatch: pyt
         "/sys/fs/cgroup/memory.stat": f"inactive_file {1024**3}\nfile_dirty 1024\nfile_writeback 2048\nanon {1024**3}\n",
     }
     def read(path, **_kwargs):
-        return contents[str(path)]
+        return contents[path.as_posix()]
     monkeypatch.setattr(parser_admission.Path, "read_text", read)
     host, container = parser_admission._memory_sources()
     assert host == 10_000_000 * 1024

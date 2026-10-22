@@ -57,7 +57,15 @@ RELEASE_MANIFEST_COLUMNS = {
     "batching": "batching_policy_manifest_id",
 }
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
+def _repository_root() -> Path:
+    candidates = (Path(__file__).resolve().parents[4], Path.cwd(), Path(__file__).resolve().parents[5])
+    for candidate in candidates:
+        if (candidate / "config" / "routing.baseline.json").is_file():
+            return candidate
+    raise RuntimeError("repository configuration files are unavailable")
+
+
+REPOSITORY_ROOT = _repository_root()
 
 
 def canonical_json(payload: Any) -> str:
@@ -1231,6 +1239,13 @@ def _parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--profile", required=True)
     benchmark.add_argument("--fixtures", required=True, type=Path)
     benchmark.add_argument("--output", required=True, type=Path)
+    recover_job = parser_sub.add_parser(
+        "recover-job", help="diagnose or safely reissue a lost queued parser message"
+    )
+    recover_job.add_argument("job_id")
+    recover_job.add_argument("--reason", required=True)
+    recover_job.add_argument("--execute", action="store_true")
+    recover_job.add_argument("--idempotency-key")
 
     retention = subparsers.add_parser("retention", help="synthetic data retention and source purge")
     retention_sub = retention.add_subparsers(dest="retention_command", required=True)
@@ -1301,6 +1316,23 @@ def main() -> None:
         from align_worker.benchmark import run_parser_benchmark
 
         run_parser_benchmark(args.profile, args.fixtures, args.output)
+    elif args.command == "parser" and args.parser_command == "recover-job":
+        from align_worker.recovery import RecoveryRejected, recover_queued_parser_job
+
+        try:
+            parsed_job_id = UUID(args.job_id)
+        except ValueError as exc:
+            raise SystemExit("job ID must be a valid UUID") from exc
+        try:
+            result = recover_queued_parser_job(
+                parsed_job_id,
+                reason=args.reason,
+                execute=args.execute,
+                idempotency_key=args.idempotency_key,
+            )
+        except RecoveryRejected as exc:
+            raise SystemExit(str(exc)) from exc
+        print(json.dumps(result, sort_keys=True))
     elif args.command == "evaluate" and args.evaluate_command == "metrics":
         from align_api.evaluation import EvaluationError, evaluate_metrics_file
 

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, expectBrowserHttpError, test } from "./fixtures";
 import { resolve } from "node:path";
 
 test("synthetic lecturer can log in and sees only the course landing page", async ({ page }) => {
@@ -21,7 +21,12 @@ test("invalid credentials return a generic message", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("Email").fill("tidak-ada@align.local");
   await page.getByLabel("Kata sandi", { exact: true }).fill("password-yang-tidak-benar");
+  expectBrowserHttpError(page, 401);
+  const rejectedLogin = page.waitForResponse(
+    (response) => response.url().includes("/api/v1/auth/login") && response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "Masuk" }).click();
+  expect((await rejectedLogin).status()).toBe(401);
   await expect(
     page.getByRole("alert").filter({ hasText: "Email atau kata sandi tidak sesuai" }),
   ).toContainText("Email atau kata sandi tidak sesuai");
@@ -115,6 +120,7 @@ test("lecturer can create and approve a manual context without learning outcomes
   await page.getByLabel("Kata sandi", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Masuk" }).click();
   await page.getByRole("link", { name: /IF101/ }).click();
+  await page.getByRole("tab", { name: "Konteks" }).click();
   await expect(page.getByRole("heading", { name: "Konteks tersimpan" })).toBeVisible();
 
   await page.getByLabel("Deskripsi konteks", { exact: true }).first().fill("Konteks manual untuk validasi B1.");
@@ -146,6 +152,7 @@ test("lecturer parses KK and RPP locally, resolves a sourced conflict, then appr
   await page.getByLabel("Kata sandi", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Masuk" }).click();
   await page.getByRole("link", { name: /IF101/ }).click();
+  await page.getByRole("tab", { name: "Konteks" }).click();
 
   const sourceInput = page.locator('input[name="source-file"]');
   await sourceInput.setInputFiles(resolve(test.info().project.testDir, "fixtures", "kk_context.docx"));
@@ -212,6 +219,7 @@ test("lecturer parses KK and RPP locally, resolves a sourced conflict, then appr
   const unresolvedApprovalPromise = page.waitForResponse(
     (response) => response.url().includes(`/context-versions/${contextId}/approve`) && response.request().method() === "POST",
   );
+  expectBrowserHttpError(page, 422);
   await page.getByRole("button", { name: "Sahkan versi ini" }).click();
   const unresolvedApproval = await unresolvedApprovalPromise;
   expect(unresolvedApproval.status()).toBe(422);

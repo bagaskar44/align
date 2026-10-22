@@ -1,1 +1,5 @@
+*.json text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=crlf
+.dockerignore text eol=crlf
 tests/fixtures/b1/*.pdf binary

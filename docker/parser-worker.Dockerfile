@@ -17,7 +17,7 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --package align-w
 
 FROM parser-dependencies AS parser-resources
 RUN apt-get update && apt-get install --yes --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-ind && rm -rf /var/lib/apt/lists/*
-COPY config/parser-context-resources.json config/parser-context-resources.json
+COPY config config
 COPY scripts/prepare-parser-resources.py scripts/prepare-parser-resources.py
 RUN --mount=type=cache,target=/root/.cache/align-parser /app/.venv/bin/python scripts/prepare-parser-resources.py
 
@@ -33,4 +33,4 @@ ENV PATH="/app/.venv/bin:$PATH" \
     HF_HUB_OFFLINE=1 \
     DOCLING_ARTIFACTS_PATH=/opt/docling-models
 USER 10001:10001
-CMD ["uv", "run", "--no-sync", "--package", "align-worker", "celery", "-A", "align_worker.celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=1"]
+CMD ["sh", "-lc", "uv run --no-sync --package align-worker python -m align_worker.runtime_check && exec uv run --no-sync --package align-worker celery -A align_worker.celery_app:celery_app worker --loglevel=INFO --concurrency=1"]

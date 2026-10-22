@@ -63,7 +63,7 @@ def await_context(client, context_id):
         context = response.json()
         if context["processing"]["status"] == "ready_for_review":
             return context
-        if context["processing"]["status"] == "failed":
+        if context["processing"]["status"] in {"failed", "blocked"}:
             break
         time.sleep(1)
     raise AssertionError({"processing": context.get("processing"), "artifacts": context.get("parse_artifacts")})

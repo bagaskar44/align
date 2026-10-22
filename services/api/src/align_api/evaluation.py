@@ -45,10 +45,12 @@ def _environment_metadata(root: Path | None = None) -> dict[str, Any]:
         except importlib.metadata.PackageNotFoundError:
             versions[distribution] = "workspace-source"
     memory_bytes: int | None = None
-    try:
-        memory_bytes = int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
-    except (OSError, ValueError, TypeError):
-        pass
+    sysconf = getattr(os, "sysconf", None)
+    if callable(sysconf):
+        try:
+            memory_bytes = int(sysconf("SC_PAGE_SIZE") * sysconf("SC_PHYS_PAGES"))
+        except (OSError, ValueError, TypeError):
+            pass
     return {
         "python": sys.version.split()[0],
         "platform": platform.platform(),

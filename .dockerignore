@@ -14,6 +14,9 @@ test-results
 .playwright-browsers
 .uv-cache
 .pytest_cache
+**/__pycache__
+__pycache__
+*.py[cod]
 .ruff_cache
 .mypy_cache
 .codex-tools
