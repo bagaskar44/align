@@ -211,7 +211,9 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await expect(formulaCell).toBeVisible();
   await formulaCell.click();
   await expect(xlsxViewer.locator(".spreadsheet-grid-detail")).toContainText("Nilai cache (belum diverifikasi)");
-  await expect(sheetTabs.getByRole("tab", { name: /Rekap Nilai Semester Akademik/ })).toBeVisible();
+  await expect(
+    xlsxViewer.getByRole("tablist", { name: "Sheet workbook" }).getByRole("tab", { name: /Rekap Nilai Semester Akademik/ }),
+  ).toBeVisible();
   for (const width of [360, 768, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     const dimensions = await page.evaluate(() => ({
