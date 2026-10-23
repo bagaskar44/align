@@ -586,7 +586,7 @@ try {
         $healthStage | Add-Member -NotePropertyName 'unhealthy_deadline_seconds' -NotePropertyValue $unhealthyDeadlineSeconds
         $stageResults['e2e'] = $healthStage
         $workerProcessIds = @()
-        $resumeWorker = 'import os,signal,sys; [os.kill(int(pid),signal.SIGCONT) for pid in sys.argv[1].split(",")]'
+        $resumeWorker = 'import os,signal,sys; [os.kill(int(pid),signal.SIGCONT) for pid in sys.argv[1].split(chr(44))]'
         try {
             $pauseWorker = @'
 import os, signal
