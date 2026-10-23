@@ -16,10 +16,12 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select, text
+from sqlalchemy.orm import Session as DbSession, sessionmaker
 
 from align_api.cli import ensure_budget_account
 from align_api.config import get_settings
 from align_api.db import SessionFactory
+from align_api.finance_lock import lock_paid_finance_scope
 from align_api.main import create_app
 from align_api.models import (
     AnalysisRun,
@@ -44,10 +46,12 @@ from align_api.models import (
     GroupMembership,
     Job,
     MethodManifest,
+    PaidCallRun,
     NumericPolicyVersion,
     ParseArtifact,
     ParserCheckpoint,
     Publication,
+    ReleaseManifest,
     Requirement,
     RetentionTombstone,
     ReviewVersion,
@@ -301,12 +305,18 @@ def _budget_exhausted():
         "status": "verified",
         "currency": "USD",
         "verification": {"source_ref": f"test:{nonce}", "reviewed_by": "synthetic-test", "effective_date": "2026-10-22"},
-        "models": {f"b6-exhausted-{nonce[:8]}": {
-            "input_per_million": "20", "output_per_million": "0", "embedding_per_million": "0"
-        }},
+        "models": {
+            f"b6-exhausted-{nonce[:8]}": {
+                "input_per_million": "20", "output_per_million": "0", "embedding_per_million": "0"
+            },
+            "text-embedding-3-small": {
+                "input_per_million": "0.02", "output_per_million": "0", "embedding_per_million": "0.02"
+            },
+        },
     }
     model_id = f"b6-exhausted-{nonce[:8]}"
     call_id, logical_call_id = uuid4(), uuid4()
+    run_id = uuid4()
     with SessionFactory.begin() as db:
         ensure_budget_account(db)
         db.flush()
@@ -316,6 +326,30 @@ def _budget_exhausted():
             kind="rates", version_label=f"b6-exhausted-{nonce[:8]}",
             content_json=rate_content, sha256=canonical_hash(rate_content), verified_at=datetime.now(UTC),
         )
+        manifests: dict[str, MethodManifest] = {"rates": rate}
+        for kind in ("parser", "parser_resource", "model", "retrieval", "rules", "prompt", "routing", "batching"):
+            content = (
+                {
+                    "provider_mode": "live", "paid_calls": True, "capability_smoke": True,
+                    "embedding_dimensions": 1536,
+                    "live_model_ids": {
+                        "efficient": model_id, "complex": model_id, "vision": model_id,
+                        "embedding": "text-embedding-3-small",
+                    },
+                }
+                if kind == "model"
+                else {
+                    "fixture_kind": kind, "nonce": nonce, "allow_live": kind == "routing",
+                    "maximum_elements": 1 if kind == "batching" else None,
+                }
+            )
+            manifest = MethodManifest(
+                kind=kind, version_label=f"b4-budget-{kind}-{nonce[:8]}",
+                content_json=content, sha256=canonical_hash(content),
+            )
+            db.add(manifest)
+            db.flush()
+            manifests[kind] = manifest
         job = Job(
             type="b6_budget_exhaustion_fixture", subject_id=uuid4(), scope_json={"fixture": nonce},
             input_fingerprint=canonical_hash({"fixture": nonce}), status="queued",
@@ -327,9 +361,81 @@ def _budget_exhausted():
         )
         db.add_all([rate, job])
         db.flush()
-        job_id, rate_id = job.id, rate.id
+        actor = db.scalar(select(User).where(User.global_role == "admin", User.active.is_(True)))
+        if actor is None:
+            actor = User(
+                normalized_email=f"b4-budget-{nonce[:8]}@example.test",
+                display_name="Synthetic Budget Operator", password_hash="synthetic-test-only",
+                global_role="admin", active=True,
+            )
+            db.add(actor)
+            db.flush()
+        previous_release = db.scalar(
+            select(ReleaseManifest).where(ReleaseManifest.state == "active").with_for_update()
+        )
+        previous_release_snapshot = None
+        if previous_release is not None:
+            previous_release_snapshot = {
+                "version_label": previous_release.version_label,
+                "parser_manifest_id": previous_release.parser_manifest_id,
+                "parser_resource_manifest_id": previous_release.parser_resource_manifest_id,
+                "model_manifest_id": previous_release.model_manifest_id,
+                "rate_manifest_id": previous_release.rate_manifest_id,
+                "retrieval_manifest_id": previous_release.retrieval_manifest_id,
+                "rules_manifest_id": previous_release.rules_manifest_id,
+                "prompt_manifest_id": previous_release.prompt_manifest_id,
+                "routing_policy_manifest_id": previous_release.routing_policy_manifest_id,
+                "batching_policy_manifest_id": previous_release.batching_policy_manifest_id,
+                "policy_validation_report_id": previous_release.policy_validation_report_id,
+                "grounding_registry_version": previous_release.grounding_registry_version,
+                "lint_registry_version": previous_release.lint_registry_version,
+                "manifest_payload": previous_release.manifest_payload,
+                "config_hash": previous_release.config_hash,
+                "activated_by": previous_release.activated_by,
+            }
+            previous_release.state = "retired"
+        release_id = uuid4()
+        db.add(ReleaseManifest(
+            id=release_id, version_label=f"b4-budget-release-{nonce[:8]}",
+            parser_manifest_id=manifests["parser"].id,
+            parser_resource_manifest_id=manifests["parser_resource"].id,
+            model_manifest_id=manifests["model"].id,
+            rate_manifest_id=manifests["rates"].id,
+            retrieval_manifest_id=manifests["retrieval"].id,
+            rules_manifest_id=manifests["rules"].id,
+            prompt_manifest_id=manifests["prompt"].id,
+            routing_policy_manifest_id=manifests["routing"].id,
+            batching_policy_manifest_id=manifests["batching"].id,
+            grounding_registry_version="b4-finance-fixture", lint_registry_version="b4-finance-fixture",
+            manifest_payload={"provider_mode": "live", "data_mode": "synthetic"},
+            config_hash=canonical_hash({"b4_budget_release": nonce}),
+            state="active", activated_by=actor.id, activated_at=datetime.now(UTC),
+        ))
+        job_id, rate_id, model_manifest_id, account_id, actor_id = (
+            job.id, rate.id, manifests["model"].id, account.id, actor.id
+        )
+
+    operator_engine = create_engine(get_settings().operator_database_url, pool_pre_ping=True)
+    operator_factory = sessionmaker(bind=operator_engine, class_=DbSession, autoflush=False, expire_on_commit=False)
+    try:
+        with operator_factory.begin() as db:
+            lock_paid_finance_scope(db)
+            for active_run in db.scalars(
+                select(PaidCallRun).where(PaidCallRun.state == "active").with_for_update()
+            ).all():
+                active_run.state = "closed"
+                active_run.closed_at = datetime.now(UTC)
+                active_run.close_reason = "isolated B4 budget-exhaustion fixture setup"
+            db.add(PaidCallRun(
+                id=run_id, budget_account_id=account_id, release_manifest_id=release_id,
+                cap_usd=Decimal("20"), authorization_ref="synthetic-b4-test-authorization",
+                created_by=actor_id, state="active",
+            ))
+    finally:
+        operator_engine.dispose()
     reserve_call(
         job_id=job_id, call_id=call_id, logical_call_id=logical_call_id, attempt_no=1,
+        release_manifest_id=release_id, model_manifest_id=model_manifest_id,
         rate_manifest_id=rate_id, model_id=model_id,
         bounds=CallBounds(input_tokens=1_000_000, active_ms=1),
     )
@@ -350,6 +456,45 @@ def _budget_exhausted():
         yield
     finally:
         release_unstarted_call(call_id, proof="provider-off manual-review fixture made no provider request")
+        operator_engine = create_engine(get_settings().operator_database_url, pool_pre_ping=True)
+        operator_factory = sessionmaker(bind=operator_engine, class_=DbSession, autoflush=False, expire_on_commit=False)
+        try:
+            with operator_factory.begin() as db:
+                lock_paid_finance_scope(db)
+                run = db.scalar(select(PaidCallRun).where(PaidCallRun.id == run_id).with_for_update())
+                if run is not None and run.state == "active":
+                    run.state = "closed"
+                    run.closed_at = datetime.now(UTC)
+                    run.close_reason = "isolated B4 budget-exhaustion fixture complete"
+        finally:
+            operator_engine.dispose()
+        with SessionFactory.begin() as db:
+            lock_paid_finance_scope(db)
+            active = db.scalar(select(ReleaseManifest).where(ReleaseManifest.id == release_id).with_for_update())
+            if active is not None and active.state == "active":
+                active.state = "retired"
+            if previous_release_snapshot is not None:
+                restored_payload = dict(previous_release_snapshot["manifest_payload"])
+                restored_release = ReleaseManifest(
+                    version_label=f"{previous_release_snapshot['version_label']}-restored-{nonce[:8]}",
+                    parser_manifest_id=previous_release_snapshot["parser_manifest_id"],
+                    parser_resource_manifest_id=previous_release_snapshot["parser_resource_manifest_id"],
+                    model_manifest_id=previous_release_snapshot["model_manifest_id"],
+                    rate_manifest_id=previous_release_snapshot["rate_manifest_id"],
+                    retrieval_manifest_id=previous_release_snapshot["retrieval_manifest_id"],
+                    rules_manifest_id=previous_release_snapshot["rules_manifest_id"],
+                    prompt_manifest_id=previous_release_snapshot["prompt_manifest_id"],
+                    routing_policy_manifest_id=previous_release_snapshot["routing_policy_manifest_id"],
+                    batching_policy_manifest_id=previous_release_snapshot["batching_policy_manifest_id"],
+                    policy_validation_report_id=previous_release_snapshot["policy_validation_report_id"],
+                    grounding_registry_version=previous_release_snapshot["grounding_registry_version"],
+                    lint_registry_version=previous_release_snapshot["lint_registry_version"],
+                    manifest_payload=restored_payload,
+                    config_hash=canonical_hash({"restored_config": previous_release_snapshot["config_hash"], "nonce": nonce}),
+                    state="active", activated_by=previous_release_snapshot["activated_by"] or actor_id,
+                    activated_at=datetime.now(UTC),
+                )
+                db.add(restored_release)
 
 
 def test_provider_off_manual_review_annotation_feedback_release_and_withdrawal(_scenario, _budget_exhausted) -> None:

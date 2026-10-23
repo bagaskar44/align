@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import type { ApiMethod, ApiRequestPath } from "@/lib/api-contract.generated";
 
 type ConflictCandidate = { value: string; source_ref?: Record<string, unknown> };
@@ -70,6 +71,7 @@ function outcomeText(value: unknown): string {
 }
 
 export function ContextWorkspace({ course, csrfToken, initialVersions, initialCursor }: { course: Course; csrfToken: string; initialVersions: VersionSummary[]; initialCursor: string | null }) {
+  const router = useRouter();
   const [versions, setVersions] = useState(initialVersions);
   const [nextCursor, setNextCursor] = useState(initialCursor);
   const [activeContext, setActiveContext] = useState<ContextVersion | null>(null);
@@ -305,6 +307,7 @@ export function ContextWorkspace({ course, csrfToken, initialVersions, initialCu
       activateContext(response.context);
       await refreshVersions(response.context.id);
       setMessage(`Versi konteks ${response.context.version_no} disahkan.`);
+      router.refresh();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Versi konteks belum dapat disahkan.");
     } finally {

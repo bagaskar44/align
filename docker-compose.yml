@@ -62,15 +62,25 @@ services:
     env_file: ${ALIGN_API_ENV_FILE:-.env.api}
     environment:
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
-      # Make the developer's local credential available to trusted inference
-      # services. PROVIDER_MODE and PAID_CALLS_ENABLED remain controlled by the
-      # role env files (mock/disabled by default); parser services never receive it.
+      # Development provider controls are sourced from the private root .env so
+      # API/operator/general-worker use one exact model and spend configuration.
+      # Defaults remain mock/off; parser services never receive the credential.
+      APP_ENV: ${APP_ENV:-development}
+      APP_DEMO_MODE: ${APP_DEMO_MODE:-false}
+      DATA_MODE: ${DATA_MODE:-synthetic}
+      PROVIDER_MODE: ${PROVIDER_MODE:-mock}
+      PAID_CALLS_ENABLED: ${PAID_CALLS_ENABLED:-false}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      MODEL_EFFICIENT: ${MODEL_EFFICIENT:-}
+      MODEL_COMPLEX: ${MODEL_COMPLEX:-}
+      MODEL_VISION: ${MODEL_VISION:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
       REDIS_QUEUE_PREFIX: ${ALIGN_QA_REDIS_QUEUE_PREFIX:-${REDIS_QUEUE_PREFIX:-align-dev}}
       PARSER_NATIVE_MEMORY_BYTES: "2147483648"
-      PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES:-${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-4294967296}}
+      PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES:-${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-8589934592}}
       PARSER_LIGHT_MEMORY_BYTES: "4294967296"
-      PARSER_NODE_MEMORY_BUDGET_BYTES: "4294967296"
+      PARSER_NODE_MEMORY_BUDGET_BYTES: "8589934592"
       PARSER_NODE_HEADROOM_BYTES: "1073741824"
       PARSER_HEAVY_MAX_PER_NODE: "1"
       PARSER_PAGE_BATCH_SIZE: "1"
@@ -101,6 +111,21 @@ services:
     env_file: ${ALIGN_OPERATOR_ENV_FILE:-.env.api}
     environment:
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      APP_ENV: ${APP_ENV:-development}
+      APP_DEMO_MODE: ${APP_DEMO_MODE:-false}
+      DATA_MODE: ${DATA_MODE:-synthetic}
+      PROVIDER_MODE: ${PROVIDER_MODE:-mock}
+      PAID_CALLS_ENABLED: ${PAID_CALLS_ENABLED:-false}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      MODEL_EFFICIENT: ${MODEL_EFFICIENT:-}
+      MODEL_COMPLEX: ${MODEL_COMPLEX:-}
+      MODEL_VISION: ${MODEL_VISION:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
+      ALIGN_SEED_PASSWORD: ${ALIGN_SEED_PASSWORD:-}
+      BUDGET_CONFIRMED_USD: ${BUDGET_CONFIRMED_USD:-25.00}
+      BUDGET_RESERVE_USD: ${BUDGET_RESERVE_USD:-5.00}
+      BUDGET_PLANNED_TOPUP_USD: ${BUDGET_PLANNED_TOPUP_USD:-0.00}
       OPERATOR_DATABASE_URL: postgresql+psycopg://align_operator:${OPERATOR_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
     entrypoint: ["uv", "run", "--no-sync", "--package", "align-api", "align"]
     depends_on:
@@ -118,13 +143,23 @@ services:
       dockerfile: docker/worker.Dockerfile
     env_file: ${ALIGN_WORKER_ENV_FILE:-.env.worker}
     environment:
+      APP_ENV: ${APP_ENV:-development}
+      APP_DEMO_MODE: ${APP_DEMO_MODE:-false}
+      DATA_MODE: ${DATA_MODE:-synthetic}
+      PROVIDER_MODE: ${PROVIDER_MODE:-mock}
+      PAID_CALLS_ENABLED: ${PAID_CALLS_ENABLED:-false}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      MODEL_EFFICIENT: ${MODEL_EFFICIENT:-}
+      MODEL_COMPLEX: ${MODEL_COMPLEX:-}
+      MODEL_VISION: ${MODEL_VISION:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
       REDIS_QUEUE_PREFIX: ${ALIGN_QA_REDIS_QUEUE_PREFIX:-${REDIS_QUEUE_PREFIX:-align-dev}}
       ALIGN_WORKER_QUEUE: ${ALIGN_QA_REDIS_QUEUE_PREFIX:-${REDIS_QUEUE_PREFIX:-align-dev}}.general
       PARSER_NATIVE_MEMORY_BYTES: "2147483648"
-      PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES:-${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-4294967296}}
+      PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES:-${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-8589934592}}
       PARSER_LIGHT_MEMORY_BYTES: "4294967296"
-      PARSER_NODE_MEMORY_BUDGET_BYTES: "4294967296"
+      PARSER_NODE_MEMORY_BUDGET_BYTES: "8589934592"
       PARSER_NODE_HEADROOM_BYTES: "1073741824"
       PARSER_HEAVY_MAX_PER_NODE: "1"
       PARSER_PAGE_BATCH_SIZE: "1"
@@ -147,15 +182,14 @@ services:
       ALIGN_WORKER_QUEUE: ${ALIGN_QA_REDIS_QUEUE_PREFIX:-${REDIS_QUEUE_PREFIX:-align-dev}}.parser
       PARSER_NODE_ID: ${PARSER_NODE_ID:-align-dev-node}
       PARSER_NATIVE_MEMORY_BYTES: "2147483648"
-      PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES:-${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-4294967296}}
+      PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES:-${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-8589934592}}
       PARSER_LIGHT_MEMORY_BYTES: "4294967296"
-      PARSER_NODE_MEMORY_BUDGET_BYTES: "4294967296"
+      PARSER_NODE_MEMORY_BUDGET_BYTES: "8589934592"
       PARSER_NODE_HEADROOM_BYTES: "1073741824"
       PARSER_HEAVY_MAX_PER_NODE: "1"
       PARSER_PAGE_BATCH_SIZE: "1"
-      PROVIDER_MODE: ${PROVIDER_MODE:-mock}
+      PROVIDER_MODE: "off"
       DATA_MODE: ${DATA_MODE:-synthetic}
-      MODEL_EFFICIENT: ${MODEL_EFFICIENT:-}
     command: ["sh", "-lc", "uv run --no-sync --package align-worker python -m align_worker.runtime_check && exec uv run --no-sync --package align-worker celery -A align_worker.celery_app:celery_app worker --loglevel=INFO --concurrency=1 --queues=$${ALIGN_WORKER_QUEUE}"]
     healthcheck:
       test: ["CMD", "uv", "run", "--no-sync", "--package", "align-worker", "python", "-m", "align_worker.runtime_check", "--healthcheck"]
@@ -169,7 +203,7 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
-    mem_limit: 5g
+    mem_limit: 9g
     cpus: 2.0
     pids_limit: 128
     stop_grace_period: 30s
@@ -186,15 +220,14 @@ services:
       ALIGN_WORKER_QUEUE: align-test.parser
       PARSER_NODE_ID: align-b5-test-node
       PARSER_NATIVE_MEMORY_BYTES: "2147483648"
-      PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES:-${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-4294967296}}
+      PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES:-${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-8589934592}}
       PARSER_LIGHT_MEMORY_BYTES: "4294967296"
-      PARSER_NODE_MEMORY_BUDGET_BYTES: "4294967296"
+      PARSER_NODE_MEMORY_BUDGET_BYTES: "8589934592"
       PARSER_NODE_HEADROOM_BYTES: "1073741824"
       PARSER_HEAVY_MAX_PER_NODE: "1"
       PARSER_PAGE_BATCH_SIZE: "1"
-      PROVIDER_MODE: ${PROVIDER_MODE:-mock}
+      PROVIDER_MODE: "off"
       DATA_MODE: ${DATA_MODE:-synthetic}
-      MODEL_EFFICIENT: ${MODEL_EFFICIENT:-}
     command: ["sh", "-lc", "uv run --no-sync --package align-worker python -m align_worker.runtime_check && exec uv run --no-sync --package align-worker celery -A align_worker.celery_app:celery_app worker --loglevel=INFO --concurrency=1 --queues=$${ALIGN_WORKER_QUEUE}"]
     healthcheck:
       test: ["CMD", "uv", "run", "--no-sync", "--package", "align-worker", "python", "-m", "align_worker.runtime_check", "--healthcheck"]
@@ -208,7 +241,7 @@ services:
       redis:
         condition: service_healthy
     restart: "no"
-    mem_limit: 5g
+    mem_limit: 9g
     cpus: 2.0
     pids_limit: 128
     stop_grace_period: 30s
@@ -278,9 +311,9 @@ services:
     environment:
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
       PARSER_NATIVE_MEMORY_BYTES: "2147483648"
-      PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES:-${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-4294967296}}
+      PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES:-${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-8589934592}}
       PARSER_LIGHT_MEMORY_BYTES: "4294967296"
-      PARSER_NODE_MEMORY_BUDGET_BYTES: "4294967296"
+      PARSER_NODE_MEMORY_BUDGET_BYTES: "8589934592"
       PARSER_NODE_HEADROOM_BYTES: "1073741824"
       PARSER_HEAVY_MAX_PER_NODE: "1"
       PARSER_PAGE_BATCH_SIZE: "1"

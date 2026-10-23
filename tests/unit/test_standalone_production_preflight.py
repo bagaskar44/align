@@ -69,7 +69,7 @@ def _live_fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     }
     _write_json(methods / "rates.json", rates)
     routing = json.loads((ROOT / "config/routing.baseline.json").read_text(encoding="utf-8"))
-    routing.update({"policy_id": "routing-live-synthetic-v1", "allow_live": True})
+    routing["allow_live"] = True
     _write_json(methods / "routing.json", routing)
     batching = json.loads((ROOT / "config/batching.baseline.json").read_text(encoding="utf-8"))
     _write_json(methods / "batching.json", batching)

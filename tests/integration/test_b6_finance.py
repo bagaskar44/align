@@ -8,17 +8,22 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, select, text
+from sqlalchemy.orm import Session as DbSession, sessionmaker
 from sqlalchemy.exc import DBAPIError
 
+from align_api.cli import reconcile_usage
 from align_api.config import get_settings
 from align_api.db import SessionFactory
+from align_api.finance_lock import lock_paid_finance_scope
 from align_api.models import (
     BudgetAccount,
     Job,
     MethodManifest,
+    PaidCallRun,
     ReleaseManifest,
     UsageEntry,
     UsageReservation,
+    User,
 )
 from align_api.paid_calls import active_paid_release_scope
 from align_domain.assignment_contracts import canonical_hash
@@ -40,6 +45,13 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _operator_session_factory():
+    url = get_settings().operator_database_url
+    assert url is not None
+    engine = create_engine(url, pool_pre_ping=True)
+    return engine, sessionmaker(bind=engine, class_=DbSession, autoflush=False, expire_on_commit=False)
+
+
 def test_worker_reservation_privilege_is_limited_to_status_and_timestamp() -> None:
     engine = create_engine(get_settings().worker_database_url)
     try:
@@ -47,10 +59,16 @@ def test_worker_reservation_privilege_is_limited_to_status_and_timestamp() -> No
             assert db.execute(text(
                 "SELECT has_column_privilege(current_user, 'usage_reservations', 'status', 'UPDATE')"
             )).scalar_one() is True
-            for column in ("amount_reserved", "call_id", "job_id", "bounds_json"):
+            for column in ("amount_reserved", "call_id", "job_id", "bounds_json", "paid_call_run_id"):
                 assert db.execute(text(
                     "SELECT has_column_privilege(current_user, 'usage_reservations', :column, 'UPDATE')"
                 ), {"column": column}).scalar_one() is False
+            assert db.execute(text(
+                "SELECT has_table_privilege(current_user, 'paid_call_runs', 'SELECT')"
+            )).scalar_one() is True
+            assert db.execute(text(
+                "SELECT has_table_privilege(current_user, 'paid_call_runs', 'UPDATE')"
+            )).scalar_one() is False
             assert db.execute(text(
                 "SELECT has_column_privilege(current_user, 'budget_accounts', 'spend_frozen', 'UPDATE')"
             )).scalar_one() is True
@@ -61,7 +79,7 @@ def test_worker_reservation_privilege_is_limited_to_status_and_timestamp() -> No
         engine.dispose()
 
 
-def _rows() -> tuple[BudgetAccount, dict[str, UUID], UUID]:
+def _rows(*, run_cap: Decimal = Decimal("20")) -> tuple[BudgetAccount, dict[str, UUID], UUID, UUID, UUID, UUID]:
     with SessionFactory.begin() as db:
         account = db.scalar(select(BudgetAccount).where(BudgetAccount.active.is_(True)).order_by(BudgetAccount.id))
         if account is None:
@@ -79,6 +97,7 @@ def _rows() -> tuple[BudgetAccount, dict[str, UUID], UUID]:
                 "m8": {"input_per_million": "8", "output_per_million": "0", "embedding_per_million": "0"},
                 "m19": {"input_per_million": "19.9995", "output_per_million": "0", "embedding_per_million": "0"},
                 "mcheap": {"input_per_million": "0.000001", "output_per_million": "0", "embedding_per_million": "0"},
+                "text-embedding-3-small": {"input_per_million": "0.02", "output_per_million": "0", "embedding_per_million": "0.02"},
             },
         }
         rate_hash = canonical_hash(standard_rates)
@@ -90,6 +109,57 @@ def _rows() -> tuple[BudgetAccount, dict[str, UUID], UUID]:
             )
             db.add(rates)
             db.flush()
+        live_manifests: dict[str, MethodManifest] = {"rates": rates}
+        for kind in ("parser", "parser_resource", "model", "retrieval", "rules", "prompt", "routing", "batching"):
+            content = (
+                {
+                    "provider_mode": "live", "paid_calls": True, "capability_smoke": True,
+                    "embedding_dimensions": 1536,
+                    "live_model_ids": {
+                        "efficient": "mcheap", "complex": "mcheap", "vision": "mcheap",
+                        "embedding": "text-embedding-3-small",
+                    },
+                }
+                if kind == "model"
+                else {"fixture_kind": kind, "nonce": str(uuid4()), "allow_live": kind == "routing", "maximum_elements": 1 if kind == "batching" else None}
+            )
+            row = MethodManifest(
+                kind=kind, version_label=f"b6-run-{kind}-{uuid4().hex[:8]}",
+                content_json=content, sha256=canonical_hash(content),
+            )
+            db.add(row)
+            db.flush()
+            live_manifests[kind] = row
+        actor = db.scalar(select(User).where(User.global_role == "admin", User.active.is_(True)))
+        if actor is None:
+            actor = User(
+                normalized_email=f"finance-{uuid4().hex}@example.test",
+                display_name="Synthetic Finance Operator", password_hash="synthetic-test-only",
+                global_role="admin", active=True,
+            )
+            db.add(actor)
+            db.flush()
+        for active in db.scalars(select(ReleaseManifest).where(ReleaseManifest.state == "active")).all():
+            active.state = "retired"
+        release_id = uuid4()
+        release = ReleaseManifest(
+            id=release_id, version_label=f"b6-finance-run-{uuid4().hex[:8]}",
+            parser_manifest_id=live_manifests["parser"].id,
+            parser_resource_manifest_id=live_manifests["parser_resource"].id,
+            model_manifest_id=live_manifests["model"].id,
+            rate_manifest_id=live_manifests["rates"].id,
+            retrieval_manifest_id=live_manifests["retrieval"].id,
+            rules_manifest_id=live_manifests["rules"].id,
+            prompt_manifest_id=live_manifests["prompt"].id,
+            routing_policy_manifest_id=live_manifests["routing"].id,
+            batching_policy_manifest_id=live_manifests["batching"].id,
+            grounding_registry_version="integration-test", lint_registry_version="integration-test",
+            manifest_payload={"provider_mode": "live", "data_mode": "synthetic"},
+            config_hash=canonical_hash({"release": str(release_id)}), state="active",
+        )
+        db.add(release)
+        db.flush()
+        run_id = uuid4()
         jobs: dict[str, UUID] = {}
         for key in ("c1", "c2", "c3", "pending"):
             job = Job(
@@ -104,14 +174,34 @@ def _rows() -> tuple[BudgetAccount, dict[str, UUID], UUID]:
             db.add(job)
             db.flush()
             jobs[key] = job.id
-        return account, jobs, rates.id
+        account_id, actor_id, rate_id, model_id = account.id, actor.id, rates.id, live_manifests["model"].id
+
+    operator_engine, operator_factory = _operator_session_factory()
+    try:
+        with operator_factory.begin() as db:
+            lock_paid_finance_scope(db)
+            for active_run in db.scalars(
+                select(PaidCallRun).where(PaidCallRun.state == "active").with_for_update()
+            ).all():
+                active_run.state = "closed"
+                active_run.closed_at = datetime.now(UTC)
+                active_run.close_reason = "isolated finance fixture setup"
+            db.add(PaidCallRun(
+                id=run_id, budget_account_id=account_id, release_manifest_id=release_id,
+                cap_usd=run_cap, authorization_ref="synthetic-integration-authorization",
+                created_by=actor_id, state="active",
+            ))
+    finally:
+        operator_engine.dispose()
+    return account, jobs, rate_id, release_id, model_id, run_id
 
 
 def test_live_adapter_commits_reservation_then_settles_postgres_before_return(
     monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> None:
-    for name in ("MODEL_EFFICIENT", "MODEL_COMPLEX", "MODEL_VISION", "EMBEDDING_MODEL"):
+    for name in ("MODEL_EFFICIENT", "MODEL_COMPLEX", "MODEL_VISION"):
         monkeypatch.setenv(name, "mcheap")
+    monkeypatch.setenv("EMBEDDING_MODEL", "text-embedding-3-small")
     monkeypatch.setenv("APP_ENV", "development")
     monkeypatch.setenv("DATA_MODE", "synthetic")
     monkeypatch.setenv("APP_DEMO_MODE", "true")
@@ -120,7 +210,7 @@ def test_live_adapter_commits_reservation_then_settles_postgres_before_return(
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-postgres-test-key")
     get_settings.cache_clear()
     request.addfinalizer(get_settings.cache_clear)
-    account, jobs, existing_rates_id = _rows()
+    account, jobs, existing_rates_id, _fixture_release_id, _fixture_model_id, fixture_run_id = _rows()
     fixture_nonce = str(uuid4())
     with SessionFactory.begin() as db:
         manifest_rows: dict[str, MethodManifest] = {}
@@ -130,7 +220,7 @@ def test_live_adapter_commits_reservation_then_settles_postgres_before_return(
                 "provider_mode": "live", "paid_calls": True,
                 "live_model_ids": {
                     "efficient": "mcheap", "complex": "mcheap",
-                    "vision": "mcheap", "embedding": "mcheap",
+                    "vision": "mcheap", "embedding": "text-embedding-3-small",
                 },
                 "test_fixture": fixture_nonce,
             },
@@ -150,6 +240,11 @@ def test_live_adapter_commits_reservation_then_settles_postgres_before_return(
                         "input_per_million": "0.000001",
                         "output_per_million": "0",
                         "embedding_per_million": "0",
+                    },
+                    "text-embedding-3-small": {
+                        "input_per_million": "0.02",
+                        "output_per_million": "0",
+                        "embedding_per_million": "0.02",
                     }
                 },
             },
@@ -178,7 +273,6 @@ def test_live_adapter_commits_reservation_then_settles_postgres_before_return(
             select(ReleaseManifest).where(ReleaseManifest.state == "active").with_for_update()
         ).all():
             active_release.state = "retired"
-        db.flush()
         release_id = uuid4()
         db.add(ReleaseManifest(
             id=release_id,
@@ -199,6 +293,9 @@ def test_live_adapter_commits_reservation_then_settles_postgres_before_return(
             state="active",
         ))
         db.flush()
+        actor = db.scalar(select(User).where(User.global_role == "admin", User.active.is_(True)))
+        assert actor is not None
+        actor_id = actor.id
         job_id = jobs["c1"]
         job = db.get(Job, job_id)
         assert job is not None
@@ -211,6 +308,25 @@ def test_live_adapter_commits_reservation_then_settles_postgres_before_return(
             "max_active_seconds": 60,
             "budget_usd": "10",
         }
+
+    operator_engine, operator_factory = _operator_session_factory()
+    try:
+        with operator_factory.begin() as db:
+            lock_paid_finance_scope(db)
+            fixture_run = db.scalar(
+                select(PaidCallRun).where(PaidCallRun.id == fixture_run_id).with_for_update()
+            )
+            assert fixture_run is not None and fixture_run.state == "active"
+            fixture_run.state = "closed"
+            fixture_run.closed_at = datetime.now(UTC)
+            fixture_run.close_reason = "replaced by isolated provider-ledger fixture"
+            db.add(PaidCallRun(
+                budget_account_id=account.id, release_manifest_id=release_id,
+                cap_usd=Decimal("1"), authorization_ref="synthetic-integration-authorization",
+                created_by=actor_id, state="active",
+            ))
+    finally:
+        operator_engine.dispose()
 
     call = ProviderContext(
         call_id=uuid4(), job_id=job_id, manifest_id=manifest_rows["model"].id,
@@ -337,13 +453,18 @@ def test_live_adapter_commits_reservation_then_settles_postgres_before_return(
             db.flush()
 
 
-def _reserve(job_id: UUID, rates_id: UUID, model: str, call_id: UUID | None = None) -> UUID:
+def _reserve(
+    job_id: UUID, rates_id: UUID, model: str, release_id: UUID, model_manifest_id: UUID,
+    call_id: UUID | None = None,
+) -> UUID:
     physical_call_id = call_id or uuid4()
     reserve_call(
         job_id=job_id,
         call_id=physical_call_id,
         logical_call_id=uuid4(),
         attempt_no=1,
+        release_manifest_id=release_id,
+        model_manifest_id=model_manifest_id,
         rate_manifest_id=rates_id,
         model_id=model,
         bounds=CallBounds(input_tokens=1_000_000, active_ms=1_000),
@@ -352,9 +473,12 @@ def _reserve(job_id: UUID, rates_id: UUID, model: str, call_id: UUID | None = No
 
 
 def test_concurrent_global_reservations_unknown_billing_and_new_attempt_liability() -> None:
-    _account, jobs, rates_id = _rows()
+    _account, jobs, rates_id, release_id, model_id, run_id = _rows()
     with ThreadPoolExecutor(max_workers=3) as pool:
-        futures = [pool.submit(_reserve, jobs[key], rates_id, "m8") for key in ("c1", "c2", "c3")]
+        futures = [
+            pool.submit(_reserve, jobs[key], rates_id, "m8", release_id, model_id)
+            for key in ("c1", "c2", "c3")
+        ]
     outcomes: list[UUID | Exception] = []
     for future in futures:
         try:
@@ -372,22 +496,82 @@ def test_concurrent_global_reservations_unknown_billing_and_new_attempt_liabilit
         )).all()
         assert len(held) == 2
         assert sum((row.amount_reserved for row in held), Decimal("0")) == Decimal("16.00000000")
+        assert {row.paid_call_run_id for row in held} == {run_id}
     for call_id in successful:
         release_unstarted_call(call_id, proof="integration fake never starts provider I/O")
 
-    pending_call = _reserve(jobs["pending"], rates_id, "m19")
+    pending_call = _reserve(jobs["pending"], rates_id, "m19", release_id, model_id)
     mark_unknown(pending_call, provider_request_id="request-timeout", reason="timeout_after_submit")
     with WorkerSessionFactory() as db:
         reservation = db.scalar(select(UsageReservation).where(UsageReservation.call_id == pending_call))
         entry = db.scalar(select(UsageEntry).where(UsageEntry.call_id == pending_call))
         assert reservation is not None and reservation.status == "reconciliation_required"
         assert entry is not None and entry.status == "pending" and entry.provider_request_id == "request-timeout"
-    with pytest.raises(FinanceGuardError, match="global_budget_exhausted"):
+    with pytest.raises(FinanceGuardError, match="budget_reconciliation_pending"):
         reserve_call(
             job_id=jobs["pending"], call_id=uuid4(), logical_call_id=entry.logical_call_id,
-            attempt_no=2, rate_manifest_id=rates_id, model_id="m19",
+            attempt_no=2, release_manifest_id=release_id, model_manifest_id=model_id,
+            rate_manifest_id=rates_id, model_id="m19",
             bounds=CallBounds(input_tokens=1_000_000, active_ms=1_000),
         )
     with WorkerSessionFactory() as db:
         account = db.get(BudgetAccount, _account.id)
         assert account is not None and account.confirmed_total == Decimal("25.00000000")
+        pending_entry_id = entry.id
+    reconcile_usage(
+        str(pending_entry_id), resolution="not_billed", amount="0",
+        evidence_ref="synthetic test: ledger-only call never invoked provider",
+        provider_request_id="request-timeout",
+    )
+
+
+def test_concurrent_reservations_cannot_overspend_one_paid_call_run() -> None:
+    _account, jobs, rates_id, release_id, model_id, run_id = _rows(run_cap=Decimal("10"))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(_reserve, jobs[key], rates_id, "m8", release_id, model_id)
+            for key in ("c1", "c2")
+        ]
+    outcomes: list[UUID | Exception] = []
+    for future in futures:
+        try:
+            outcomes.append(future.result())
+        except Exception as exc:
+            outcomes.append(exc)
+    successful = [item for item in outcomes if isinstance(item, UUID)]
+    failed = [item for item in outcomes if isinstance(item, Exception)]
+    assert len(successful) == 1
+    assert len(failed) == 1 and isinstance(failed[0], FinanceGuardError)
+    assert "paid_call_run_cap_exceeded" in str(failed[0])
+    with WorkerSessionFactory() as db:
+        reservations = db.scalars(
+            select(UsageReservation).where(UsageReservation.paid_call_run_id == run_id)
+        ).all()
+        assert len(reservations) == 1
+        assert reservations[0].amount_reserved == Decimal("8.00000000")
+    for call_id in successful:
+        release_unstarted_call(call_id, proof="integration fake never starts provider I/O")
+
+
+def test_postgres_trigger_blocks_worker_direct_insert_over_paid_call_run_cap() -> None:
+    account, jobs, rates_id, release_id, model_id, run_id = _rows(run_cap=Decimal("10"))
+    first_call = _reserve(jobs["c1"], rates_id, "m8", release_id, model_id)
+    with pytest.raises(DBAPIError, match="PAID_CALL_RUN_CAP_EXCEEDED"):
+        with WorkerSessionFactory.begin() as db:
+            db.add(UsageReservation(
+                budget_account_id=account.id,
+                paid_call_run_id=run_id,
+                job_id=jobs["c2"],
+                call_id=uuid4(),
+                logical_call_id=uuid4(),
+                attempt_no=1,
+                amount_reserved=Decimal("8"),
+                bounds_json={
+                    "calls": 1, "input_tokens": 1_000_000, "output_tokens": 0,
+                    "embedding_tokens": 0, "vision_calls": 0, "image_count": 0,
+                    "active_ms": 1,
+                },
+                status="held",
+            ))
+            db.flush()
+    release_unstarted_call(first_call, proof="integration fake never starts provider I/O")

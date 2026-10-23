@@ -20,6 +20,7 @@ test-results/
 data/
 .codex-tools/
 .corepack-cache/
+config/live-local/
 research/iterations/*
 !research/iterations/.gitkeep
 !research/iterations/README.md

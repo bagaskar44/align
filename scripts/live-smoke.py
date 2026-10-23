@@ -155,7 +155,7 @@ def _load_release_bundle(manifest_path: Path, checks: list[dict[str, str]]) -> d
     if rates_ready:
         try:
             date.fromisoformat(verification["effective_date"])
-            for model_id in model_ids.values():
+            for role, model_id in model_ids.items():
                 item = rate_models[model_id]
                 if not isinstance(item, dict):
                     raise ValueError
@@ -163,13 +163,14 @@ def _load_release_bundle(manifest_path: Path, checks: list[dict[str, str]]) -> d
                     rate = Decimal(str(item[rate_name]))
                     if not rate.is_finite() or rate < 0:
                         raise ValueError
-                image_rate = Decimal(str(item["image_per_unit"]))
-                if not image_rate.is_finite() or image_rate < 0:
-                    raise ValueError
+                if role == "vision":
+                    image_rate = Decimal(str(item["image_per_unit"]))
+                    if not image_rate.is_finite() or image_rate < 0:
+                        raise ValueError
         except (KeyError, ValueError, InvalidOperation):
             rates_ready = False
     _check(checks, "verified_rates", "passed" if rates_ready else "failed",
-                "verified dated USD token and image rates must cover every pinned model role")
+                "verified dated USD token rates must cover every role, plus an image rate for the vision role")
 
     try:
         baseline_routing = json.loads((ROOT / "config/routing.baseline.json").read_text(encoding="utf-8"))
@@ -177,10 +178,10 @@ def _load_release_bundle(manifest_path: Path, checks: list[dict[str, str]]) -> d
     except (OSError, json.JSONDecodeError):
         baseline_routing, baseline_batching = {}, {}
     expected_routing = copy.deepcopy(baseline_routing)
-    expected_routing.update({"policy_id": "routing-live-synthetic-v1", "allow_live": True})
+    expected_routing["allow_live"] = True
     routing_ready = routing == expected_routing
     _check(checks, "live_routing", "passed" if routing_ready else "failed",
-           "routing must equal the frozen baseline except for the livecheck ID and allow_live=true")
+           "routing must equal the frozen baseline except for allow_live=true")
     batching_ready = batching == baseline_batching
     _check(checks, "batching", "passed" if batching_ready else "failed",
            "batching must match the immutable batch-1 baseline exactly")
@@ -293,7 +294,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
 
     if args.execute_live:
         _check(checks, "live_execution", "failed",
-               "end-to-end API/worker orchestration and atomic run-level spend-cap enforcement are not implemented; no provider call was made")
+               "the dedicated end-to-end live-smoke runner is not implemented; use the guarded app flow with an active database spend run; no provider call was made")
     else:
         _check(checks, "live_execution", "pending", "offline preflight only; no API or provider request was made")
 
@@ -319,7 +320,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "checks": checks,
         "limitations": [
             "preflight is offline and does not prove an active database release or available budget",
-            "provider execution is blocked until end-to-end API/worker orchestration and atomic run-level spend caps exist",
+            "provider execution through this CLI remains blocked until the dedicated end-to-end runner exists; paid app calls require an active database run whose cap is checked atomically with every reservation",
             "configuration and key presence do not authorize paid calls",
         ],
     }

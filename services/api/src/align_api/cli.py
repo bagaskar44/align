@@ -19,10 +19,12 @@ from sqlalchemy.orm import sessionmaker
 
 from align_api.config import get_settings
 from align_api.db import SessionFactory
+from align_api.finance_lock import lock_paid_finance_scope
 from align_api.models import (
     AnalysisRun,
     AuditEvent,
     BudgetAccount,
+    PaidCallRun,
     BudgetTopup,
     Course,
     Enrollment,
@@ -42,6 +44,7 @@ from align_api.models import (
     User,
 )
 from align_api.paid_calls import live_model_binding_matches, runtime_live_model_ids
+from align_domain.finance import BudgetState, decimal_amount
 from align_api.security import hash_password, normalize_email
 from align_api.storage import storage_client
 
@@ -476,14 +479,15 @@ def ensure_budget_account(db: DbSession) -> None:
     if db.get_bind().dialect.name == "postgresql":
         # Serialize the empty-table case; the partial unique index is a second
         # guard against accidental creation of more than one active account.
-        db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": 1095519559})
+        lock_paid_finance_scope(db)
     if db.scalar(select(BudgetAccount.id).where(BudgetAccount.active.is_(True))) is None:
+        settings = get_settings()
         db.add(
             BudgetAccount(
                 currency="USD",
-                confirmed_total=Decimal("25.00000000"),
-                reserve_floor=Decimal("5.00000000"),
-                planned_topup=Decimal("0.00000000"),
+                confirmed_total=decimal_amount(settings.budget_confirmed_usd),
+                reserve_floor=decimal_amount(settings.budget_reserve_usd),
+                planned_topup=decimal_amount(settings.budget_planned_topup_usd),
                 active=True,
             )
         )
@@ -604,7 +608,7 @@ def seed_synthetic() -> None:
     )
 
 
-def register_release(filename: str) -> None:
+def register_release(filename: str, *, emit: bool = True) -> str:
     manifest_path = Path(filename).resolve()
     release = json.loads(manifest_path.read_text(encoding="utf-8"))
     if release.get("schema_version") not in {1, 2}:
@@ -675,8 +679,10 @@ def register_release(filename: str) -> None:
     with SessionFactory.begin() as db:
         existing = db.scalar(select(ReleaseManifest).where(ReleaseManifest.config_hash == config_hash))
         if existing is not None:
-            print(json.dumps({"release_id": str(existing.id), "state": existing.state, "config_hash": config_hash}))
-            return
+            result = {"release_id": str(existing.id), "state": existing.state, "config_hash": config_hash}
+            if emit:
+                print(json.dumps(result))
+            return str(existing.id)
         method_rows: dict[str, MethodManifest] = {}
         for kind, payload in manifest_payloads.items():
             digest = sha256_json(payload)
@@ -732,17 +738,21 @@ def register_release(filename: str) -> None:
         db.flush()
         _audit(db, "release.register", "release_manifest", release_row.id, _operator(db))
         result = {"release_id": str(release_row.id), "state": release_row.state, "config_hash": config_hash}
-    print(json.dumps(result, ensure_ascii=False))
+    if emit:
+        print(json.dumps(result, ensure_ascii=False))
+    return str(result["release_id"])
 
 
-def activate_release(release_id: str) -> None:
+def activate_release(release_id: str, *, emit: bool = True) -> None:
     parsed_id = UUID(release_id)
     with SessionFactory.begin() as db:
+        lock_paid_finance_scope(db)
         release = db.scalar(select(ReleaseManifest).where(ReleaseManifest.id == parsed_id).with_for_update())
         if release is None:
             raise SystemExit("release not found")
         if release.state == "active":
-            print(json.dumps({"release_id": release_id, "state": "active", "empirical_verification": False}))
+            if emit:
+                print(json.dumps({"release_id": release_id, "state": "active", "empirical_verification": False}))
             return
         if release.state not in {"draft", "verified"}:
             raise SystemExit("retired releases cannot be activated again")
@@ -883,6 +893,8 @@ def activate_release(release_id: str) -> None:
             )
         ):
             raise SystemExit("B5 software gate checks have not passed")
+        if db.scalar(select(PaidCallRun.id).where(PaidCallRun.state == "active").limit(1)) is not None:
+            raise SystemExit("close the active paid-call run before changing release")
         actor = _operator(db)
         if actor is None:
             raise SystemExit("bootstrap a local operator account before activation")
@@ -899,11 +911,57 @@ def activate_release(release_id: str) -> None:
         release.activated_by = actor.id
         release.activated_at = datetime.now(UTC)
         _audit(db, "release.activate", "release_manifest", release.id, actor)
+    if emit:
+        print(json.dumps({
+            "release_id": release_id,
+            "state": "active",
+            "empirical_verification": checks.get("empirical_verification") is True,
+        }))
+
+
+def activate_local_live_release(
+    *, manifest_file: str, max_spend_usd: str, authorization_ref: str
+) -> None:
+    from align_api.paid_call_runs import (
+        open_paid_call_run,
+        validate_local_live_runtime,
+        validate_run_cap,
+    )
+
+    validate_local_live_runtime()
+    validate_run_cap(max_spend_usd)
+    if not authorization_ref.strip() or len(authorization_ref) > 240:
+        raise SystemExit("an explicit spend authorization reference is required")
+    manifest_path = Path(manifest_file).resolve()
+    config_root = (REPOSITORY_ROOT / "config").resolve()
+    if config_root not in manifest_path.parents or not manifest_path.is_file():
+        raise SystemExit("live manifest must be an existing file inside the project config directory")
+    release_id = register_release(str(manifest_path), emit=False)
+    activate_release(release_id, emit=False)
+    run = open_paid_call_run(
+        release_id=release_id,
+        max_spend_usd=max_spend_usd,
+        authorization_ref=authorization_ref,
+    )
     print(json.dumps({
-        "release_id": release_id,
-        "state": "active",
-        "empirical_verification": checks.get("empirical_verification") is True,
-    }))
+        **run,
+        "provider_network_calls": 0,
+        "empirical_verification": False,
+    }, ensure_ascii=False))
+
+
+def close_local_live_run(run_id: str, reason: str) -> None:
+    from align_api.paid_call_runs import close_paid_call_run
+
+    print(json.dumps(close_paid_call_run(run_id=run_id, reason=reason), ensure_ascii=False))
+
+
+def close_current_local_live_run(release_version_label: str, reason: str) -> None:
+    from align_api.paid_call_runs import close_active_paid_call_run
+
+    print(json.dumps(close_active_paid_call_run(
+        release_version_label=release_version_label, reason=reason,
+    ), ensure_ascii=False))
 
 
 def enqueue_foundation_smoke(idempotency_key: str) -> None:
@@ -1059,6 +1117,7 @@ def confirm_budget_topup(amount: str, confirmation_ref: str, reason: str) -> Non
     engine, factory = _operator_session_factory()
     try:
         with factory.begin() as db:
+            lock_paid_finance_scope(db)
             account = db.scalar(select(BudgetAccount).where(BudgetAccount.active.is_(True)).with_for_update())
             if account is None:
                 raise SystemExit("active budget account is missing")
@@ -1111,6 +1170,19 @@ def reconcile_usage(
     engine, factory = _operator_session_factory()
     try:
         with factory.begin() as db:
+            lock_paid_finance_scope(db)
+            reservation_account_id = db.scalar(
+                select(UsageReservation.budget_account_id)
+                .join(UsageEntry, UsageEntry.call_id == UsageReservation.call_id)
+                .where(UsageEntry.id == entry_id)
+            )
+            if reservation_account_id is None:
+                raise SystemExit("pending usage has no budget reservation")
+            db.scalar(
+                select(BudgetAccount)
+                .where(BudgetAccount.id == reservation_account_id)
+                .with_for_update()
+            )
             entry = db.scalar(select(UsageEntry).where(UsageEntry.id == entry_id).with_for_update())
             if entry is None or entry.status != "pending":
                 raise SystemExit("only an unresolved pending usage entry can be reconciled")
@@ -1163,6 +1235,7 @@ def resume_budget_spending(evidence_ref: str) -> None:
     engine, factory = _operator_session_factory()
     try:
         with factory.begin() as db:
+            lock_paid_finance_scope(db)
             if db.scalar(select(UsageReservation.id).where(
                 UsageReservation.status == "reconciliation_required"
             ).limit(1)) is not None:
@@ -1210,6 +1283,23 @@ def _parser() -> argparse.ArgumentParser:
     register.add_argument("--file", required=True)
     activate = release_sub.add_parser("activate")
     activate.add_argument("release_id")
+
+    live = subparsers.add_parser("live", help="guarded local synthetic live-provider setup")
+    live_sub = live.add_subparsers(dest="live_command", required=True)
+    live_activate = live_sub.add_parser(
+        "activate-local", help="register/activate a live synthetic release and open one atomic spend cap"
+    )
+    live_activate.add_argument("--manifest", required=True)
+    live_activate.add_argument("--max-spend-usd", required=True)
+    live_activate.add_argument("--authorization-ref", required=True)
+    live_close = live_sub.add_parser("close-local", help="close a local live spend run before switching releases")
+    live_close.add_argument("run_id")
+    live_close.add_argument("--reason", required=True)
+    live_close_current = live_sub.add_parser(
+        "close-current", help="close the sole active spend run in this isolated Compose database"
+    )
+    live_close_current.add_argument("--reason", required=True)
+    live_close_current.add_argument("--release-version-label", required=True)
 
     budget = subparsers.add_parser("budget", help="operator-confirmed funding and billing reconciliation")
     budget_sub = budget.add_subparsers(dest="budget_command", required=True)
@@ -1296,6 +1386,16 @@ def main() -> None:
         register_release(args.file)
     elif args.command == "release" and args.release_command == "activate":
         activate_release(args.release_id)
+    elif args.command == "live" and args.live_command == "activate-local":
+        activate_local_live_release(
+            manifest_file=args.manifest,
+            max_spend_usd=args.max_spend_usd,
+            authorization_ref=args.authorization_ref,
+        )
+    elif args.command == "live" and args.live_command == "close-local":
+        close_local_live_run(args.run_id, args.reason)
+    elif args.command == "live" and args.live_command == "close-current":
+        close_current_local_live_run(args.release_version_label, args.reason)
     elif args.command == "budget" and args.budget_command == "topup":
         confirm_budget_topup(args.amount_usd, args.confirmation_ref, args.reason)
     elif args.command == "budget" and args.budget_command == "reconcile":

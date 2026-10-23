@@ -79,9 +79,9 @@ class Settings(BaseSettings):
     parser_profile_native: Literal["native_ooxml_v1"] = "native_ooxml_v1"
     parser_profile_document: Literal["docling_native_v1"] = "docling_native_v1"
     parser_native_memory_bytes: int = 2_147_483_648
-    parser_document_memory_bytes: int = 4_294_967_296
+    parser_document_memory_bytes: int = 8_589_934_592
     parser_light_memory_bytes: int = 4_294_967_296
-    parser_node_memory_budget_bytes: int = 4_294_967_296
+    parser_node_memory_budget_bytes: int = 8_589_934_592
     parser_node_headroom_bytes: int = 1_073_741_824
     parser_heavy_max_per_node: int = 1
     parser_node_id: str = "align-dev-node"

@@ -16,6 +16,7 @@ from align_api.models import (
     BudgetAccount,
     Job,
     MethodManifest,
+    PaidCallRun,
     ReleaseManifest,
     UsageEntry,
     UsageReconciliation,
@@ -34,7 +35,7 @@ from align_worker.finance import (
 )
 
 
-def _ledger(tmp_path, monkeypatch):
+def _ledger(tmp_path, monkeypatch, *, with_run: bool = True, run_cap: Decimal = Decimal("1")):
     engine = create_engine(f"sqlite:///{tmp_path / 'b6-ledger.sqlite'}")
     tables = [
         BudgetAccount.__table__,
@@ -43,6 +44,7 @@ def _ledger(tmp_path, monkeypatch):
         Job.__table__,
         MethodManifest.__table__,
         ReleaseManifest.__table__,
+        PaidCallRun.__table__,
         UsageReservation.__table__,
         UsageEntry.__table__,
         UsageReconciliation.__table__,
@@ -52,11 +54,15 @@ def _ledger(tmp_path, monkeypatch):
     monkeypatch.setattr(finance, "SessionFactory", factory)
     rate_manifest_id = uuid4()
     job_id = uuid4()
+    release_id: UUID | None = None
+    model_manifest_id: UUID | None = None
+    paid_call_run_id: UUID | None = None
     with factory.begin() as db:
-        db.add(BudgetAccount(
+        account = BudgetAccount(
             id=uuid4(), currency="USD", confirmed_total=Decimal("5.002"),
             reserve_floor=Decimal("5"), planned_topup=Decimal("0"), active=True,
-        ))
+        )
+        db.add(account)
         db.add(Job(
             id=job_id, type="analysis", subject_id=uuid4(), scope_json={},
             input_fingerprint="a" * 64, status="queued", job_limits_json={
@@ -65,20 +71,77 @@ def _ledger(tmp_path, monkeypatch):
                 "max_active_seconds": 600, "budget_usd": "0.01",
             },
         ))
-        db.add(MethodManifest(
+        rates_row = MethodManifest(
             id=rate_manifest_id, kind="rates", version_label="test-rates-v1",
             content_json={"schema_version": 1, "status": "verified", "currency": "USD", "models": {
-                "m-test": {"input_per_million": "1", "output_per_million": "5", "embedding_per_million": "0.1"}
+                "m-test": {"input_per_million": "1", "output_per_million": "5", "embedding_per_million": "0.1"},
+                "text-embedding-3-small": {"input_per_million": "1", "output_per_million": "0", "embedding_per_million": "0.1"},
             }},
             sha256="b" * 64, verified_at=datetime.now(UTC),
-        ))
-    return engine, factory, job_id, rate_manifest_id
+        )
+        db.add(rates_row)
+        if with_run:
+            rows: dict[str, MethodManifest] = {"rates": rates_row}
+            for kind in ("parser", "parser_resource", "model", "retrieval", "rules", "prompt", "routing", "batching"):
+                content = (
+                    {
+                        "provider_mode": "live", "paid_calls": True, "capability_smoke": True,
+                        "embedding_dimensions": 1536,
+                        "live_model_ids": {
+                            "efficient": "m-test", "complex": "m-test", "vision": "m-test",
+                            "embedding": "text-embedding-3-small",
+                        },
+                    }
+                    if kind == "model"
+                    else {"fixture_kind": kind, "nonce": str(uuid4()), "allow_live": kind == "routing", "maximum_elements": 1 if kind == "batching" else None}
+                )
+                row = MethodManifest(
+                    id=uuid4(), kind=kind, version_label=f"test-{kind}", content_json=content,
+                    sha256=uuid4().hex * 2,
+                )
+                db.add(row)
+                db.flush()
+                rows[kind] = row
+            release = ReleaseManifest(
+                id=uuid4(), version_label="unit-live-release", parser_manifest_id=rows["parser"].id,
+                parser_resource_manifest_id=rows["parser_resource"].id,
+                model_manifest_id=rows["model"].id, rate_manifest_id=rates_row.id,
+                retrieval_manifest_id=rows["retrieval"].id, rules_manifest_id=rows["rules"].id,
+                prompt_manifest_id=rows["prompt"].id, routing_policy_manifest_id=rows["routing"].id,
+                batching_policy_manifest_id=rows["batching"].id,
+                grounding_registry_version="unit-test", lint_registry_version="unit-test",
+                manifest_payload={"provider_mode": "live", "data_mode": "institutional"},
+                config_hash=uuid4().hex * 2, state="active",
+            )
+            db.add(release)
+            db.flush()
+            actor = User(
+                id=uuid4(), normalized_email=f"finance-{uuid4().hex}@example.test",
+                display_name="Synthetic Finance Operator", password_hash="synthetic-test-only",
+                global_role="admin", active=True,
+            )
+            db.add(actor)
+            db.flush()
+            spend_run = PaidCallRun(
+                id=uuid4(), budget_account_id=account.id, release_manifest_id=release.id,
+                cap_usd=run_cap, authorization_ref="unit-test-authorization",
+                created_by=actor.id, state="active",
+            )
+            db.add(spend_run)
+            db.flush()
+            release_id = release.id
+            model_manifest_id = rows["model"].id
+            paid_call_run_id = spend_run.id
+    return engine, factory, job_id, rate_manifest_id, release_id, model_manifest_id, paid_call_run_id
 
 
 def test_worker_rechecks_call_model_manifest_before_reservation(tmp_path, monkeypatch, request) -> None:
-    engine, factory, job_id, rate_manifest_id = _ledger(tmp_path, monkeypatch)
-    for name in ("MODEL_EFFICIENT", "MODEL_COMPLEX", "MODEL_VISION", "EMBEDDING_MODEL"):
+    engine, factory, job_id, rate_manifest_id, _release_id, _model_id, _run_id = _ledger(
+        tmp_path, monkeypatch, with_run=False
+    )
+    for name in ("MODEL_EFFICIENT", "MODEL_COMPLEX", "MODEL_VISION"):
         monkeypatch.setenv(name, "m-test")
+    monkeypatch.setenv("EMBEDDING_MODEL", "text-embedding-3-small")
     from align_api.config import get_settings
 
     get_settings.cache_clear()
@@ -94,7 +157,7 @@ def test_worker_rechecks_call_model_manifest_before_reservation(tmp_path, monkey
                 "provider_mode": "live", "paid_calls": True,
                 "live_model_ids": {
                     "efficient": "m-test", "complex": "m-test",
-                    "vision": "m-test", "embedding": "m-test",
+                    "vision": "m-test", "embedding": "text-embedding-3-small",
                 },
             },
         }
@@ -158,11 +221,58 @@ def test_worker_rechecks_call_model_manifest_before_reservation(tmp_path, monkey
     engine.dispose()
 
 
+def test_run_cap_counts_held_and_settled_liability(tmp_path, monkeypatch) -> None:
+    engine, factory, job_id, rate_manifest_id, release_id, model_id, run_id = _ledger(
+        tmp_path, monkeypatch, run_cap=Decimal("0.0025")
+    )
+    assert release_id is not None and model_id is not None and run_id is not None
+    with factory.begin() as db:
+        account = db.scalar(select(BudgetAccount).where(BudgetAccount.active.is_(True)))
+        assert account is not None
+        account.confirmed_total = Decimal("10")
+    first_call = uuid4()
+    reserve_call(
+        job_id=job_id, call_id=first_call, logical_call_id=uuid4(), attempt_no=1,
+        release_manifest_id=release_id, model_manifest_id=model_id,
+        rate_manifest_id=rate_manifest_id, model_id="m-test",
+        bounds=CallBounds(input_tokens=1000, output_tokens=100, active_ms=1000),
+    )
+    with pytest.raises(FinanceGuardError, match="paid_call_run_cap_exceeded"):
+        reserve_call(
+            job_id=job_id, call_id=uuid4(), logical_call_id=uuid4(), attempt_no=1,
+            release_manifest_id=release_id, model_manifest_id=model_id,
+            rate_manifest_id=rate_manifest_id, model_id="m-test",
+            bounds=CallBounds(input_tokens=1000, output_tokens=100, active_ms=1000),
+        )
+    release_unstarted_call(first_call, proof="unit fake never starts provider I/O")
+    settled_call = uuid4()
+    reserve_call(
+        job_id=job_id, call_id=settled_call, logical_call_id=uuid4(), attempt_no=1,
+        release_manifest_id=release_id, model_manifest_id=model_id,
+        rate_manifest_id=rate_manifest_id, model_id="m-test",
+        bounds=CallBounds(input_tokens=1000, output_tokens=100, active_ms=1000),
+    )
+    settle_call(
+        settled_call, provider_request_id="unit-settled-request",
+        usage={"input_tokens": 1000, "output_tokens": 100, "active_ms": 1000},
+    )
+    with pytest.raises(FinanceGuardError, match="paid_call_run_cap_exceeded"):
+        reserve_call(
+            job_id=job_id, call_id=uuid4(), logical_call_id=uuid4(), attempt_no=1,
+            release_manifest_id=release_id, model_manifest_id=model_id,
+            rate_manifest_id=rate_manifest_id, model_id="m-test",
+            bounds=CallBounds(input_tokens=1000, output_tokens=100, active_ms=1000),
+        )
+    engine.dispose()
+
+
 def test_pending_liability_is_reserved_once_and_retry_needs_new_capacity(tmp_path, monkeypatch) -> None:
-    engine, factory, job_id, rate_manifest_id = _ledger(tmp_path, monkeypatch)
+    engine, factory, job_id, rate_manifest_id, release_id, model_id, _run_id = _ledger(tmp_path, monkeypatch)
+    assert release_id is not None and model_id is not None
     call_id = uuid4()
     reserve_call(
         job_id=job_id, call_id=call_id, logical_call_id=uuid4(), attempt_no=1,
+        release_manifest_id=release_id, model_manifest_id=model_id,
         rate_manifest_id=rate_manifest_id, model_id="m-test",
         bounds=CallBounds(input_tokens=1000, output_tokens=100, active_ms=1000),
     )
@@ -177,9 +287,10 @@ def test_pending_liability_is_reserved_once_and_retry_needs_new_capacity(tmp_pat
         assert entry.provider_request_id == "req-unknown"
         assert reservation.amount_reserved == Decimal("0.00150000")
         assert db.scalar(select(BudgetAccount.confirmed_total)) == Decimal("5.00200000")
-    with pytest.raises(FinanceGuardError, match="global_budget_exhausted"):
+    with pytest.raises(FinanceGuardError, match="budget_reconciliation_pending"):
         reserve_call(
             job_id=job_id, call_id=uuid4(), logical_call_id=uuid4(), attempt_no=1,
+            release_manifest_id=release_id, model_manifest_id=model_id,
             rate_manifest_id=rate_manifest_id, model_id="m-test",
             bounds=CallBounds(input_tokens=1000, output_tokens=100, active_ms=1000),
         )
@@ -187,10 +298,12 @@ def test_pending_liability_is_reserved_once_and_retry_needs_new_capacity(tmp_pat
 
 
 def test_operator_reconciliation_records_not_billed_and_allows_a_new_attempt(tmp_path, monkeypatch) -> None:
-    engine, factory, job_id, rate_manifest_id = _ledger(tmp_path, monkeypatch)
+    engine, factory, job_id, rate_manifest_id, release_id, model_id, _run_id = _ledger(tmp_path, monkeypatch)
+    assert release_id is not None and model_id is not None
     call_id, logical_call_id = uuid4(), uuid4()
     reserve_call(
         job_id=job_id, call_id=call_id, logical_call_id=logical_call_id, attempt_no=1,
+        release_manifest_id=release_id, model_manifest_id=model_id,
         rate_manifest_id=rate_manifest_id, model_id="m-test",
         bounds=CallBounds(input_tokens=1000, output_tokens=100, active_ms=1000),
     )
@@ -231,6 +344,7 @@ def test_operator_reconciliation_records_not_billed_and_allows_a_new_attempt(tmp
         assert account is not None and account.confirmed_total == Decimal("5.00200000")
     reserve_call(
         job_id=job_id, call_id=uuid4(), logical_call_id=logical_call_id, attempt_no=2,
+        release_manifest_id=release_id, model_manifest_id=model_id,
         rate_manifest_id=rate_manifest_id, model_id="m-test",
         bounds=CallBounds(input_tokens=1000, output_tokens=100, active_ms=1000),
     )
@@ -238,10 +352,12 @@ def test_operator_reconciliation_records_not_billed_and_allows_a_new_attempt(tmp
 
 
 def test_provider_actual_over_bound_is_ledgered_and_freezes_new_calls(tmp_path, monkeypatch) -> None:
-    engine, factory, job_id, rate_manifest_id = _ledger(tmp_path, monkeypatch)
+    engine, factory, job_id, rate_manifest_id, release_id, model_id, _run_id = _ledger(tmp_path, monkeypatch)
+    assert release_id is not None and model_id is not None
     call_id = uuid4()
     reserve_call(
         job_id=job_id, call_id=call_id, logical_call_id=uuid4(), attempt_no=1,
+        release_manifest_id=release_id, model_manifest_id=model_id,
         rate_manifest_id=rate_manifest_id, model_id="m-test",
         bounds=CallBounds(input_tokens=1000, output_tokens=100, active_ms=1000),
     )
@@ -262,6 +378,7 @@ def test_provider_actual_over_bound_is_ledgered_and_freezes_new_calls(tmp_path, 
     with pytest.raises(FinanceGuardError, match="budget_spending_frozen"):
         reserve_call(
             job_id=job_id, call_id=uuid4(), logical_call_id=uuid4(), attempt_no=1,
+            release_manifest_id=release_id, model_manifest_id=model_id,
             rate_manifest_id=rate_manifest_id, model_id="m-test",
             bounds=CallBounds(input_tokens=1, active_ms=1),
         )
@@ -269,10 +386,12 @@ def test_provider_actual_over_bound_is_ledgered_and_freezes_new_calls(tmp_path, 
 
 
 def test_expired_held_reservation_becomes_reconcilable_pending_liability(tmp_path, monkeypatch) -> None:
-    engine, factory, job_id, rate_manifest_id = _ledger(tmp_path, monkeypatch)
+    engine, factory, job_id, rate_manifest_id, release_id, model_id, _run_id = _ledger(tmp_path, monkeypatch)
+    assert release_id is not None and model_id is not None
     call_id = uuid4()
     reserve_call(
         job_id=job_id, call_id=call_id, logical_call_id=uuid4(), attempt_no=1,
+        release_manifest_id=release_id, model_manifest_id=model_id,
         rate_manifest_id=rate_manifest_id, model_id="m-test",
         bounds=CallBounds(input_tokens=1000, output_tokens=100, active_ms=1000),
     )
@@ -291,7 +410,8 @@ def test_expired_held_reservation_becomes_reconcilable_pending_liability(tmp_pat
 
 
 def test_not_billed_started_attempt_still_consumes_job_call_limit(tmp_path, monkeypatch) -> None:
-    engine, factory, job_id, rate_manifest_id = _ledger(tmp_path, monkeypatch)
+    engine, factory, job_id, rate_manifest_id, release_id, model_id, _run_id = _ledger(tmp_path, monkeypatch)
+    assert release_id is not None and model_id is not None
     call_id = uuid4()
     logical_call_id = uuid4()
     with factory.begin() as db:
@@ -300,6 +420,7 @@ def test_not_billed_started_attempt_still_consumes_job_call_limit(tmp_path, monk
         job.job_limits_json = {**job.job_limits_json, "max_calls": 1}
     reserve_call(
         job_id=job_id, call_id=call_id, logical_call_id=logical_call_id, attempt_no=1,
+        release_manifest_id=release_id, model_manifest_id=model_id,
         rate_manifest_id=rate_manifest_id, model_id="m-test",
         bounds=CallBounds(input_tokens=1000, output_tokens=100, active_ms=1000),
     )
@@ -321,6 +442,7 @@ def test_not_billed_started_attempt_still_consumes_job_call_limit(tmp_path, monk
     with pytest.raises(FinanceGuardError, match="job_limit_exceeded:max_calls"):
         reserve_call(
             job_id=job_id, call_id=uuid4(), logical_call_id=logical_call_id, attempt_no=2,
+            release_manifest_id=release_id, model_manifest_id=model_id,
             rate_manifest_id=rate_manifest_id, model_id="m-test",
             bounds=CallBounds(input_tokens=1, active_ms=1),
         )

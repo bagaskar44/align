@@ -192,6 +192,14 @@ def _version_payload(db: DbSession, context: ContextVersion) -> dict[str, Any]:
         .join(ParseArtifact, ParseArtifact.id == SourceUnit.parse_artifact_id)
         .where(ParseArtifact.context_version_id == context.id, SourceUnit.parse_status != "parsed")
         .order_by(ParseArtifact.file_asset_id, SourceUnit.source_order).limit(51)).all()
+    outcomes = db.scalars(
+        select(LearningOutcome)
+        .where(
+            LearningOutcome.context_version_id == context.id,
+            LearningOutcome.resolution_status == "confirmed",
+        )
+        .order_by(LearningOutcome.code, LearningOutcome.id)
+    ).all()
     return {
         "id": str(context.id),
         "course_id": str(context.course_id),
@@ -204,6 +212,15 @@ def _version_payload(db: DbSession, context: ContextVersion) -> dict[str, Any]:
             "limitations": [{"code": provider_status, "message": provider_messages[provider_status]}] if provider_status in provider_messages else [],
         } if job else None,
         "fields": context.fields_json,
+        "learning_outcomes": [
+            {
+                "id": str(item.id),
+                "code": item.code,
+                "description": item.description,
+                "resolution_status": item.resolution_status,
+            }
+            for item in outcomes
+        ],
         "instruction_sources": [
             {
                 "file_id": str(asset.id),
@@ -608,7 +625,7 @@ def update_context_draft(
         codes = [item.code.strip().casefold() for item in body.learning_outcomes]
         if len(codes) != len(set(codes)):
             raise HTTPException(status_code=422, detail="learning outcome code repeated")
-        outcomes = [
+        outcomes: list[dict[str, Any]] = [
             {
                 "code": item.code.strip(),
                 "description": item.description.strip(),
@@ -622,10 +639,20 @@ def update_context_draft(
             raise HTTPException(status_code=422, detail="learning outcome code and description cannot be blank")
         fields["learning_outcomes"] = outcomes
         fields["outcomes_status"] = "available" if outcomes else "not_provided"
-        db.query(LearningOutcome).filter(LearningOutcome.context_version_id == context.id).delete(synchronize_session=False)
+        existing_outcomes = db.scalars(
+            select(LearningOutcome)
+            .where(LearningOutcome.context_version_id == context.id)
+            .order_by(LearningOutcome.id)
+            .with_for_update()
+        ).all()
+        existing_by_code: dict[str, LearningOutcome] = {}
+        for existing in existing_outcomes:
+            existing_by_code.setdefault(existing.code.strip().casefold(), existing)
+        retained_outcome_ids: set[UUID] = set()
         for item in outcomes:
-            db.add(
-                LearningOutcome(
+            matched = existing_by_code.get(str(item["code"]).casefold())
+            if matched is None:
+                created_outcome = LearningOutcome(
                     context_version_id=context.id,
                     code=item["code"],
                     description=item["description"],
@@ -633,7 +660,24 @@ def update_context_draft(
                     source_refs_json=item["source_refs"],
                     resolution_status=item["resolution_status"],
                 )
-            )
+                db.add(created_outcome)
+            else:
+                retained_outcome_ids.add(matched.id)
+                if matched.code != item["code"]:
+                    matched.code = item["code"]
+                if matched.description != item["description"]:
+                    matched.description = item["description"]
+                    matched.origin = "manual"
+                    matched.source_refs_json = []
+                # Saving a draft is the lecturer's confirmation of these options.
+                matched.resolution_status = "confirmed"
+                item["origin"] = matched.origin
+                item["source_refs"] = matched.source_refs_json
+        for existing in existing_outcomes:
+            if existing.id not in retained_outcome_ids and existing.resolution_status != "not_provided":
+                # API roles deliberately have no DELETE privilege on provenance rows.
+                # Keep the row for auditability, while removing it from the confirmed list.
+                existing.resolution_status = "not_provided"
     context.fields_json = fields
     context.revision += 1
     db.add(

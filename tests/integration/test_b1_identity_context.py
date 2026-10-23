@@ -15,7 +15,7 @@ from sqlalchemy import select
 from align_api.config import get_settings
 from align_api.db import SessionFactory
 from align_api.main import create_app
-from align_api.models import Course, Enrollment, User
+from align_api.models import Course, Enrollment, LearningOutcome, User
 from align_api.security import hash_password
 
 pytestmark = pytest.mark.skipif(
@@ -157,6 +157,65 @@ def test_revision_approval_pagination_and_immediate_enrollment_revocation(scenar
         enrollment.active = False
     assert client.get(route).status_code == 404
     assert client.get(f"/api/v1/courses/{course.id}/context-versions").status_code == 404
+
+
+def test_learning_outcome_edits_preserve_provenance_without_delete_privilege(scenario):
+    _, courses, clients, tokens, _ = scenario
+    client, token, course = clients[1], tokens[1], courses[0]
+    context_id = draft(client, token, course)["context"]["id"]
+    route = f"/api/v1/context-versions/{context_id}"
+    first = client.put(route, headers=mutation(token), json={
+        "expected_revision": 1,
+        "learning_outcomes": [
+            {"code": "CPMK-01", "description": "Menganalisis data secara tepat."},
+            {"code": "CPMK-02", "description": "Menjelaskan batas metode."},
+        ],
+    })
+    assert first.status_code == 200, first.text
+    first_items = {item["code"]: item for item in first.json()["context"]["learning_outcomes"]}
+    first_id = first_items["CPMK-01"]["id"]
+    second_id = first_items["CPMK-02"]["id"]
+    refs = [{"source_role": "kk", "source_sha256": "a" * 64, "anchor": {"page": 2}}]
+    with SessionFactory.begin() as db:
+        retained = db.get(LearningOutcome, UUID(first_id))
+        retained.origin = "extracted"
+        retained.source_refs_json = refs
+
+    retained_response = client.put(route, headers=mutation(token), json={
+        "expected_revision": 2,
+        "learning_outcomes": [{"code": "CPMK-01", "description": "Menganalisis data secara tepat."}],
+    })
+    assert retained_response.status_code == 200, retained_response.text
+    retained_items = retained_response.json()["context"]["learning_outcomes"]
+    assert [(item["id"], item["code"], item["resolution_status"]) for item in retained_items] == [
+        (first_id, "CPMK-01", "confirmed")
+    ]
+    with SessionFactory.begin() as db:
+        retained = db.get(LearningOutcome, UUID(first_id))
+        removed = db.get(LearningOutcome, UUID(second_id))
+        assert retained.origin == "extracted" and retained.source_refs_json == refs
+        assert removed.resolution_status == "not_provided"
+
+    edited = client.put(route, headers=mutation(token), json={
+        "expected_revision": 3,
+        "learning_outcomes": [{"code": "CPMK-01", "description": "Menganalisis data dengan batasan yang dinyatakan."}],
+    })
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["context"]["learning_outcomes"][0]["id"] == first_id
+    with SessionFactory.begin() as db:
+        retained = db.get(LearningOutcome, UUID(first_id))
+        assert retained.origin == "manual" and retained.source_refs_json == []
+
+    cleared = client.put(route, headers=mutation(token), json={"expected_revision": 4, "learning_outcomes": []})
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["context"]["fields"]["learning_outcomes"] == []
+    assert cleared.json()["context"]["fields"]["outcomes_status"] == "not_provided"
+    assert cleared.json()["context"]["learning_outcomes"] == []
+    with SessionFactory.begin() as db:
+        retained = db.get(LearningOutcome, UUID(first_id))
+        removed = db.get(LearningOutcome, UUID(second_id))
+        assert retained.resolution_status == removed.resolution_status == "not_provided"
+    assert clients[2].get(route).status_code == 404
 
 
 def test_concurrent_idempotency_and_context_revision(scenario):

@@ -20,7 +20,10 @@ def runtime_live_model_ids(settings: Settings | None = None) -> dict[str, str] |
         "vision": current.model_vision,
         "embedding": current.embedding_model,
     }
-    if any(not isinstance(value, str) or not value.strip() for value in values.values()):
+    if (
+        any(not isinstance(value, str) or not value.strip() for value in values.values())
+        or values["embedding"] != "text-embedding-3-small"
+    ):
         return None
     return {key: str(value) for key, value in values.items()}
 

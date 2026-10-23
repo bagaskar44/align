@@ -1,5 +1,40 @@
 import { expect, test } from "./fixtures";
+import type { Locator, Page } from "@playwright/test";
 import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
+
+async function selectQuote(page: Page, textarea: Locator, sourceText: string, quote: string) {
+  const start = sourceText.indexOf(quote);
+  expect(start).toBeGreaterThanOrEqual(0);
+  await textarea.scrollIntoViewIfNeeded();
+  const coordinates = await textarea.evaluate((element, selection) => {
+    const input = element as HTMLTextAreaElement;
+    const style = getComputedStyle(input);
+    const context = document.createElement("canvas").getContext("2d");
+    if (!context) throw new Error("Canvas text metrics are unavailable.");
+    context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    const bounds = input.getBoundingClientRect();
+    const paddingLeft = Number.parseFloat(style.paddingLeft);
+    return {
+      startX: bounds.left + paddingLeft + context.measureText(input.value.slice(0, selection.start)).width + 1,
+      endX: bounds.left + paddingLeft + context.measureText(input.value.slice(0, selection.start + selection.quote.length)).width + 1,
+      y: bounds.top + Number.parseFloat(style.paddingTop) + 8,
+    };
+  }, { start, quote });
+  await page.mouse.move(coordinates.startX, coordinates.y);
+  await page.mouse.down();
+  await page.mouse.move(coordinates.endX, coordinates.y, { steps: 12 });
+  await page.mouse.up();
+  const range = await textarea.evaluate((element) => {
+    const input = element as HTMLTextAreaElement;
+    return [input.selectionStart, input.selectionEnd];
+  });
+  expect(range, JSON.stringify(coordinates)).toEqual([start, start + quote.length]);
+  return {
+    start: Array.from(sourceText.slice(0, start)).length,
+    end: Array.from(sourceText.slice(0, start + quote.length)).length,
+  };
+}
 
 test("lecturer builds and publishes a B2 task from shared rubric parser evidence", async ({ page }) => {
   test.setTimeout(900_000);
@@ -10,6 +45,11 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   const studentEmail = process.env.ALIGN_DEMO_STUDENT_EMAIL ?? "mahasiswa@align.local";
   const courseCode = process.env.ALIGN_DEMO_COURSE_CODE ?? "IF101";
   const demoLabel = process.env.ALIGN_DEMO_LABEL ?? "B2 Playwright";
+  const demo = JSON.parse(readFileSync(resolve(test.info().project.testDir, "fixtures", "b2-meaningful-demo.json"), "utf8")) as {
+    title: string;
+    instruction: string;
+    criterion: { code: string; title: string; descriptor: string; requirement_code: string; requirement_text: string; rubric_quote: string };
+  };
   const courseLink = new RegExp(courseCode);
   if (!password) throw new Error("ALIGN_SEED_PASSWORD must be loaded from the local .env before the E2E flow.");
 
@@ -29,103 +69,166 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await page.getByRole("button", { name: "Sahkan versi ini" }).click();
   await expect(page.getByRole("status").filter({ hasText: "disahkan" })).toBeVisible();
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Tugas dan spesifikasi" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Kelola tugas" })).toBeVisible();
 
-  const workspace = page.getByRole("region", { name: "Tugas dan spesifikasi" });
+  const workspace = page.getByRole("region", { name: "Kelola tugas" });
   await expect(workspace).toBeVisible();
-  const assignmentTitle = `${demoLabel} ${Date.now()}`;
+  const assignmentTitle = `${demo.title} ${demoLabel} ${Date.now()}`;
+  await expect(workspace.getByLabel("Judul tugas")).toHaveCount(0);
+  await workspace.getByRole("button", { name: "Buat tugas baru" }).click();
   await workspace.getByLabel("Judul tugas").fill(assignmentTitle);
+  await expect(workspace.getByLabel("Konteks mata kuliah yang digunakan")).toBeVisible();
   await workspace.getByRole("button", { name: "Buat draf tugas" }).click();
-  await expect(workspace.getByRole("heading", { name: "Draf assignment" })).toBeVisible();
+  await expect(workspace.getByRole("heading", { name: "Draf tugas" })).toBeVisible();
 
-  const instruction = "Jelaskan ringkasan konsep dari sumber rubrik sintetis.";
+  const instruction = demo.instruction;
+  await expect(workspace.getByLabel("Ringkasan opsional")).toHaveCount(0);
+  const saveInfoButton = workspace.getByRole("button", { name: "Simpan informasi tugas" });
+  await expect(saveInfoButton).toBeDisabled();
   await workspace.getByLabel("Instruksi asli (maks. 30.000 karakter)").fill(instruction);
-  await workspace.getByRole("button", { name: "Simpan versi" }).click();
+  const dueInput = workspace.getByLabel("Tenggat pengumpulan");
+  const validDue = await dueInput.inputValue();
+  await dueInput.fill("2020-01-01T00:00");
+  await expect(saveInfoButton).toBeDisabled();
+  await dueInput.fill(validDue);
+  page.once("dialog", (dialog) => void dialog.accept());
+  await workspace.getByRole("button", { name: /Kriteria pemeriksaan/ }).click();
+  page.once("dialog", (dialog) => void dialog.accept());
+  await workspace.getByRole("button", { name: /Informasi tugas/ }).click();
+  await expect(workspace.getByLabel("Instruksi asli (maks. 30.000 karakter)")).toHaveValue(instruction);
+  await workspace.getByRole("button", { name: "Simpan informasi tugas" }).click();
   await expect(workspace.getByRole("status").filter({ hasText: "Versi tugas tersimpan" })).toBeVisible();
+  await workspace.getByRole("button", { name: "Lanjut ke kriteria" }).click();
+  for (const width of [360, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const dimensions = await workspace.evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      const outside = Array.from(element.querySelectorAll("button,input,select,textarea,.assignment-step,.assignment-stepper,.context-summary-card"))
+        .filter((item) => item.getClientRects().length > 0)
+        .filter((item) => { const rect = item.getBoundingClientRect(); return rect.left < bounds.left - 1 || rect.right > bounds.right + 1; });
+      return { viewport: document.documentElement.clientWidth, page: document.documentElement.scrollWidth, outside: outside.map((item) => item.tagName.toLowerCase() + (item.getAttribute("aria-label") ?? "")), right: bounds.right };
+    });
+    expect(dimensions.page, `assignment info overflow at ${width}px`).toBeLessThanOrEqual(dimensions.viewport + 1);
+    expect(dimensions.right, `assignment panel overflow at ${width}px`).toBeLessThanOrEqual(width + 1);
+    expect(dimensions.outside, `assignment control overflow at ${width}px`).toEqual([]);
+    await workspace.screenshot({ path: test.info().outputPath(`assignment-info-${width}.png`), animations: "disabled" });
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
 
-  const rubric = resolve(test.info().project.testDir, "fixtures", "kk_context.docx");
+  const rubric = resolve(test.info().project.testDir, "fixtures", "b2-meaningful-rubric.docx");
   await workspace.locator('input[type="file"][accept*=".docx"]').setInputFiles(rubric);
   await expect(workspace.getByRole("status").filter({ hasText: "File rubrik tersimpan privat" })).toBeVisible();
-  await workspace.getByLabel("Usulkan kutipan instruksi persis (mock, tanpa menafsirkan kewajiban)").check();
-  await workspace.getByRole("button", { name: "Siapkan editor draft" }).click();
-  const draftingPanel = workspace.getByRole("region", { name: "Bantuan drafting provider" });
-  await expect(draftingPanel.getByText("mock_abstention")).toBeVisible({ timeout: 60_000 });
+  await workspace.getByLabel("Siapkan kutipan instruksi persis untuk ditinjau").check();
+  await workspace.getByRole("button", { name: /Buka formulir kriteria|Perbarui sumber rubrik/ }).click();
+  const draftingPanel = workspace.getByRole("region", { name: "Status bantuan AI" });
+  await expect(draftingPanel.getByText("Mock tidak membuat usulan semantik")).toBeVisible({ timeout: 60_000 });
   await expect(draftingPanel.getByText("SIMULASI • data sintetis")).toBeVisible();
   await expect(draftingPanel.getByText("tidak ada usulan semantik dari provider mock.")).toBeVisible();
-  await expect(workspace.getByRole("heading", { name: "Hasil parser rubrik · ready_for_review" })).toBeVisible({ timeout: 180_000 });
-  const rubricExcerpt = workspace.locator(".rubric-evidence pre").first();
-  await expect(rubricExcerpt).toContainText("Kode Mata Kuliah");
+  await expect(workspace.getByRole("heading", { name: "Hasil parser rubrik · Siap ditinjau" })).toBeVisible({ timeout: 180_000 });
+  for (const width of [360, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const dimensions = await workspace.evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      const outside = Array.from(element.querySelectorAll("button,input,select,textarea,.assignment-step,.assignment-stepper,.structured-card,.lint-panel,.rubric-evidence"))
+        .filter((item) => item.getClientRects().length > 0)
+        .filter((item) => { const rect = item.getBoundingClientRect(); return rect.left < bounds.left - 1 || rect.right > bounds.right + 1; });
+      return { viewport: document.documentElement.clientWidth, page: document.documentElement.scrollWidth, outside: outside.map((item) => item.tagName.toLowerCase() + "." + item.className), right: bounds.right };
+    });
+    expect(dimensions.page, `assignment criteria overflow at ${width}px`).toBeLessThanOrEqual(dimensions.viewport + 1);
+    expect(dimensions.right, `assignment criteria panel overflow at ${width}px`).toBeLessThanOrEqual(width + 1);
+    expect(dimensions.outside, `assignment criteria controls overflow at ${width}px`).toEqual([]);
+    await workspace.screenshot({ path: test.info().outputPath(`assignment-criteria-${width}.png`), animations: "disabled" });
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const rubricExcerpt = workspace.locator(".rubric-evidence pre").filter({ hasText: demo.criterion.rubric_quote }).first();
+  await expect(rubricExcerpt).toContainText(demo.criterion.rubric_quote);
   const excerptText = (await rubricExcerpt.textContent()) ?? "";
   expect(Array.from(excerptText).length).toBeGreaterThan(0);
 
   const criteriaSection = workspace.locator('section[aria-labelledby="criteria-title"]');
   const criterion = criteriaSection.locator("fieldset.structured-card").first();
-  await criterion.getByLabel("Kode", { exact: true }).fill("C1");
-  await criterion.getByLabel("Judul", { exact: true }).fill("Uraian konsep");
-  await criterion.getByLabel("Deskripsi criterion resmi").fill("Uraian konsep berdasarkan sumber yang ditinjau dosen.");
+  await criterion.getByLabel("Kode kriteria", { exact: true }).fill(demo.criterion.code);
+  await criterion.getByLabel("Judul", { exact: true }).fill(demo.criterion.title);
+  await criterion.getByLabel("Deskripsi resmi kriteria").fill(demo.criterion.descriptor);
   const requirement = criterion.locator(".structured-subsection").first();
-  await requirement.getByLabel("Kode requirement").fill("R1");
-  await requirement.getByLabel("Obligation key").fill("concept.explanation");
-  await requirement.getByLabel("Teks requirement").fill(excerptText);
-  const sourceSelect = requirement.getByLabel("Jenis sumber");
-  const rubricOption = (await sourceSelect.locator("option").allTextContents()).find((label) => label.startsWith("Rubrik ·"));
+  await requirement.getByLabel("Kode kewajiban").fill(demo.criterion.requirement_code);
+  await requirement.getByLabel("Teks kewajiban bukti").fill(demo.criterion.requirement_text);
+  const sourceSelect = requirement.getByLabel("Sumber rujukan");
+  const rubricOption = (await sourceSelect.locator("option").allTextContents()).find((label) => label.startsWith("Rubrik · b2-meaningful-rubric.docx"));
   expect(rubricOption).toBeTruthy();
   await sourceSelect.selectOption({ label: rubricOption! });
-  await requirement.getByLabel("Akhir", { exact: true }).fill(String(Array.from(excerptText).length));
-  await expect(requirement.getByLabel("Cuplikan yang dirujuk")).toHaveValue(excerptText);
+  const citationSource = requirement.getByLabel("Teks sumber untuk memilih kutipan");
+  const selectedRange = await selectQuote(page, citationSource, excerptText, demo.criterion.rubric_quote);
+  const selectedQuote = requirement.locator(".selected-source-quote").first();
+  await expect(selectedQuote).toContainText(demo.criterion.rubric_quote);
+  await requirement.getByText("Detail teknis provenance").click();
+  await expect(requirement.getByText(`Indeks code point: ${selectedRange.start}–${selectedRange.end} (akhir tidak termasuk)`)).toBeVisible();
 
-  await criteriaSection.getByRole("button", { name: "Simpan criteria" }).click();
-  await expect(workspace.getByRole("status").filter({ hasText: "Criteria dan requirements tersimpan" })).toBeVisible();
+  await criteriaSection.getByRole("button", { name: "Simpan kriteria" }).click();
+  await expect(workspace.getByRole("status").filter({ hasText: "Kriteria dan kewajiban tersimpan" })).toBeVisible();
   await criteriaSection.getByRole("button", { name: "Sahkan paket normatif" }).click();
-  await expect(workspace.getByText("Paket normatif disahkan pada")).toBeVisible();
-
-  const numericSection = workspace.locator('section[aria-labelledby="numeric-title"]');
-  await numericSection.getByRole("button", { name: "Tambah konversi" }).click();
-  await numericSection.getByLabel("Dari").selectOption("percent");
-  await numericSection.getByLabel("Ke").selectOption("ratio");
-  await numericSection.getByRole("button", { name: "Buat NumericPolicy draft" }).click();
-  await expect(workspace.getByRole("status").filter({ hasText: "NumericPolicy draft dibuat" })).toBeVisible();
-  const numericPolicyRow = numericSection.locator(".list-row").filter({ hasText: "numeric-comparison v1" });
-  await expect(numericPolicyRow).toContainText("draft");
-  await numericPolicyRow.getByRole("button", { name: "Sahkan" }).click();
-  await expect(numericPolicyRow).toContainText("approved");
+  await expect(workspace.getByText("Paket kriteria disahkan pada")).toBeVisible();
+  await workspace.getByRole("button", { name: "Lanjut ke rencana pemeriksaan" }).click();
+  await expect(workspace.locator('section[aria-labelledby="numeric-title"]')).toHaveCount(0);
 
   const specSection = workspace.locator('section[aria-labelledby="spec-title"]');
-  await specSection.getByRole("button", { name: "Buat spec draft" }).click();
-  await expect(draftingPanel.getByText("mock_abstention")).toBeVisible({ timeout: 60_000 });
-  await expect(specSection.getByLabel("Editor CheckSpecification terstruktur")).toBeVisible();
+  await specSection.getByRole("button", { name: "Buat draf rencana pemeriksaan" }).click();
+  await expect(draftingPanel.getByText("Mock tidak membuat usulan semantik")).toBeVisible({ timeout: 60_000 });
+  await expect(specSection.getByLabel("Editor rencana pemeriksaan terstruktur")).toBeVisible();
   const specElement = specSection.locator("fieldset.spec-element").first();
   await specElement.getByLabel("Pertanyaan keputusan positif").fill("Apakah uraian mahasiswa menjelaskan konsep yang ditetapkan dosen?");
-  await specElement.getByRole("checkbox", { name: "table" }).check();
+  await specElement.getByRole("checkbox", { name: "Tabel" }).check();
   const factEditor = specSection.getByRole("group", { name: "Fakta tugas terdaftar" });
-  await factEditor.getByRole("button", { name: "Tambah fact" }).click();
-  await factEditor.getByLabel("Kunci").fill("submission_variant");
-  await factEditor.getByLabel("Tipe").selectOption("string");
-  await factEditor.getByLabel("Allowed values (satu per baris)").fill("original\nalternate");
-  const applicability = specElement.locator(".structured-subsection").filter({ hasText: "Applicability" });
+  await factEditor.getByRole("button", { name: "Tambah fakta tugas" }).click();
+  await factEditor.getByLabel("Nama fakta").fill("submission_variant");
+  await factEditor.getByLabel("Bentuk fakta").selectOption("string");
+  await factEditor.getByLabel("Nilai yang diizinkan (satu per baris)").fill("original\nalternate");
+  const applicability = specElement.locator(".structured-subsection").filter({ hasText: "Kapan pemeriksaan ini berlaku" });
   await applicability.locator("select").first().selectOption("fact_rule");
   const factRule = applicability.locator(".rule-node").first();
   await factRule.locator("select").nth(1).selectOption("task.submission_variant");
   await factRule.locator("input").last().fill("original");
-  await specSection.getByRole("button", { name: "Simpan spec dan jalankan lint" }).click();
-  await expect.poll(async () => specSection.innerText()).toContain("lint: passed");
-  await specSection.getByRole("button", { name: "Sahkan spec dengan konfirmasi fidelity" }).click();
-  await expect(workspace.getByRole("button", { name: "Terbitkan versi" })).toBeVisible();
+  for (const width of [360, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const dimensions = await workspace.evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      const outside = Array.from(element.querySelectorAll("button,input,select,textarea,.assignment-step,.assignment-stepper,.structured-card,.lint-panel"))
+        .filter((item) => item.getClientRects().length > 0)
+        .filter((item) => { const rect = item.getBoundingClientRect(); return rect.left < bounds.left - 1 || rect.right > bounds.right + 1; });
+      return { viewport: document.documentElement.clientWidth, page: document.documentElement.scrollWidth, outside: outside.map((item) => item.tagName.toLowerCase() + "." + item.className), right: bounds.right };
+    });
+    expect(dimensions.page, `assignment plan overflow at ${width}px`).toBeLessThanOrEqual(dimensions.viewport + 1);
+    expect(dimensions.right, `assignment plan panel overflow at ${width}px`).toBeLessThanOrEqual(width + 1);
+    expect(dimensions.outside, `assignment plan controls overflow at ${width}px`).toEqual([]);
+    await workspace.screenshot({ path: test.info().outputPath(`assignment-plan-${width}.png`), animations: "disabled" });
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await specSection.getByRole("button", { name: "Simpan rencana dan jalankan pemeriksaan" }).click();
+  await expect.poll(async () => specSection.innerText()).toContain("lint: lulus");
+  await specSection.getByRole("button", { name: "Sahkan rencana dengan konfirmasi kesetiaan" }).click();
   await workspace.getByLabel("submission_variant nilai").selectOption("original");
   await workspace.getByLabel("submission_variant asal").fill("Dosen memverifikasi ketentuan varian pada instruksi tugas sintetis.");
   await workspace.getByRole("button", { name: "Simpan dan sahkan fakta dosen" }).click();
   await expect(workspace.getByRole("status").filter({ hasText: "Fakta tugas disahkan dosen" })).toBeVisible();
   await expect(workspace).toContainText("Fakta tersimpan: 1");
-  await workspace.getByRole("button", { name: "Tampilkan preview mahasiswa" }).click();
+  await workspace.getByRole("button", { name: "Lanjut ke pratinjau" }).click();
+  await workspace.getByRole("button", { name: "Tampilkan pratinjau mahasiswa" }).click();
   const publishPreview = workspace.getByRole("article", { name: "Preview paket publik mahasiswa" });
   await expect(publishPreview).toContainText(instruction);
-  await expect(publishPreview).toContainText(excerptText);
+  await expect(publishPreview).toContainText(demo.criterion.requirement_text);
   await expect(publishPreview).toContainText("paragraph");
   await expect(publishPreview).toContainText("table");
   await expect(publishPreview).not.toContainText("fact_rule");
   await expect(publishPreview).not.toContainText("grounding_contract");
-  await workspace.getByRole("button", { name: "Terbitkan versi" }).click();
+  await workspace.getByRole("button", { name: "Terbitkan versi ini" }).click();
   await expect(workspace.getByRole("heading", { name: "Snapshot terbit" })).toBeVisible();
+  await workspace.getByRole("button", { name: "Daftar tugas" }).click();
+  await workspace.getByRole("button", { name: `Buka tugas ${assignmentTitle}` }).click();
+  await expect(workspace.getByRole("heading", { name: "Snapshot terbit" })).toBeVisible();
+  await workspace.getByRole("button", { name: "Buat versi baru" }).click();
+  await expect(workspace.getByRole("heading", { name: "Draf tugas" })).toBeVisible();
+  await expect(workspace.getByLabel("Instruksi asli (maks. 30.000 karakter)")).toHaveValue(instruction);
+  await expect(workspace.getByLabel("Ringkasan opsional")).toHaveCount(0);
 
   await page.getByRole("button", { name: "Keluar" }).click();
   await expect(page.getByLabel("Email")).toBeVisible();
@@ -139,7 +242,7 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await studentWorkspace.getByRole("button", { name: assignmentTitle }).click();
   const studentTask = page.locator("article.student-task-preview");
   await expect(studentTask).toContainText(instruction);
-  await expect(studentTask).toContainText(excerptText);
+  await expect(studentTask).toContainText(demo.criterion.requirement_text);
   await expect(studentTask).toContainText("paragraph");
   await expect(studentTask).toContainText("table");
   await expect(studentTask).not.toContainText("fact_rule");

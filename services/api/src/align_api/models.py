@@ -281,6 +281,37 @@ class BudgetAccount(RevisionMixin, Base):
     freeze_reason: Mapped[str | None] = mapped_column(String(240))
 
 
+class PaidCallRun(TimestampMixin, Base):
+    """Operator-authorized hard spend ceiling for one live provider run."""
+
+    __tablename__ = "paid_call_runs"
+    __table_args__ = (
+        CheckConstraint("cap_usd > 0", name="ck_paid_call_runs_cap_positive"),
+        CheckConstraint("state IN ('active','closed')", name="ck_paid_call_runs_state"),
+        Index(
+            "uq_paid_call_runs_one_active_per_account",
+            "budget_account_id",
+            unique=True,
+            postgresql_where=text("state = 'active'"),
+            sqlite_where=text("state = 'active'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    budget_account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("budget_accounts.id", ondelete="RESTRICT"), nullable=False
+    )
+    release_manifest_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("release_manifests.id", ondelete="RESTRICT"), nullable=False
+    )
+    cap_usd: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    authorization_ref: Mapped[str] = mapped_column(String(240), nullable=False)
+    created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    close_reason: Mapped[str | None] = mapped_column(String(1000))
+
+
 class UsageReservation(TimestampMixin, Base):
     __tablename__ = "usage_reservations"
     __table_args__ = (
@@ -297,6 +328,9 @@ class UsageReservation(TimestampMixin, Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     budget_account_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("budget_accounts.id"), nullable=False
+    )
+    paid_call_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("paid_call_runs.id", ondelete="RESTRICT")
     )
     job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("jobs.id"), nullable=False)
     call_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)

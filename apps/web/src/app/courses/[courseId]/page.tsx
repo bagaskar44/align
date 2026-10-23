@@ -7,7 +7,7 @@ import { SubmissionWorkspace } from "@/components/SubmissionWorkspace";
 import { SubmissionQueue } from "@/components/SubmissionQueue";
 import { LogoutButton } from "@/components/LogoutButton";
 import { CourseWorkspaceTabs } from "@/components/CourseWorkspaceTabs";
-import { getContextVersions, getCourse, getCourseAssignments, getProfile } from "@/lib/api";
+import { getContextVersions, getCourse, getCourseAssignments, getProfile, getProviderMode } from "@/lib/api";
 
 export default async function CourseContextPage({ params }: { params: Promise<{ courseId: string }> }) {
   const { courseId } = await params;
@@ -19,10 +19,11 @@ export default async function CourseContextPage({ params }: { params: Promise<{ 
   if (!membership) {
     return <main className="centered-page"><section className="auth-card"><Link href="/">← Kembali ke mata kuliah</Link><h1>Ruang mata kuliah</h1><p className="intro-copy">Akun ini tidak memiliki keanggotaan aktif pada mata kuliah tersebut.</p></section></main>;
   }
-  const [courseResult, assignmentsResult, versionsResult] = await Promise.all([
+  const [courseResult, assignmentsResult, versionsResult, providerMode] = await Promise.all([
     getCourse(courseId),
     getCourseAssignments(courseId),
     membership.role === "lecturer" ? getContextVersions(courseId) : Promise.resolve(null),
+    membership.role === "lecturer" ? getProviderMode() : Promise.resolve("unknown" as const),
   ]);
   if (courseResult.kind === "unauthenticated" || assignmentsResult.kind === "unauthenticated" || versionsResult?.kind === "unauthenticated") redirect("/login");
   if (courseResult.kind === "unavailable") return <PageError message="Data mata kuliah tidak dapat dimuat. Muat ulang halaman beberapa saat lagi." />;
@@ -50,7 +51,7 @@ export default async function CourseContextPage({ params }: { params: Promise<{ 
               id: "assignments",
               label: "Tugas",
               content: assignmentsResult.kind === "ok"
-                ? <AssignmentWorkspace course={courseResult.data} csrfToken={profileResult.data.csrf_token} approvedContexts={versionsResult.data.items} initialAssignments={assignmentsResult.data.items} />
+                ? <AssignmentWorkspace course={courseResult.data} csrfToken={profileResult.data.csrf_token} approvedContexts={versionsResult.data.items} initialAssignments={assignmentsResult.data.items} providerMode={providerMode} />
                 : <WorkspaceUnavailable title="Daftar tugas belum dapat dimuat" />,
             },
             {
@@ -68,7 +69,7 @@ export default async function CourseContextPage({ params }: { params: Promise<{ 
               id: "assignments",
               label: "Tugas",
               content: assignmentsResult.kind === "ok"
-                ? <AssignmentWorkspace course={courseResult.data} csrfToken={profileResult.data.csrf_token} approvedContexts={[]} contextsUnavailable initialAssignments={assignmentsResult.data.items} />
+                ? <AssignmentWorkspace course={courseResult.data} csrfToken={profileResult.data.csrf_token} approvedContexts={[]} contextsUnavailable initialAssignments={assignmentsResult.data.items} providerMode={providerMode} />
                 : <WorkspaceUnavailable title="Daftar tugas belum dapat dimuat" />,
             },
             {

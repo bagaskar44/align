@@ -17,10 +17,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from align_api.config import get_settings
+from align_api.finance_lock import lock_paid_finance_scope
 from align_api.models import (
     BudgetAccount,
     Job,
     MethodManifest,
+    PaidCallRun,
     ReleaseManifest,
     UsageEntry,
     UsageReconciliation,
@@ -128,6 +130,8 @@ class WorkerPaidCallLedger:
                 call_id=context.call_id,
                 logical_call_id=context.logical_call_id or context.call_id,
                 attempt_no=context.attempt_no,
+                release_manifest_id=context.paid_release_manifest_id,
+                model_manifest_id=context.manifest_id,
                 rate_manifest_id=context.rate_manifest_id,
                 model_id=model_id,
                 bounds=call_bounds,
@@ -279,12 +283,21 @@ def reserve_call(
     call_id: UUID,
     logical_call_id: UUID,
     attempt_no: int,
+    release_manifest_id: UUID,
+    model_manifest_id: UUID,
     rate_manifest_id: UUID,
     model_id: str,
     bounds: CallBounds,
 ) -> ReservationPermit:
-    """Lock account/job, validate exact rates and limits, then commit the hold."""
+    """Atomically reserve global, run, and job capacity before provider I/O.
+
+    The budget-account row is the serialization point for all reservation,
+    settlement, reconciliation, release-activation, and run-lifecycle writes.
+    This makes the aggregate run-liability read and cap check safe under
+    concurrent paid calls; no application-side preflight is treated as a hold.
+    """
     with SessionFactory.begin() as db:
+        lock_paid_finance_scope(db)
         active_accounts = db.scalars(
             select(BudgetAccount).where(BudgetAccount.active.is_(True)).order_by(BudgetAccount.id).with_for_update()
         ).all()
@@ -293,11 +306,43 @@ def reserve_call(
         if len(active_accounts) != 1:
             raise FinanceGuardError("budget_account_ambiguous")
         account = active_accounts[0]
+        if account.spend_frozen:
+            raise FinanceGuardError("budget_spending_frozen")
+        active_release = db.scalar(
+            select(ReleaseManifest).where(ReleaseManifest.state == "active")
+        )
+        if (
+            active_release is None
+            or active_release.id != release_manifest_id
+            or active_release.model_manifest_id != model_manifest_id
+            or active_release.rate_manifest_id != rate_manifest_id
+        ):
+            raise FinanceGuardError("paid_release_changed_before_reservation")
+        active_runs = db.scalars(
+            select(PaidCallRun)
+            .where(
+                PaidCallRun.budget_account_id == account.id,
+                PaidCallRun.state == "active",
+            )
+            .order_by(PaidCallRun.id)
+        ).all()
+        if not active_runs:
+            raise FinanceGuardError("paid_call_run_missing")
+        if len(active_runs) != 1:
+            raise FinanceGuardError("paid_call_run_ambiguous")
+        paid_run = active_runs[0]
+        if paid_run.release_manifest_id != active_release.id:
+            raise FinanceGuardError("paid_call_run_release_mismatch")
+        if db.scalar(
+            select(UsageReservation.id).where(
+                UsageReservation.budget_account_id == account.id,
+                UsageReservation.status == "reconciliation_required",
+            ).limit(1)
+        ) is not None:
+            raise FinanceGuardError("budget_reconciliation_pending")
         job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
         if job is None:
             raise FinanceGuardError("job_missing")
-        if account.spend_frozen:
-            raise FinanceGuardError("budget_spending_frozen")
         rate_manifest = db.get(MethodManifest, rate_manifest_id)
         if rate_manifest is None:
             raise FinanceGuardError("rate_manifest_missing")
@@ -335,6 +380,15 @@ def reserve_call(
         )
         if reservation_cost > state.spendable:
             raise FinanceGuardError("global_budget_exhausted")
+        run_reservations = [row for row in reservations if row.paid_call_run_id == paid_run.id]
+        run_entries = {
+            row.call_id: entries[row.call_id]
+            for row in run_reservations
+            if row.call_id in entries
+        }
+        run_liability = Decimal(_current_totals(db, run_reservations, run_entries)["cost"])
+        if run_liability + reservation_cost > paid_run.cap_usd:
+            raise FinanceGuardError("paid_call_run_cap_exceeded")
         job_reservations = [row for row in reservations if row.job_id == job_id]
         job_entries = {row.call_id: entries[row.call_id] for row in job_reservations if row.call_id in entries}
         current = _current_totals(db, job_reservations, job_entries)
@@ -362,6 +416,7 @@ def reserve_call(
             raise FinanceGuardError("duplicate_logical_attempt")
         row = UsageReservation(
             budget_account_id=account.id,
+            paid_call_run_id=paid_run.id,
             job_id=job_id,
             call_id=call_id,
             logical_call_id=logical_call_id,
@@ -378,6 +433,15 @@ def reserve_call(
 def mark_unknown(call_id: UUID, *, provider_request_id: str | None, reason: str) -> None:
     """Keep the full reserve as liability when response billing cannot be proven."""
     with SessionFactory.begin() as db:
+        lock_paid_finance_scope(db)
+        account_id = db.scalar(
+            select(UsageReservation.budget_account_id).where(UsageReservation.call_id == call_id)
+        )
+        if account_id is None:
+            raise FinanceGuardError("reservation_missing")
+        db.scalar(
+            select(BudgetAccount).where(BudgetAccount.id == account_id).with_for_update()
+        )
         reservation = db.scalar(
             select(UsageReservation).where(UsageReservation.call_id == call_id).with_for_update()
         )
@@ -415,9 +479,19 @@ def reconcile_stale_reservations(*, minimum_age_seconds: int, limit: int = 100) 
     cutoff = datetime.now(UTC) - timedelta(seconds=minimum_age_seconds)
     recovered = 0
     with SessionFactory.begin() as db:
+        lock_paid_finance_scope(db)
+        account = db.scalar(
+            select(BudgetAccount).where(BudgetAccount.active.is_(True)).with_for_update()
+        )
+        if account is None:
+            return 0
         reservations = db.scalars(
             select(UsageReservation)
-            .where(UsageReservation.status == "held", UsageReservation.created_at < cutoff)
+            .where(
+                UsageReservation.budget_account_id == account.id,
+                UsageReservation.status == "held",
+                UsageReservation.created_at < cutoff,
+            )
             .order_by(UsageReservation.created_at, UsageReservation.id)
             .with_for_update(skip_locked=True)
             .limit(limit)
@@ -464,6 +538,17 @@ def settle_call(
         mark_unknown(call_id, provider_request_id=provider_request_id, reason="provider_usage_or_request_id_missing")
         return
     with SessionFactory.begin() as db:
+        lock_paid_finance_scope(db)
+        account_id = db.scalar(
+            select(UsageReservation.budget_account_id).where(UsageReservation.call_id == call_id)
+        )
+        if account_id is None:
+            raise FinanceGuardError("reservation_missing")
+        account = db.scalar(
+            select(BudgetAccount).where(BudgetAccount.id == account_id).with_for_update()
+        )
+        if account is None:
+            raise FinanceGuardError("budget_account_missing")
         reservation = db.scalar(
             select(UsageReservation).where(UsageReservation.call_id == call_id).with_for_update()
         )
@@ -525,12 +610,8 @@ def settle_call(
         )
         reservation.status = "settled"
         if over_bound:
-            account = db.scalar(
-                select(BudgetAccount).where(BudgetAccount.id == reservation.budget_account_id).with_for_update()
-            )
-            if account is not None:
-                account.spend_frozen = True
-                account.freeze_reason = "provider_usage_exceeded_reserved_bound"
+            account.spend_frozen = True
+            account.freeze_reason = "provider_usage_exceeded_reserved_bound"
 
 
 def release_unstarted_call(call_id: UUID, *, proof: str) -> None:
@@ -538,6 +619,15 @@ def release_unstarted_call(call_id: UUID, *, proof: str) -> None:
     if not proof.strip():
         raise FinanceGuardError("release_requires_no_network_proof")
     with SessionFactory.begin() as db:
+        lock_paid_finance_scope(db)
+        account_id = db.scalar(
+            select(UsageReservation.budget_account_id).where(UsageReservation.call_id == call_id)
+        )
+        if account_id is None:
+            raise FinanceGuardError("reservation_missing")
+        db.scalar(
+            select(BudgetAccount).where(BudgetAccount.id == account_id).with_for_update()
+        )
         reservation = db.scalar(
             select(UsageReservation).where(UsageReservation.call_id == call_id).with_for_update()
         )

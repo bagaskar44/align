@@ -1,0 +1,12 @@
+{
+  "title": "Analisis keputusan pada data penjualan sintetis",
+  "instruction": "Gunakan dataset penjualan sintetis yang disediakan untuk menjelaskan alasan pemilihan metode analisis. Uraikan karakteristik data yang relevan, interpretasikan hasil utama, dan sebutkan keterbatasan dataset. Sertakan rujukan ke bagian data atau tabel yang mendukung penjelasan.",
+  "criterion": {
+    "code": "C1",
+    "title": "Alasan pemilihan metode analisis",
+    "descriptor": "Mahasiswa menjelaskan hubungan antara karakteristik dataset, metode analisis, dan tujuan pertanyaan tugas tanpa mengklaim lebih dari yang didukung data.",
+    "requirement_code": "R1",
+    "requirement_text": "Jelaskan alasan pemilihan metode dengan merujuk pada distribusi data, ukuran sampel, dan keterbatasan dataset.",
+    "rubric_quote": "Mahasiswa menjelaskan alasan pemilihan metode dengan merujuk pada distribusi data, ukuran sampel, dan keterbatasan dataset."
+  }
+}
