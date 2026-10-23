@@ -3,7 +3,7 @@ name: align
 services:
   postgres:
     image: pgvector/pgvector:pg17
-    env_file: .env.postgres
+    env_file: ${ALIGN_POSTGRES_ENV_FILE:-.env.postgres}
     environment:
       POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=trust
       OPERATOR_DB_PASSWORD: ${OPERATOR_DB_PASSWORD}
@@ -47,7 +47,7 @@ services:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
-    env_file: .env.migration
+    env_file: ${ALIGN_MIGRATION_ENV_FILE:-.env.migration}
     command: ["uv", "run", "--no-sync", "--package", "align-api", "align", "db", "upgrade"]
     depends_on:
       postgres:
@@ -59,9 +59,13 @@ services:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
-    env_file: .env.api
+    env_file: ${ALIGN_API_ENV_FILE:-.env.api}
     environment:
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      # Make the developer's local credential available to trusted inference
+      # services. PROVIDER_MODE and PAID_CALLS_ENABLED remain controlled by the
+      # role env files (mock/disabled by default); parser services never receive it.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       REDIS_QUEUE_PREFIX: ${ALIGN_QA_REDIS_QUEUE_PREFIX:-${REDIS_QUEUE_PREFIX:-align-dev}}
       PARSER_NATIVE_MEMORY_BYTES: "2147483648"
       PARSER_DOCUMENT_MEMORY_BYTES: ${ALIGN_DEV_PARSER_DOCUMENT_MEMORY_BYTES:-${ALIGN_QA_PARSER_DOCUMENT_MEMORY_BYTES:-4294967296}}
@@ -94,7 +98,7 @@ services:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
-    env_file: .env.api
+    env_file: ${ALIGN_OPERATOR_ENV_FILE:-.env.api}
     environment:
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
       OPERATOR_DATABASE_URL: postgresql+psycopg://align_operator:${OPERATOR_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -112,8 +116,9 @@ services:
     build:
       context: .
       dockerfile: docker/worker.Dockerfile
-    env_file: .env.worker
+    env_file: ${ALIGN_WORKER_ENV_FILE:-.env.worker}
     environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       REDIS_QUEUE_PREFIX: ${ALIGN_QA_REDIS_QUEUE_PREFIX:-${REDIS_QUEUE_PREFIX:-align-dev}}
       ALIGN_WORKER_QUEUE: ${ALIGN_QA_REDIS_QUEUE_PREFIX:-${REDIS_QUEUE_PREFIX:-align-dev}}.general
       PARSER_NATIVE_MEMORY_BYTES: "2147483648"
@@ -136,7 +141,7 @@ services:
     build:
       context: .
       dockerfile: docker/parser-worker.Dockerfile
-    env_file: .env.worker
+    env_file: ${ALIGN_PARSER_WORKER_ENV_FILE:-${ALIGN_WORKER_ENV_FILE:-.env.worker}}
     environment:
       REDIS_QUEUE_PREFIX: ${ALIGN_QA_REDIS_QUEUE_PREFIX:-${REDIS_QUEUE_PREFIX:-align-dev}}
       ALIGN_WORKER_QUEUE: ${ALIGN_QA_REDIS_QUEUE_PREFIX:-${REDIS_QUEUE_PREFIX:-align-dev}}.parser
@@ -175,7 +180,7 @@ services:
     build:
       context: .
       dockerfile: docker/parser-worker.Dockerfile
-    env_file: .env.worker
+    env_file: ${ALIGN_WORKER_ENV_FILE:-.env.worker}
     environment:
       REDIS_QUEUE_PREFIX: align-test
       ALIGN_WORKER_QUEUE: align-test.parser
@@ -213,7 +218,7 @@ services:
     build:
       context: .
       dockerfile: docker/worker.Dockerfile
-    env_file: .env.worker
+    env_file: ${ALIGN_DISPATCHER_ENV_FILE:-${ALIGN_WORKER_ENV_FILE:-.env.worker}}
     environment:
       REDIS_QUEUE_PREFIX: ${ALIGN_QA_REDIS_QUEUE_PREFIX:-${REDIS_QUEUE_PREFIX:-align-dev}}
     command: ["uv", "run", "--no-sync", "--package", "align-worker", "python", "-m", "align_worker.dispatcher"]
@@ -230,7 +235,7 @@ services:
     build:
       context: .
       dockerfile: docker/worker.Dockerfile
-    env_file: .env.worker
+    env_file: ${ALIGN_WORKER_ENV_FILE:-.env.worker}
     environment:
       REDIS_QUEUE_PREFIX: align-test
     command: ["uv", "run", "--no-sync", "--package", "align-worker", "python", "-m", "align_worker.dispatcher"]
@@ -246,7 +251,7 @@ services:
     build:
       context: .
       dockerfile: docker/worker.Dockerfile
-    env_file: .env.worker
+    env_file: ${ALIGN_SCHEDULER_ENV_FILE:-${ALIGN_WORKER_ENV_FILE:-.env.worker}}
     environment:
       REDIS_QUEUE_PREFIX: ${ALIGN_QA_REDIS_QUEUE_PREFIX:-${REDIS_QUEUE_PREFIX:-align-dev}}
     command: ["uv", "run", "--no-sync", "--package", "align-worker", "celery", "-A", "align_worker.celery_app:celery_app", "beat", "--loglevel=INFO", "--schedule=/tmp/celerybeat-schedule"]
@@ -322,10 +327,11 @@ services:
     image: caddy:2.10.2-alpine
     environment:
       ALIGN_HOST_PORT: ${ALIGN_HOST_PORT:-3000}
+      ALIGN_CADDYFILE: ${ALIGN_CADDYFILE:-./docker/Caddyfile}
     ports:
       - "127.0.0.1:${ALIGN_HOST_PORT:-3000}:80"
     volumes:
-      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${ALIGN_CADDYFILE:-./docker/Caddyfile}:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:

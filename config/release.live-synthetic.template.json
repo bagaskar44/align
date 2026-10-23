@@ -1,0 +1,29 @@
+{
+  "schema_version": 2,
+  "version_label": "align-live-synthetic-template-v1",
+  "provider_mode": "live",
+  "data_mode": "synthetic",
+  "template_only": true,
+  "manifests": {
+    "parser": "parser.baseline.json",
+    "parser_resource": "parser-resource.baseline.json",
+    "model": "model-live-synthetic.template.json",
+    "rates": "model-rates-live.template.json",
+    "retrieval": "retrieval.baseline.json",
+    "rules": "rules.baseline.json",
+    "prompt": "prompt.baseline.json",
+    "routing": "routing.live-synthetic.template.json",
+    "batching": "batching.live-synthetic.template.json"
+  },
+  "capabilities_available": [],
+  "capabilities_unavailable": [
+    "context_extraction_live", "spec_drafting_live", "embedding_live",
+    "retrieval_live", "text_interpretation_live", "vision_interpretation_live",
+    "claim_verification_live", "feedback_drafting_live", "empirical_quality"
+  ],
+  "activation_checks": {
+    "baseline_batch_size": 1,
+    "capability_smoke": false,
+    "empirical_verification": false
+  }
+}

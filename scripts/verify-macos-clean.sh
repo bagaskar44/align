@@ -15,7 +15,8 @@ cd "$repo_dir"
 git rev-parse HEAD > "$test_root/baseline-revision.txt"
 git archive HEAD | tar -xf - -C "$checkout"
 git ls-files --deleted -z | while IFS= read -r -d '' deleted; do rm -f "$checkout/$deleted"; done
-git ls-files --cached --others --exclude-standard | rg -v '^\.vscode/' > "$test_root/checkout-source-files.txt"
+git ls-files --cached --others --exclude-standard \
+  | rg -v '^(\.vscode/|\.DS_Store$)|/\.DS_Store$' > "$test_root/checkout-source-files.txt"
 test -s "$test_root/checkout-source-files.txt"
 tar -cf - -T "$test_root/checkout-source-files.txt" | tar -xf - -C "$checkout"
 for absent in .env .venv node_modules .codex-tools .corepack-cache .playwright-browsers; do
@@ -29,24 +30,83 @@ export ALIGN_HOST_PORT=${ALIGN_REPRO_PORT:-3101}
 # Remove inherited host/project toolchain selection. HOME/Docker login remain untouched.
 export PATH="$(dirname "$docker_bin"):/usr/bin:/bin:/usr/sbin:/sbin"
 unset VIRTUAL_ENV PYTHONPATH NODE_PATH UV_PROJECT UV_PROJECT_ENVIRONMENT COMPOSE_FILE COMPOSE_PROJECT_NAME
-# This host's Docker default address pools are exhausted by retained project networks.
-# Give this disposable project its own private subnets without pruning user resources.
-cat > "$test_root/compose-network.yml" <<'EOF'
-services: {}
-networks:
-  edge:
-    ipam:
-      config:
-        - subnet: 10.231.0.0/24
-  private:
-    ipam:
-      config:
-        - subnet: 10.232.0.0/20
-EOF
+# Retained test/development networks may occupy previously hard-coded CIDRs.
+# Inspect existing networks and select an unused RFC1918 pair without pruning them.
+python3 - "$docker_bin" "$test_root/compose-network.yml" "$test_root/compose-network.txt" <<'PY'
+import ipaddress
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+docker_bin, compose_file, evidence_file = sys.argv[1:]
+network_ids = subprocess.run(
+    [docker_bin, "network", "ls", "-q"], capture_output=True, text=True, check=True
+).stdout.splitlines()
+used = []
+for network_id in network_ids:
+    output = subprocess.run(
+        [docker_bin, "network", "inspect", network_id], capture_output=True, text=True, check=True
+    ).stdout
+    networks = json.loads(output)
+    for network in networks:
+        for item in network.get("IPAM", {}).get("Config") or []:
+            try:
+                used.append(ipaddress.ip_network(item["Subnet"], strict=False))
+            except (KeyError, ValueError):
+                continue
+
+pair = None
+for subnet_octet in range(16, 254, 2):
+    edge = ipaddress.ip_network(f"10.{subnet_octet}.0.0/24")
+    private = ipaddress.ip_network(f"10.{subnet_octet + 1}.0.0/20")
+    if any(edge.overlaps(item) or private.overlaps(item) for item in used):
+        continue
+    pair = edge, private
+    break
+if pair is None:
+    raise SystemExit("no unused 10.x.x.x test network pair; choose an unused RFC1918 pair manually")
+edge, private = pair
+Path(compose_file).write_text(
+    "services: {}\nnetworks:\n"
+    "  edge:\n    ipam:\n      config:\n        - subnet: " + str(edge) + "\n"
+    "  private:\n    ipam:\n      config:\n        - subnet: " + str(private) + "\n",
+    encoding="utf-8",
+)
+Path(evidence_file).write_text(f"edge={edge}\nprivate={private}\n", encoding="utf-8")
+PY
 export COMPOSE_FILE="$checkout/docker-compose.yml:$test_root/compose-network.yml"
 echo "Evidence directory: $test_root"
 echo "Isolated Compose project: $ALIGN_COMPOSE_PROJECT; port: $ALIGN_HOST_PORT"
 printf '%s\n' "$ALIGN_COMPOSE_PROJECT" > "$test_root/compose-project.txt"
+cleanup_failed_project() {
+  status=$?
+  if [ "$status" -ne 0 ] && [ -f "$checkout/.env" ] && [ -f "$test_root/compose-network.yml" ]; then
+    /usr/bin/python3 - "$docker_bin" "$ALIGN_COMPOSE_PROJECT" "$checkout/.env" \
+      "$checkout/docker-compose.yml" "$test_root/compose-network.yml" "$test_root/cleanup.log" <<'PY'
+import subprocess
+import sys
+from pathlib import Path
+
+docker_bin, project, env_file, base, network, log_file = sys.argv[1:]
+command = [docker_bin, "compose", "--project-name", project, "--env-file", env_file,
+           "-f", base, "-f", network, "down", "--volumes", "--remove-orphans"]
+try:
+    result = subprocess.run(command, capture_output=True, text=True, timeout=20, check=False)
+    Path(log_file).write_text(
+        f"exit={result.returncode}\n{result.stdout}{result.stderr}", encoding="utf-8"
+    )
+except subprocess.TimeoutExpired as exc:
+    Path(log_file).write_text(
+        f"cleanup timed out after 20 seconds\n{exc.stdout or ''}{exc.stderr or ''}",
+        encoding="utf-8",
+    )
+PY
+    echo "Test project cleanup attempted; inspect $test_root/cleanup.log" >&2
+  fi
+  exit "$status"
+}
+trap cleanup_failed_project EXIT
 cd "$checkout"
 bash scripts/macos-toolchain.sh
 source scripts/macos-env.sh

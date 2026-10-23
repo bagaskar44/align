@@ -1,0 +1,33 @@
+{
+  "identities": [
+    {
+      "name": "align-application",
+      "credentials": [
+        {
+          "accessKey": "REPLACE_WITH_APPLICATION_ACCESS_KEY",
+          "secretKey": "REPLACE_WITH_APPLICATION_SECRET_KEY"
+        }
+      ],
+      "actions": [
+        "Read:REPLACE_WITH_BUCKET_NAME",
+        "Write:REPLACE_WITH_BUCKET_NAME",
+        "List:REPLACE_WITH_BUCKET_NAME",
+        "Tagging:REPLACE_WITH_BUCKET_NAME"
+      ]
+    },
+    {
+      "name": "align-backup",
+      "credentials": [
+        {
+          "accessKey": "REPLACE_WITH_BACKUP_ACCESS_KEY",
+          "secretKey": "REPLACE_WITH_BACKUP_SECRET_KEY"
+        }
+      ],
+      "actions": [
+        "Read:REPLACE_WITH_BUCKET_NAME",
+        "Write:REPLACE_WITH_BUCKET_NAME",
+        "List:REPLACE_WITH_BUCKET_NAME"
+      ]
+    }
+  ]
+}

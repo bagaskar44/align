@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "manifest_id": "model-live-synthetic-template-v1",
+  "template_only": true,
+  "provider_mode": "live",
+  "live_model_ids": {
+    "efficient": "REPLACE_WITH_VERIFIED_MODEL_ID",
+    "complex": "REPLACE_WITH_VERIFIED_MODEL_ID",
+    "vision": "REPLACE_WITH_VERIFIED_VISION_MODEL_ID",
+    "embedding": "text-embedding-3-small"
+  },
+  "embedding_dimensions": 1536,
+  "rates_manifest": "model-rates-live.template.json",
+  "paid_calls": false,
+  "capability_smoke": false,
+  "semantic_verification": "pending_capability_smoke",
+  "label": "LIVE • data sintetis • template belum terverifikasi"
+}

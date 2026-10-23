@@ -36,7 +36,15 @@ case "${1:-help}" in
     compose exec -T api align seed
     ;;
   verify)
-    python3 "$script_dir/smoke-local.py" --project "$project" --docker "$docker_bin"
+    # The host's system Python may be older than the repository's runtime.
+    # `install` creates this frozen project interpreter; do not silently run
+    # the smoke against an unrelated host Python (for example macOS 3.9).
+    python_bin=${ALIGN_PYTHON_BIN:-"$PWD/.venv/bin/python"}
+    if [ ! -x "$python_bin" ]; then
+      echo 'Project Python is missing; run `bash scripts/dev-macos.sh install` first.' >&2
+      exit 1
+    fi
+    "$python_bin" "$script_dir/smoke-local.py" --project "$project" --docker "$docker_bin"
     ;;
   release-baseline)
     # Only an empty DB, the recognized default B0, or this exact B5 baseline

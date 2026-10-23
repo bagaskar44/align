@@ -1,24 +1,175 @@
-# Parser capacity profile only; this is not a complete production deployment overlay.
+# Standalone production-operation overlay. Compose interpolates every image from
+# a private env file and refuses to run when required digest pins are absent.
+# This file is intended for mock/synthetic operational rehearsal first.
 services:
+  postgres:
+    image: ${ALIGN_POSTGRES_IMAGE:?set a tested digest-pinned pgvector image}
+    pull_policy: always
+
+  redis:
+    image: ${ALIGN_REDIS_IMAGE:?set a tested digest-pinned Redis image}
+    pull_policy: always
+
+  object-storage:
+    image: ${ALIGN_SEAWEEDFS_IMAGE:?set a tested digest-pinned SeaweedFS image}
+    pull_policy: always
+    command:
+      - server
+      - -dir=/data
+      - -master
+      - -volume
+      - -filer
+      - -s3
+      - -s3.config=/run/secrets/seaweedfs-s3.json
+      - -s3.port=8334
+      - -s3.port.https=0
+      - -s3.cert.file=/run/secrets/seaweedfs-tls.crt
+      - -s3.key.file=/run/secrets/seaweedfs-tls.key
+      - -master.telemetry=false
+    volumes: !override
+      - object-storage-data:/data
+    secrets:
+      - seaweedfs_s3_config
+      - seaweedfs_tls_cert
+      - seaweedfs_tls_key
+    ports: !override []
+
+  migrate:
+    image: ${ALIGN_API_IMAGE:?set a tested digest-pinned ALIGN API image}
+    pull_policy: always
+
   api:
+    image: ${ALIGN_API_IMAGE:?set a tested digest-pinned ALIGN API image}
+    pull_policy: always
     environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_DEMO_MODE: ${APP_DEMO_MODE:?set true for synthetic rehearsal}
+      PROVIDER_MODE: ${PROVIDER_MODE:?set mock for synthetic rehearsal}
+      DATA_MODE: ${DATA_MODE:?set synthetic for rehearsal}
+      # Never inherit the developer key from base Compose.
+      OPENAI_API_KEY: ${ALIGN_PRODUCTION_OPENAI_API_KEY:-}
+      PARSER_NATIVE_MEMORY_BYTES: "2147483648"
       PARSER_DOCUMENT_MEMORY_BYTES: "8589934592"
       PARSER_NODE_MEMORY_BUDGET_BYTES: "8589934592"
+      PARSER_HEAVY_MAX_PER_NODE: "1"
+      PARSER_PAGE_BATCH_SIZE: "1"
+      AWS_CA_BUNDLE: /run/secrets/seaweedfs-ca.crt
+    volumes: !override []
+    networks: !override [private, provider-egress]
+    secrets:
+      - seaweedfs_ca_cert
+
+  operator:
+    image: ${ALIGN_API_IMAGE:?set a tested digest-pinned ALIGN API image}
+    pull_policy: always
+
   worker:
+    image: ${ALIGN_WORKER_IMAGE:?set a tested digest-pinned ALIGN worker image}
+    pull_policy: always
     environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_DEMO_MODE: ${APP_DEMO_MODE:?set true for synthetic rehearsal}
+      PROVIDER_MODE: ${PROVIDER_MODE:?set mock for synthetic rehearsal}
+      DATA_MODE: ${DATA_MODE:?set synthetic for rehearsal}
+      OPENAI_API_KEY: ${ALIGN_PRODUCTION_OPENAI_API_KEY:-}
+      PARSER_NATIVE_MEMORY_BYTES: "2147483648"
       PARSER_DOCUMENT_MEMORY_BYTES: "8589934592"
       PARSER_NODE_MEMORY_BUDGET_BYTES: "8589934592"
+      PARSER_HEAVY_MAX_PER_NODE: "1"
+      PARSER_PAGE_BATCH_SIZE: "1"
+      AWS_CA_BUNDLE: /run/secrets/seaweedfs-ca.crt
+    volumes: !override []
+    networks: !override [private, provider-egress]
+    secrets:
+      - seaweedfs_ca_cert
+
   parser-worker:
+    image: ${ALIGN_WORKER_IMAGE:?set a tested digest-pinned ALIGN worker image}
+    pull_policy: always
     environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_DEMO_MODE: ${APP_DEMO_MODE:?set true for synthetic rehearsal}
+      PROVIDER_MODE: ${PROVIDER_MODE:?set mock for synthetic rehearsal}
+      DATA_MODE: ${DATA_MODE:?set synthetic for rehearsal}
+      PARSER_NATIVE_MEMORY_BYTES: "2147483648"
       PARSER_DOCUMENT_MEMORY_BYTES: "8589934592"
       PARSER_NODE_MEMORY_BUDGET_BYTES: "8589934592"
+      PARSER_HEAVY_MAX_PER_NODE: "1"
+      PARSER_PAGE_BATCH_SIZE: "1"
+      AWS_CA_BUNDLE: /run/secrets/seaweedfs-ca.crt
     mem_limit: 9g
-  test-parser-worker:
+    volumes: !override []
+    networks: !override [private]
+    secrets:
+      - seaweedfs_ca_cert
+
+  outbox-dispatcher:
+    image: ${ALIGN_WORKER_IMAGE:?set a tested digest-pinned ALIGN worker image}
+    pull_policy: always
     environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_DEMO_MODE: ${APP_DEMO_MODE:?set true for synthetic rehearsal}
+      PROVIDER_MODE: ${PROVIDER_MODE:?set mock for synthetic rehearsal}
+      DATA_MODE: ${DATA_MODE:?set synthetic for rehearsal}
+      PARSER_NATIVE_MEMORY_BYTES: "2147483648"
       PARSER_DOCUMENT_MEMORY_BYTES: "8589934592"
       PARSER_NODE_MEMORY_BUDGET_BYTES: "8589934592"
-    mem_limit: 9g
-  test-runner:
+      PARSER_HEAVY_MAX_PER_NODE: "1"
+      PARSER_PAGE_BATCH_SIZE: "1"
+      AWS_CA_BUNDLE: /run/secrets/seaweedfs-ca.crt
+    networks: !override [private, provider-egress]
+    secrets:
+      - seaweedfs_ca_cert
+
+  scheduler:
+    image: ${ALIGN_WORKER_IMAGE:?set a tested digest-pinned ALIGN worker image}
+    pull_policy: always
     environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_DEMO_MODE: ${APP_DEMO_MODE:?set true for synthetic rehearsal}
+      PROVIDER_MODE: ${PROVIDER_MODE:?set mock for synthetic rehearsal}
+      DATA_MODE: ${DATA_MODE:?set synthetic for rehearsal}
+      PARSER_NATIVE_MEMORY_BYTES: "2147483648"
       PARSER_DOCUMENT_MEMORY_BYTES: "8589934592"
       PARSER_NODE_MEMORY_BUDGET_BYTES: "8589934592"
+      PARSER_HEAVY_MAX_PER_NODE: "1"
+      PARSER_PAGE_BATCH_SIZE: "1"
+      AWS_CA_BUNDLE: /run/secrets/seaweedfs-ca.crt
+    networks: !override [private, provider-egress]
+    secrets:
+      - seaweedfs_ca_cert
+
+  web:
+    image: ${ALIGN_WEB_IMAGE:?set a tested digest-pinned ALIGN web image}
+    pull_policy: always
+
+  proxy:
+    image: ${ALIGN_CADDY_IMAGE:?set a tested digest-pinned Caddy image}
+    pull_policy: always
+    environment:
+      APP_ORIGIN: ${APP_ORIGIN:?set the approved HTTPS origin}
+      APP_HOST: ${APP_HOST:?set the approved public hostname}
+      ALIGN_CADDYFILE: ${ALIGN_CADDYFILE:?point to docker/Caddyfile.production}
+    ports: !override
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+
+secrets:
+  seaweedfs_s3_config:
+    file: ${ALIGN_SEAWEEDFS_S3_CONFIG_FILE:?set private SeaweedFS auth config}
+  seaweedfs_tls_cert:
+    file: ${ALIGN_SEAWEEDFS_TLS_CERT_FILE:?set SeaweedFS TLS certificate}
+  seaweedfs_tls_key:
+    file: ${ALIGN_SEAWEEDFS_TLS_KEY_FILE:?set private SeaweedFS TLS key}
+  seaweedfs_ca_cert:
+    file: ${ALIGN_SEAWEEDFS_CA_CERT_FILE:?set trusted SeaweedFS CA certificate}
+
+networks:
+  provider-egress:
+    driver: bridge

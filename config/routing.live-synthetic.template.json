@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "policy_id": "routing-live-synthetic-v1",
+  "mode": "manual_and_explicit_mock",
+  "default_route": "mock",
+  "allow_live": true,
+  "max_provider_calls": 16,
+  "max_vision_calls": 4,
+  "max_input_tokens": 40000,
+  "max_output_tokens": 8000,
+  "max_embedding_tokens": 80000,
+  "max_active_seconds": 600,
+  "analysis_budget_usd": "0.20",
+  "semantic_routes": {
+    "interpret_evidence": "complex",
+    "verify_claim": "complex"
+  },
+  "efficient_routes": ["extract_fields", "rerank", "draft_feedback"],
+  "semantic_batch_size": 1,
+  "transport_retries_per_stage": 2,
+  "schema_repairs": 1,
+  "semantic_escalations_per_element": 1,
+  "unknown_capability_action": "manual",
+  "unavailable_source_action": "abstain",
+  "status": "baseline_not_empirically_verified"
+}

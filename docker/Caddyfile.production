@@ -1,0 +1,25 @@
+http://{$APP_HOST} {
+	redir https://{$APP_HOST}{uri} 308
+}
+
+{$APP_ORIGIN} {
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options DENY
+	}
+
+	@api path /api/v1 /api/v1/*
+	handle @api {
+		reverse_proxy api:8000
+	}
+
+	@health path /health/live /health/ready
+	handle @health {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}
