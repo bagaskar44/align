@@ -1,6 +1,6 @@
 # Panduan Implementasi ALIGN per Tahap
 
-Tanggal pembaruan: 22 Oktober 2026 (Asia/Jakarta). Bahasa implementasi produk dan dokumen: Indonesia.
+Tanggal pembaruan: 23 Oktober 2026 (Asia/Jakarta). Bahasa implementasi produk dan dokumen: Indonesia.
 
 **Status per 22 Oktober 2026: software handover B0–B8 diuji pada fixture mock/synthetic dan PostgreSQL terisolasi; bukti provider live, tarif aktual, adjudication manusia dan hasil optimasi empiris belum tersedia.** B2 teruji dengan parser rubrik bersama, editor dan semantic-negative. B3 mencatat upload/finalisasi, registry/viewer, parser native/Docling, checkpoint/recovery, fencing dan benchmark. B4 membuktikan alur provider-off manual sampai hasil resmi mahasiswa. B5 menghubungkan executor/retrieval/grounding dan draft dengan mock/fake non-network. B6 menambah numeric acquisition, ledger/reservations/reconciliation dan guard eligibility; baseline tetap batch 1. B7 menguji journey UI, recovery/retensi, backup/restore sintetis dan capacity smoke. B8 menutup AC-MVP-45 software example dan offline CLI/report AC-MVP-64, menjalankan enam Docling runtime tests **6/6**, dua browser demo **2/2**, serta fresh-checkout build/migrate/seed/login. Enam runtime test yang skipped pada integration suite kemudian dijalankan terpisah; satu OOM case tetap skipped di suite dan tidak dihitung pass. Readiness institusi/riset, VoiceOver/perangkat fisik, kapasitas maksimum dan RPO/RTO tetap pending. Lihat [handover B7](../handover/B7.md), [handover B8](../handover/B8.md), dan [traceability](../../requirements_traceability.md).
 
@@ -34,6 +34,12 @@ Seluruh tahap memakai data sintetis dan mock provider berlabel sebagai default. 
 | B9 | [Moodle sandbox](B9-moodle-sandbox.md) | B8 + inisiasi terpisah | AC-SBX-01–05; standalone tetap independen |
 
 Milestone: **M1 B0–B2** tugas resmi; **M2 B3–B4** produk manual lengkap; **M3 B5–B6** bantuan AI dan numeric; **M4 B7–B8** handover MVP. M2 bukan pernyataan seluruh MVP selesai. B9 berada setelah MVP dan feature flag tetap off default.
+
+### Jalur lanjutan: pilot produksi standalone
+
+[Implementasi menuju pilot produksi standalone](standalone-production.md) melengkapi B0–B8 melalui tahap P0–P5: verifikasi runtime, persiapan dan pengujian live LLM sintetis, operasi Linux/SeaweedFS/TLS/backup/restore, kualifikasi data nyata, lalu pilot 1–2 mata kuliah. Penyusunan: 23 Oktober 2026 (Asia/Jakarta). Dokumen merupakan instruksi kerja untuk agent berikutnya, bukan bukti tahap tersebut sudah selesai.
+
+Konteks manual dan fixture sintetis cukup untuk memulai; KK/RPP serta dokumen mahasiswa nyata tidak menjadi prasyarat persiapan software. Jalur ini mengikuti master, mempertahankan nomor B0–B9, dan tidak memulai Moodle. Panggilan berbayar, penggunaan data nyata serta aktivasi publik tetap memerlukan konfigurasi dan otorisasi yang berlaku pada tahapnya.
 
 ## 3. Dependensi lintas tahap yang wajib
 
