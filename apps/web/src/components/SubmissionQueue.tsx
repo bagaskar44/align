@@ -1,125 +1,88 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
-import { SubmissionFileViewer, type ManualAnchorSelection } from "./SubmissionViewer";
-import { ReviewWorkspace } from "./ReviewWorkspace";
+import { processingLabel, reviewLabel } from "./reviewPresentation";
 
-type Assignment = { id: string; title: string };
-type SubmissionFile = { id: string; name: string; mime: string; preflight: Record<string, unknown>; content_url: string; parse_status: string; limitations: Array<Record<string, unknown>> };
-type Submission = {
-  id: string;
-  assignment_id: string;
-  revision: number;
+export type QueueQuery = { assignment?: string; q?: string; review?: string; publication?: string; cursor?: string };
+type Assignment = { id: string; title: string; active_version_id?: string | null };
+export type StaffSubmission = {
+  id: string; assignment_id: string; revision: number; course_id?: string; assignment_title?: string;
   owner: { individual_user_id: string | null; group_id: string | null; label?: string };
   roster?: string[];
   active_final_version: null | { id: string; version_no: number; manifest_hash: string; finalized_at: string; is_late: boolean };
-  files?: SubmissionFile[];
-  draft_files: Array<{ id: string; name: string }>;
+  files?: Array<{ id: string; name: string; mime: string; sha256: string; parse_status: string; content_url: string; limitations: Array<Record<string, unknown>> }>;
+  staff_status?: { review: string; review_id: string | null; publication: string; publication_source_version_id: string | null };
 };
 
-async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(`/api/v1${path}`, { cache: "no-store", credentials: "same-origin" });
-  const payload = await response.json().catch(() => ({})) as T & { error?: { message?: string } };
-  if (!response.ok) throw new Error(payload.error?.message ?? `Permintaan gagal (${response.status}).`);
-  return payload;
-}
-
-export function SubmissionQueue({ assignments, csrfToken }: { assignments: Assignment[]; csrfToken: string }) {
-  const [assignmentId, setAssignmentId] = useState("");
-  const [items, setItems] = useState<Submission[]>([]);
-  const [selected, setSelected] = useState<Submission | null>(null);
-  const [fileId, setFileId] = useState("");
-  const [manualAnchorSelection, setManualAnchorSelection] = useState<ManualAnchorSelection | null>(null);
-  const [error, setError] = useState("");
+export function SubmissionQueue({ assignments, courseId, initialQuery = {} }: {
+  assignments: Assignment[]; courseId: string; initialQuery?: QueueQuery;
+}) {
+  const [assignmentId, setAssignmentId] = useState(initialQuery.assignment ?? "");
+  const [search, setSearch] = useState(initialQuery.q ?? "");
+  const [query, setQuery] = useState(initialQuery.q ?? "");
+  const [review, setReview] = useState(initialQuery.review ?? "");
+  const [publication, setPublication] = useState(initialQuery.publication ?? "");
+  const [cursor, setCursor] = useState(Number(initialQuery.cursor) || 0);
+  const [items, setItems] = useState<StaffSubmission[]>([]);
+  const [nextCursor, setNextCursor] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
-  const [refreshKey, setRefreshKey] = useState(0);
+  const [error, setError] = useState("");
+  const [refresh, setRefresh] = useState(0);
+  const backQuery = new URLSearchParams({ tab: "submissions", assignment: assignmentId, q: query, review, publication, cursor: String(cursor) });
 
   useEffect(() => {
     if (!assignmentId) return;
     let active = true;
-    let timer: number | undefined;
-    const startedAt = Date.now();
-    const load = async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const controller = new AbortController();
+    const params = new URLSearchParams({ cursor: String(cursor), limit: "25", q: query, review_status: review, publication_status: publication });
+    const location = new URL(window.location.href);
+    for (const [key, value] of new URLSearchParams({ tab: "submissions", assignment: assignmentId, q: query, review, publication, cursor: String(cursor) })) location.searchParams.set(key, value);
+    window.history.replaceState(window.history.state, "", location);
+    async function load() {
+      if (document.visibilityState === "hidden") { timer = setTimeout(() => void load(), 15000); return; }
       setLoading(true);
       try {
-        const response = await getJson<{ items: Submission[] }>(`/assignments/${assignmentId}/submissions`);
+        const response = await fetch(`/api/v1/assignments/${assignmentId}/submissions?${params}`, { cache: "no-store", signal: controller.signal });
+        if (!response.ok) throw new Error("Daftar pengumpulan tidak dapat dimuat. Coba lagi.");
+        const page = await response.json() as { items: StaffSubmission[]; next_cursor: number | null };
         if (!active) return;
-        setItems(response.items);
-        setSelected((current) => current && response.items.some((item) => item.id === current.id)
-          ? response.items.find((item) => item.id === current.id) ?? null : null);
-        setError("");
-        const pending = response.items.some((item) =>
-          item.files?.some((file) => ["queued", "running"].includes(file.parse_status)));
-        if (pending && active && document.visibilityState === "visible") {
-          const delay = Date.now() - startedAt >= 60_000 ? 15_000 : 5_000;
-          timer = window.setTimeout(() => void load(), delay);
-        }
-      } catch (cause) { if (active) setError(cause instanceof Error ? cause.message : "Antrian pengumpulan gagal dimuat."); }
+        setItems(page.items); setNextCursor(page.next_cursor); setError("");
+        if (page.items.some((item) => item.files?.some((file) => ["queued", "running"].includes(file.parse_status)))) timer = setTimeout(() => void load(), 10000);
+      } catch (cause) { if (active) setError(cause instanceof Error ? cause.message : "Daftar gagal dimuat."); }
       finally { if (active) setLoading(false); }
-    };
+    }
     void load();
-    const visibilityChanged = () => {
-      if (document.visibilityState === "hidden" && timer !== undefined) window.clearTimeout(timer);
-      else if (document.visibilityState === "visible") void load();
-    };
-    document.addEventListener("visibilitychange", visibilityChanged);
-    return () => { active = false; if (timer !== undefined) window.clearTimeout(timer); document.removeEventListener("visibilitychange", visibilityChanged); };
-  }, [assignmentId, refreshKey]);
+    return () => { active = false; controller.abort(); clearTimeout(timer); };
+  }, [assignmentId, query, review, publication, cursor, refresh]);
 
-  function chooseAssignment(value: string) {
-    setAssignmentId(value);
-    setItems([]);
-    setSelected(null);
-    setFileId("");
-    setManualAnchorSelection(null);
-    setError("");
-  }
-
-  function selectSubmission(item: Submission) {
-    setSelected(item);
-    setFileId(item.files?.[0]?.id ?? "");
-    setManualAnchorSelection(null);
-  }
-
-  const activeFile = selected?.files?.find((item) => item.id === fileId) ?? null;
-  return (
-    <section className="workspace-panel" aria-labelledby="submission-queue-title">
-      <p className="eyebrow">ANTRIAN PENGUMPULAN</p><h2 id="submission-queue-title">Submission mahasiswa</h2>
-      <label className="field-label">Pilih tugas
-        <select value={assignmentId} onChange={(event) => chooseAssignment(event.target.value)}>
-          <option value="">Pilih tugas terbit</option>
-          {assignments.map((assignment) => <option key={assignment.id} value={assignment.id}>{assignment.title}</option>)}
-        </select>
-      </label>
-      {error && <p className="form-error" role="alert">{error}</p>}
-      {loading && <p className="help-text" role="status">Memuat antrian pengumpulan…</p>}
-      {assignmentId && <button type="button" className="button button-quiet" onClick={() => setRefreshKey((value) => value + 1)}>Muat ulang antrian</button>}
-      {assignmentId && !loading && items.length === 0 && <p className="notice">Belum ada submission final.</p>}
-      {items.length > 0 && <div className="submission-queue-layout">
-        <div className="submission-list" aria-label="Daftar submission">
-          {items.map((item) => <button key={item.id} type="button" className={`submission-list-row${selected?.id === item.id ? " is-selected" : ""}`} onClick={() => selectSubmission(item)}>
-            <strong>{item.owner.label ?? (item.owner.group_id ? "Submission kelompok" : "Mahasiswa")}</strong>
-            {item.roster && <span>{item.roster.join(", ")}</span>}
-            <span>{item.active_final_version ? `v${item.active_final_version.version_no} · ${new Date(item.active_final_version.finalized_at).toLocaleString("id-ID")}` : "Draft belum final"}</span>
-            {item.active_final_version?.is_late && <small>Terlambat</small>}
-            {item.files?.some((file) => file.parse_status === "blocked" || file.parse_status === "failed") && <small>Parser memerlukan pemeriksaan</small>}
-          </button>)}
+  return <section className="workspace-panel submission-queue" aria-labelledby="submission-queue-title">
+    <header className="workspace-heading"><div><p className="eyebrow">PENGUMPULAN</p><h2 id="submission-queue-title">Pekerjaan mahasiswa</h2></div>
+      {assignmentId && <button className="button button-quiet" type="button" disabled={loading} onClick={() => setRefresh((value) => value + 1)}>Muat ulang</button>}</header>
+    <label className="field-label">Tugas<select value={assignmentId} onChange={(event) => { setAssignmentId(event.target.value); setItems([]); setError(""); setCursor(0); }}>
+      <option value="">Pilih tugas</option>{assignments.filter((item) => item.active_version_id !== null).map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+    </select></label>
+    {assignmentId ? <>
+      <h3>{assignments.find((item) => item.id === assignmentId)?.title}</h3>
+      <form className="queue-filters" onSubmit={(event) => { event.preventDefault(); setQuery(search); setCursor(0); }}>
+        <label className="field-label">Cari mahasiswa atau kelompok<input type="search" maxLength={240} value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+        <label className="field-label">Pemeriksaan<select value={review} onChange={(event) => { setReview(event.target.value); setCursor(0); }}><option value="">Semua status</option><option value="not_started">Belum dimulai</option><option value="draft">Sedang diperiksa</option><option value="complete">Selesai diperiksa</option></select></label>
+        <label className="field-label">Publikasi<select value={publication} onChange={(event) => { setPublication(event.target.value); setCursor(0); }}><option value="">Semua status</option><option value="not_published">Belum diterbitkan</option><option value="released">Sudah diterbitkan</option><option value="withdrawn">Ditarik untuk koreksi</option></select></label>
+        <button className="button button-quiet" type="submit">Cari</button>
+      </form>
+      {error && <p role="alert" className="form-error">{error}</p>}
+      {loading && <p role="status">Memuat pengumpulan…</p>}
+      {!loading && !error && !items.length && <p className="notice">Belum ada pengumpulan yang sesuai dengan pilihan Anda.</p>}
+      <ul className="queue-items">{items.map((item) => <li key={item.id} className="queue-item">
+        <div><h3>{item.owner.label ?? "Mahasiswa"}</h3>{item.owner.group_id && <p>{item.roster?.join(", ")}</p>}
+          <p>{item.active_final_version ? `Pengumpulan versi ${item.active_final_version.version_no} · ${new Date(item.active_final_version.finalized_at).toLocaleString("id-ID")}` : "Belum dikumpulkan final"}{item.active_final_version?.is_late ? " · Terlambat" : ""}</p>
+          <div className="queue-statuses"><span>{item.files?.length ? [...new Set(item.files.map((file) => processingLabel(file.parse_status)))].join(" · ") : "Belum ada berkas final"}</span><span>{reviewLabel(item.staff_status?.review ?? "not_started")}</span><span>{reviewLabel(item.staff_status?.publication ?? "not_published")}</span></div>
+          {item.staff_status?.publication_source_version_id && item.staff_status.publication_source_version_id !== item.active_final_version?.id && <p className="help-text">Hasil terbit mengacu pada pengumpulan sebelumnya.</p>}
         </div>
-        {selected && <article className="submission-detail-card">
-          <h3>Versi {selected.active_final_version?.version_no ?? "—"}</h3>
-          <p className="help-text">Manifest SHA-256: <code>{selected.active_final_version?.manifest_hash ?? "—"}</code></p>
-          <div className="submission-file-list">
-            {(selected.files ?? []).map((file) => <button key={file.id} type="button" className="submission-file-select" onClick={() => { setFileId(file.id); setManualAnchorSelection(null); }}>
-              <strong>{file.name}</strong><span>{file.parse_status} · {file.mime}</span>
-              {file.limitations.map((limit, index) => <small key={`${String(limit.code)}-${index}`}>{String(limit.message ?? limit.code)}</small>)}
-            </button>)}
-          </div>
-          {activeFile && <SubmissionFileViewer key={activeFile.id} fileId={activeFile.id} onManualAnchor={setManualAnchorSelection} />}
-          {selected.active_final_version && <ReviewWorkspace key={selected.active_final_version.id}
-            submission={selected} csrfToken={csrfToken} manualAnchorSelection={manualAnchorSelection}
-            onManualAnchorSelection={setManualAnchorSelection} />}
-        </article>}
-      </div>}
-    </section>
-  );
+        {item.active_final_version && <Link className="button button-primary" href={`/courses/${courseId}/submissions/${item.id}?${backQuery}`}>Buka pemeriksaan</Link>}
+      </li>)}</ul>
+      <nav className="button-row" aria-label="Halaman pengumpulan"><button className="button button-quiet" type="button" disabled={loading || cursor === 0} onClick={() => setCursor(Math.max(0, cursor - 25))}>Sebelumnya</button><button className="button button-quiet" type="button" disabled={loading || nextCursor === null} onClick={() => nextCursor !== null && setCursor(nextCursor)}>Berikutnya</button></nav>
+    </> : <p className="notice">Pilih tugas untuk melihat pekerjaan yang dikumpulkan mahasiswa.</p>}
+  </section>;
 }

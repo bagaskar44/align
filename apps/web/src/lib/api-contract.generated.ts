@@ -718,6 +718,9 @@ export interface ApiOperations {
 } };
   };
   "/reviews/{review_id}/feedback-drafts": {
+    GET: { operationId: "list_feedback_drafts_api_v1_reviews__review_id__feedback_drafts_get"; requestBody: void; response: {
+  [key: string]: unknown;
+} };
     POST: { operationId: "create_feedback_draft_api_v1_reviews__review_id__feedback_drafts_post"; requestBody: ApiSchemas["FeedbackBody"]; response: {
   [key: string]: unknown;
 } };
@@ -916,7 +919,7 @@ export interface ApiOperationMethods {
   "/reviews/{review_id}/complete": "POST";
   "/reviews/{review_id}/element-decisions/{element_id}": "PUT";
   "/reviews/{review_id}/evidence": "GET";
-  "/reviews/{review_id}/feedback-drafts": "POST";
+  "/reviews/{review_id}/feedback-drafts": "GET" | "POST";
   "/reviews/{review_id}/manual-evidence": "POST";
   "/reviews/{review_id}/manual-findings": "POST";
   "/reviews/{review_id}/manual-findings/{finding_id}": "PATCH";

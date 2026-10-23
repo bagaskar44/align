@@ -4264,6 +4264,39 @@
               "title": "Limit",
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 240,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "review_status",
+            "required": false,
+            "schema": {
+              "default": "",
+              "pattern": "^(|not_started|draft|complete)$",
+              "title": "Review Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "publication_status",
+            "required": false,
+            "schema": {
+              "default": "",
+              "pattern": "^(|not_published|released|withdrawn)$",
+              "title": "Publication Status",
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -7119,6 +7152,74 @@
       }
     },
     "/api/v1/reviews/{review_id}/feedback-drafts": {
+      "get": {
+        "operationId": "list_feedback_drafts_api_v1_reviews__review_id__feedback_drafts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Review Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cursor",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Feedback Drafts Api V1 Reviews  Review Id  Feedback Drafts Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Feedback Drafts",
+        "tags": [
+          "reviews",
+          "feedback",
+          "publications"
+        ]
+      },
       "post": {
         "operationId": "create_feedback_draft_api_v1_reviews__review_id__feedback_drafts_post",
         "parameters": [

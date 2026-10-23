@@ -4,13 +4,14 @@ import { redirect } from "next/navigation";
 import { ContextWorkspace } from "@/components/ContextWorkspace";
 import { AssignmentWorkspace, StudentAssignments } from "@/components/AssignmentWorkspace";
 import { SubmissionWorkspace } from "@/components/SubmissionWorkspace";
-import { SubmissionQueue } from "@/components/SubmissionQueue";
+import { SubmissionQueue, type QueueQuery } from "@/components/SubmissionQueue";
 import { LogoutButton } from "@/components/LogoutButton";
 import { CourseWorkspaceTabs } from "@/components/CourseWorkspaceTabs";
 import { getContextVersions, getCourse, getCourseAssignments, getProfile, getProviderMode } from "@/lib/api";
 
-export default async function CourseContextPage({ params }: { params: Promise<{ courseId: string }> }) {
+export default async function CourseContextPage({ params, searchParams }: { params: Promise<{ courseId: string }>; searchParams: Promise<QueueQuery & { tab?: string }> }) {
   const { courseId } = await params;
+  const query = await searchParams;
   const profileResult = await getProfile();
   if (profileResult.kind === "unauthenticated") redirect("/login");
   if (profileResult.kind === "unavailable") return <PageError message="Akun tidak dapat dimuat. Muat ulang halaman beberapa saat lagi." />;
@@ -41,7 +42,7 @@ export default async function CourseContextPage({ params }: { params: Promise<{ 
           <p className="intro-copy">{membership.role === "lecturer" ? "Kelola materi, tugas, dan pengumpulan untuk mata kuliah ini." : "Lihat tugas dan kelola pengumpulanmu."}</p>
         </section>
         {membership.role === "lecturer" && versionsResult?.kind === "ok" ? (
-          <CourseWorkspaceTabs panels={[
+          <CourseWorkspaceTabs initialPanel={query.tab} panels={[
             {
               id: "context",
               label: "Konteks",
@@ -58,12 +59,12 @@ export default async function CourseContextPage({ params }: { params: Promise<{ 
               id: "submissions",
               label: "Pengumpulan",
               content: assignmentsResult.kind === "ok"
-                ? <SubmissionQueue assignments={assignmentsResult.data.items} csrfToken={profileResult.data.csrf_token} />
+                ? <SubmissionQueue courseId={courseId} initialQuery={query} assignments={assignmentsResult.data.items} />
                 : <WorkspaceUnavailable title="Antrean pengumpulan belum dapat dimuat" />,
             },
           ]} />
         ) : membership.role === "lecturer" ? (
-          <CourseWorkspaceTabs panels={[
+          <CourseWorkspaceTabs initialPanel={query.tab} panels={[
             { id: "context", label: "Konteks", content: <WorkspaceUnavailable title="Konteks mata kuliah belum dapat dimuat" /> },
             {
               id: "assignments",
@@ -76,12 +77,12 @@ export default async function CourseContextPage({ params }: { params: Promise<{ 
               id: "submissions",
               label: "Pengumpulan",
               content: assignmentsResult.kind === "ok"
-                ? <SubmissionQueue assignments={assignmentsResult.data.items} csrfToken={profileResult.data.csrf_token} />
+                ? <SubmissionQueue courseId={courseId} initialQuery={query} assignments={assignmentsResult.data.items} />
                 : <WorkspaceUnavailable title="Antrean pengumpulan belum dapat dimuat" />,
             },
           ]} />
         ) : assignmentsResult.kind === "ok" ? (
-          <CourseWorkspaceTabs panels={[
+          <CourseWorkspaceTabs initialPanel={query.tab} panels={[
             {
               id: "assignments",
               label: "Tugas",
@@ -94,7 +95,7 @@ export default async function CourseContextPage({ params }: { params: Promise<{ 
             },
           ]} />
         ) : (
-          <CourseWorkspaceTabs panels={[
+          <CourseWorkspaceTabs initialPanel={query.tab} panels={[
             { id: "assignments", label: "Tugas", content: <WorkspaceUnavailable title="Daftar tugas belum dapat dimuat" /> },
             { id: "submissions", label: "Pengumpulan", content: <WorkspaceUnavailable title="Pengumpulan belum dapat dimuat tanpa data tugas" /> },
           ]} />

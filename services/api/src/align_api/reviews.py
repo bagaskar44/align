@@ -795,7 +795,7 @@ def _review_json(db: DbSession, review: ReviewVersion) -> dict[str, Any]:
     source_files = db.execute(select(FileAsset, SubmissionVersionFile.display_order).join(
         SubmissionVersionFile, SubmissionVersionFile.file_asset_id == FileAsset.id).where(
         SubmissionVersionFile.submission_version_id == sv.id).order_by(SubmissionVersionFile.display_order)).all()
-    return {"id": str(review.id), "submission_version_id": str(sv.id), "submission_version": sv.version_no,
+    return {"id": str(review.id), "version_no": review.version_no, "submission_version_id": str(sv.id), "submission_version": sv.version_no,
         "assignment_version_id": str(av.id), "assignment_version": av.version_no,
         "analysis_run": {"id": str(run.id), "status": run.status,
             "completion_kind": run.completion_kind, "config_fingerprint": run.config_fingerprint,
@@ -1616,7 +1616,8 @@ def _feedback_parts(db: DbSession, review: ReviewVersion, body: FeedbackBody | F
         raise _err("feedback is limited to 20,000 characters and cannot contain raw HTML, links, or remote images")
     if not included and not text.startswith("Dalam cakupan yang telah ditelaah, tidak ada masalah yang dikonfirmasi."):
         raise _err("feedback without confirmed findings must use the neutral master template")
-    if not included and mode != "template":
+    # Existing neutral drafts can be edited under §14.2; new no-finding drafts still use the template.
+    if not included and mode != "template" and isinstance(body, FeedbackBody):
         raise _err("feedback without confirmed findings must use the neutral template")
     if included and mode == "manual" and not blocks:
         raise _err("manual feedback requires structured blocks")
@@ -2089,6 +2090,22 @@ def create_feedback_draft(review_id: UUID, body: FeedbackBody, request: Request,
     return result
 
 
+@router.get("/reviews/{review_id}/feedback-drafts")
+def list_feedback_drafts(
+    review_id: UUID,
+    identity: Annotated[Identity, Depends(require_password_change_completed)],
+    db: Annotated[DbSession, Depends(get_db)],
+    cursor: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+) -> dict[str, Any]:
+    review = _review(db, review_id)
+    _access(db, review, identity)
+    rows = db.scalars(select(FeedbackDraft).where(FeedbackDraft.review_version_id == review.id)
+                      .order_by(FeedbackDraft.sequence_no.desc()).offset(cursor).limit(limit + 1)).all()
+    return {"items": [_feedback_json(row, review) for row in rows[:limit]],
+            "next_cursor": cursor + limit if len(rows) > limit else None}
+
+
 @router.get("/feedback-drafts/{draft_id}")
 def get_feedback_draft(draft_id: UUID, identity: Annotated[Identity, Depends(require_password_change_completed)],
                        db: Annotated[DbSession, Depends(get_db)]) -> dict[str, Any]:
@@ -2460,6 +2477,7 @@ def list_publications(submission_id: UUID, identity: Annotated[Identity, Depends
         _released, latest = _pub_events(db, row.id)
         items.append({"publication_id": str(row.id), "sequence_no": row.sequence_no,
             "submission_version_id": str(row.submission_version_id), "snapshot_hash": row.snapshot_hash,
+            "review_version_id": str(row.review_version_id), "feedback_draft_id": str(row.feedback_draft_id),
             "status": latest.event if latest else "unknown",
             "published_at": row.published_at.isoformat()})
     return {"items": items}

@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
+import { ParserLimitations } from "./ParserLimitations";
+import { processingLabel, sourceLocation } from "./reviewPresentation";
 import { PdfSourceViewer } from "./PdfSourceViewer";
 
 type Unit = { id: string; unit_type: string; anchor: Record<string, unknown>; parse_status: string; limitations: Array<Record<string, unknown>> };
@@ -23,8 +25,8 @@ async function requestJson<T>(url: string): Promise<T> {
   return value;
 }
 
-export function SubmissionFileViewer({ fileId, initialSourceUnitId, onManualAnchor }: {
-  fileId: string; initialSourceUnitId?: string; onManualAnchor?: (selection: ManualAnchorSelection) => void;
+export function SubmissionFileViewer({ fileId, initialSourceUnitId, onManualAnchor, refreshToken = 0 }: {
+  fileId: string; initialSourceUnitId?: string; refreshToken?: number; onManualAnchor?: (selection: ManualAnchorSelection) => void;
 }) {
   const [sources, setSources] = useState<FileSources | null>(null);
   const [selected, setSelected] = useState<Rendered | null>(null);
@@ -40,7 +42,7 @@ export function SubmissionFileViewer({ fileId, initialSourceUnitId, onManualAnch
       .then(async (result) => {
         if (!live) return;
         setSources(result); setCursor(result.next_cursor); setError("");
-        const initialId = initialSourceUnitId ?? result.items[0]?.id;
+        const initialId = initialSourceUnitId ?? result.items.find((unit) => ["paragraph", "table", "cell", "page", "image"].includes(unit.unit_type))?.id ?? result.items[0]?.id;
         if (initialId) {
           const requestId = ++sourceRequest.current;
           setSelectionPending(true);
@@ -54,7 +56,7 @@ export function SubmissionFileViewer({ fileId, initialSourceUnitId, onManualAnch
       })
       .catch((cause: unknown) => { if (live) setError(cause instanceof Error ? cause.message : "Sumber tidak dapat dibuka."); });
     return () => { live = false; };
-  }, [fileId, initialSourceUnitId]);
+  }, [fileId, initialSourceUnitId, refreshToken]);
 
   async function selectUnit(unit: Unit) {
     const requestId = ++sourceRequest.current;
@@ -99,26 +101,21 @@ export function SubmissionFileViewer({ fileId, initialSourceUnitId, onManualAnch
     <section className="submission-viewer-panel" aria-label={`Viewer sumber ${sources?.file.name ?? ""}`}>
       {error && <p className="form-error" role="alert">{error}</p>}
       {sources && <>
-        <div className="submission-viewer-heading"><strong>{sources.file.name}</strong><span>{sources.file.mime} · {sources.parse_status}</span>
+        <div className="submission-viewer-heading"><strong>{sources.file.name}</strong><span>{processingLabel(sources.parse_status)}</span>
           <a className="button button-quiet" href={sources.file.content_url} download={sources.file.name}>Unduh asli</a></div>
         <div className="source-unit-layout">
-          <nav className="source-unit-list" aria-label="Unit sumber">
-            {sources.items.map((unit) => <button key={unit.id} type="button" className="source-unit-button" onClick={() => void selectUnit(unit)}>
-              <strong>{unit.unit_type}</strong><span>{anchorLabel(unit.anchor)}</span><small>{unit.parse_status}</small>
-            </button>)}
-            {cursor !== null && <button type="button" className="button button-quiet" onClick={() => void loadMore()}>Muat unit berikutnya</button>}
-          </nav>
+          <div className="source-unit-picker"><label className="field-label">Lokasi dalam berkas<select value={selected?.source_unit.id ?? ""} onChange={(event) => { const unit = sources.items.find((item) => item.id === event.target.value); if (unit) void selectUnit(unit); }}><option value="">Pilih lokasi sumber</option>{sources.items.map((unit, index) => <option key={unit.id} value={unit.id}>{index + 1}. {sourceLocation(unit.anchor)} · {processingLabel(unit.parse_status)}</option>)}</select></label>{cursor !== null && <button type="button" className="button button-quiet" onClick={() => void loadMore()}>Muat lokasi berikutnya</button>}</div>
           <div className="source-unit-content">
             {selected && <>
-              <p className="help-text"><strong>Anchor:</strong> <code>{anchorLabel(selected.source_unit.anchor)}</code> · {selected.source_unit.parse_status}</p>
-              {limitations.map((item, index) => <p className="notice" key={`${String(item.code)}-${index}`}>{String(item.message ?? item.code ?? "Batas parser")}</p>)}
+              <p className="help-text"><strong>Lokasi:</strong> {anchorLabel(selected.source_unit.anchor)} · {processingLabel(selected.source_unit.parse_status)}</p>
+              <ParserLimitations entries={limitations} />
               {selected.file.mime === "application/pdf" && <PdfSourceViewer src={selected.file.content_url} anchor={selected.source_unit.anchor as { page?: number; bbox?: number[] }} name={selected.file.name} />}
               {selected.file.mime.startsWith("image/") && <ImageViewer src={selected.file.content_url} name={selected.file.name}
                 preflight={sources.file.preflight} anchor={selected.source_unit.anchor}
                 zoom={zoom} setZoom={setZoom} />}
               {selected.file.mime.endsWith("wordprocessingml.document") && <article className="document-structure-viewer">
-                <p><strong>Bagian:</strong> {String(anchor.part ?? "")}</p><p><strong>Lokasi:</strong> {String(anchor.structural_path ?? "")}</p>
-                {evidence.map((item) => <pre className="instruction-preview" key={item.id}>{String(item.content.text ?? JSON.stringify(item.content))}</pre>)}
+                <p><strong>Lokasi:</strong> {sourceLocation(anchor)}</p>
+                {evidence.map((item) => <pre className="instruction-preview" key={item.id}>{String(item.content.text ?? item.content.value ?? "Konten nonteks; periksa berkas asli atau rincian sumber.")}</pre>)}
                 {!evidence.length && <p className="notice">Unit ini tidak memiliki teks hasil ekstraksi. Alasan parser tetap tercatat di atas.</p>}
               </article>}
               {selected.file.mime.endsWith("spreadsheetml.sheet") && <SpreadsheetDocumentViewer key={String(anchor.sheet_name ?? "root")} fileId={sources.file.id} preflight={sources.file.preflight} anchor={anchor} onSelectSource={(id) => void selectSourceById(id)} />}
@@ -126,23 +123,20 @@ export function SubmissionFileViewer({ fileId, initialSourceUnitId, onManualAnch
             </>}
           </div>
         </div>
+        <ParserLimitations entries={sources.limitations} />
+        {!sources.items.length && <p className="notice">Lokasi terstruktur belum tersedia. Anda tetap dapat mengunduh berkas asli dan mencatat bukti manual.</p>}
+        <details><summary>Detail teknis sumber</summary><p>{sources.file.mime}</p><pre>{JSON.stringify({ source: selected?.source_unit, evidence: selected?.evidence }, null, 2)}</pre></details>
         {selectionPending && <p role="status" className="help-text">Memuat anchor unit yang dipilih…</p>}
         {selected && onManualAnchor && <button type="button" className="button button-quiet" disabled={selectionPending} onClick={() => onManualAnchor({
           file_id: selected.file.id, source_sha256: selected.file.sha256, anchor: selected.source_unit.anchor,
           original_evidence_id: selected.evidence[0]?.id ?? null, source_unit_id: selected.source_unit.id,
-        })}>Gunakan lokasi ini sebagai evidence manual</button>}
+        })}>Pilih lokasi ini sebagai bukti</button>}
       </>}
     </section>
   );
 }
 
-function anchorLabel(anchor: Record<string, unknown>): string {
-  if (anchor.format === "pdf") return `PDF p.${String(anchor.page ?? "?")}${Array.isArray(anchor.bbox) ? ` · ${anchor.bbox.join(", ")}` : ""}`;
-  if (anchor.format === "xlsx") return `${String(anchor.sheet_name ?? "")}!${String(anchor.cell_range ?? "")}`;
-  if (anchor.format === "docx") return `${String(anchor.part ?? "")} · ${String(anchor.structural_path ?? "")}`;
-  if (anchor.format === "image") return `Gambar ${String(anchor.width ?? "?")}×${String(anchor.height ?? "?")}`;
-  return String(anchor.locator_note ?? anchor.format ?? "sumber");
-}
+function anchorLabel(anchor: Record<string, unknown>): string { return sourceLocation(anchor); }
 
 function ImageViewer({ src, name, preflight, anchor, zoom, setZoom }: {
   src: string; name: string; preflight: Record<string, unknown>; anchor: Record<string, unknown>;

@@ -167,10 +167,42 @@ test("lecturer can create and approve a manual context without learning outcomes
   await page.getByRole("link", { name: /IF101/ }).click();
   await page.getByRole("tab", { name: "Konteks" }).click();
   await expect(page.getByRole("heading", { name: "Konteks tersimpan" })).toBeVisible();
+  await expect(page.getByLabel("Format lokal", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Bahasa", { exact: true })).toHaveCount(0);
 
   await page.getByLabel("Deskripsi konteks", { exact: true }).first().fill("Konteks manual untuk validasi B1.");
+  const createPromise = page.waitForResponse(
+    (response) => response.url().includes("/context-drafts") && response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "Buat draft" }).click();
+  const createdResponse = await createPromise;
+  expect(createdResponse.ok()).toBeTruthy();
+  const createdPayload = await createdResponse.json() as { context: { id: string; fields: Record<string, { value?: string }> } };
+  expect(createdPayload.context.fields.number_locale.value).toBe("id-ID");
+  expect(createdPayload.context.fields.language.value).toBe("id");
+  expect(createdResponse.request().postDataJSON().manual_fields).not.toHaveProperty("number_locale");
+  expect(createdResponse.request().postDataJSON().manual_fields).not.toHaveProperty("language");
   await expect(page.getByRole("status").filter({ hasText: "Draft konteks manual dibuat." })).toBeVisible();
+
+  const profileResponse = await page.request.get("/api/v1/me");
+  const csrfToken = (await profileResponse.json()).csrf_token as string;
+  const legacyMetadata = await page.request.put(`/api/v1/context-versions/${createdPayload.context.id}`, {
+    headers: { "X-CSRF-Token": csrfToken },
+    data: { expected_revision: 1, fields: { number_locale: "en-GB", language: "en" } },
+  });
+  expect(legacyMetadata.ok()).toBeTruthy();
+
+  await page.reload();
+  await page.getByRole("tab", { name: "Konteks" }).click();
+  await page.getByLabel("Pilih versi", { exact: true }).selectOption(createdPayload.context.id);
+  await page.locator(".context-form").getByLabel("Deskripsi konteks", { exact: true }).fill("Deskripsi diperbarui tanpa mengubah metadata lama.");
+  await page.locator(".context-form").getByRole("button", { name: "Simpan perubahan" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Perubahan draft disimpan." })).toBeVisible();
+  const preservedResponse = await page.request.get(`/api/v1/context-versions/${createdPayload.context.id}`);
+  const preservedContext = await preservedResponse.json();
+  expect(preservedContext.fields.number_locale.value).toBe("en-GB");
+  expect(preservedContext.fields.language.value).toBe("en");
+  expect(preservedContext.fields.context_description.value).toBe("Deskripsi diperbarui tanpa mengubah metadata lama.");
   await expect(page.getByRole("button", { name: "Sahkan versi ini" })).toBeVisible();
 
   await page.getByRole("button", { name: "Sahkan versi ini" }).click();

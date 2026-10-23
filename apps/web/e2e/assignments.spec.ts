@@ -276,198 +276,180 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await page.getByRole("button", { name: "Masuk" }).click();
   await page.getByRole("link", { name: courseLink }).click();
   await page.getByRole("tab", { name: "Pengumpulan" }).click();
-  const queue = page.getByRole("region", { name: "Submission mahasiswa" });
-  await queue.getByLabel("Pilih tugas").selectOption({ label: assignmentTitle });
-  const submissionRow = queue.locator(".submission-list-row").first();
+  const queue = page.getByRole("region", { name: "Pekerjaan mahasiswa" });
+  await queue.getByLabel("Tugas", { exact: true }).selectOption({ label: assignmentTitle });
+  const submissionRow = queue.locator(".queue-item").first();
   await expect(submissionRow).toBeVisible({ timeout: 30_000 });
-  await submissionRow.click();
-
-  await queue.locator(".submission-file-select").filter({ hasText: "native-two-pages.pdf" }).click();
-  const pdfViewer = queue.locator(".submission-detail-card > .submission-viewer-panel");
+  await submissionRow.getByRole("link", { name: "Buka pemeriksaan" }).click();
+  await expect(page).toHaveURL(/\/courses\/[^/]+\/submissions\//);
+  const reviewWorkspace = page.getByRole("region", { name: "Pemeriksaan dan feedback" });
+  await expect(reviewWorkspace.getByLabel("Keputusan pemeriksaan", { exact: true })).toHaveValue("");
+  await expect(reviewWorkspace.getByText("Manifest SHA-256:")).toHaveCount(0);
+  await expect(reviewWorkspace.getByLabel("Pernyataan temuan", { exact: true })).not.toBeVisible();
+  const evidencePanel = reviewWorkspace.getByRole("tabpanel", { name: "Bukti", exact: true });
+  const files = evidencePanel.getByLabel("Berkas asli", { exact: true });
+  await files.selectOption({ label: "native-two-pages.pdf" });
+  const pdfViewer = evidencePanel.locator(".submission-viewer-panel");
   await expect(pdfViewer.locator(".source-viewer canvas")).toBeVisible({ timeout: 30_000 });
-  await pdfViewer.getByRole("navigation", { name: "Unit sumber" }).getByRole("button", { name: /^page PDF p\.2/ }).click();
+  const pdfOptions = pdfViewer.getByLabel("Lokasi dalam berkas").locator("option");
+  const secondPage = await pdfOptions.evaluateAll((options) => options.find((option) => option.textContent?.includes("Halaman 2"))?.getAttribute("value"));
+  if (!secondPage) throw new Error("PDF page-two anchor is missing.");
+  await pdfViewer.getByLabel("Lokasi dalam berkas").selectOption(secondPage);
   await expect(pdfViewer).toContainText("Halaman 2 / 2");
 
-  await queue.locator(".submission-file-select").filter({ hasText: "complex-submission.docx" }).click();
-  const docxViewer = queue.locator(".submission-detail-card > .submission-viewer-panel");
-  const headerUnit = docxViewer.getByRole("navigation", { name: "Unit sumber" }).getByRole("button", { name: /paragraph word\/header/ }).first();
-  await headerUnit.click();
-  await expect(docxViewer.locator(".document-structure-viewer")).toContainText("Header sintetis: B3 parsing source");
+  await files.selectOption({ label: "complex-submission.docx" });
+  await expect(evidencePanel.locator(".document-structure-viewer")).toBeVisible();
+  const docxFileId = await files.inputValue();
+  const sourcePage = await page.request.get(`/api/v1/files/${docxFileId}/source-units?limit=100`);
+  expect(sourcePage.ok()).toBeTruthy();
+  const sourceData = await sourcePage.json() as { items: Array<{ id: string; unit_type: string; anchor: { part?: string } }> };
+  const headerSource = sourceData.items.find((item) => item.unit_type === "paragraph" && item.anchor.part?.includes("header"));
+  if (!headerSource) throw new Error("DOCX header source is missing from inventory.");
+  const docxSourceSelect = evidencePanel.getByLabel("Lokasi dalam berkas");
+  while (await docxSourceSelect.locator(`option[value="${headerSource.id}"]`).count() === 0) {
+    await evidencePanel.getByRole("button", { name: "Muat lokasi berikutnya" }).click();
+  }
+  await docxSourceSelect.selectOption(headerSource.id);
+  await expect(evidencePanel.locator(".document-structure-viewer")).toContainText("Header sintetis: B3 parsing source");
 
-  await queue.locator(".submission-file-select").filter({ hasText: "complex-submission.xlsx" }).click();
-  const xlsxViewer = queue.locator(".submission-detail-card > .submission-viewer-panel");
-  const hiddenSheetTab = xlsxViewer.getByRole("tab", { name: /Catatan internal.*tersembunyi/ });
-  await hiddenSheetTab.click();
+  await files.selectOption({ label: "complex-submission.xlsx" });
+  const xlsxViewer = evidencePanel.locator(".submission-viewer-panel");
+  await xlsxViewer.getByRole("tab", { name: /Catatan internal.*tersembunyi/ }).click();
   await expect(xlsxViewer.getByRole("region", { name: "Grid Catatan internal" })).toBeVisible();
-  const summarySheetTab = xlsxViewer.getByRole("tab", { name: "Ringkasan" });
+  await xlsxViewer.getByRole("tab", { name: "Ringkasan", exact: true }).click();
   const sheetTabs = xlsxViewer.getByRole("tablist", { name: "Sheet workbook" }).getByRole("tab");
-  const sheetNames = (await sheetTabs.allTextContents()).map((name) => name.trim());
-  const selectedSheetIndex = await sheetTabs.evaluateAll((tabs) => tabs.findIndex((tab) => tab.getAttribute("aria-selected") === "true"));
-  const nextSheet = sheetTabs.nth((selectedSheetIndex + 1) % sheetNames.length);
-  await sheetTabs.nth(selectedSheetIndex).focus();
-  await sheetTabs.nth(selectedSheetIndex).press("ArrowRight");
-  await expect(nextSheet).toHaveAttribute("aria-selected", "true");
-  await summarySheetTab.click();
-  await expect(summarySheetTab).toHaveAttribute("aria-selected", "true");
-  await expect(xlsxViewer.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", /tab-/);
-  const formulaCell = xlsxViewer.getByRole("button", { name: /D3: formula =SUM/ });
-  await expect(formulaCell).toBeVisible();
-  await formulaCell.click();
+  await sheetTabs.first().focus(); await sheetTabs.first().press("ArrowRight");
+  await expect(sheetTabs.nth(1)).toHaveAttribute("aria-selected", "true");
+  await xlsxViewer.getByRole("tab", { name: "Ringkasan", exact: true }).click();
+  await xlsxViewer.getByRole("button", { name: /D3: formula =SUM/ }).click();
   await expect(xlsxViewer.locator(".spreadsheet-grid-detail")).toContainText("Nilai cache (belum diverifikasi)");
-  await expect(
-    xlsxViewer.getByRole("tablist", { name: "Sheet workbook" }).getByRole("tab", { name: /Rekap Nilai Semester Akademik/ }),
-  ).toBeVisible();
   for (const width of [360, 768, 1440]) {
-    await page.setViewportSize({ width, height: 900 });
-    const dimensions = await page.evaluate(() => ({
-      viewport: document.documentElement.clientWidth,
-      page: document.documentElement.scrollWidth,
-    }));
-    expect(dimensions.page, `XLSX viewer overflow at ${width}px`).toBeLessThanOrEqual(dimensions.viewport + 1);
-    const viewerBounds = await xlsxViewer.evaluate((element) => {
-      const panel = element.querySelector('[role="tabpanel"]');
-      const grid = element.querySelector(".spreadsheet-grid-scroll");
-      const tabs = element.querySelector('[role="tablist"]');
-      return {
-        viewerRight: Math.ceil(element.getBoundingClientRect().right),
-        panelRight: panel ? Math.ceil(panel.getBoundingClientRect().right) : 0,
-        gridClientWidth: grid?.clientWidth ?? 0,
-        gridScrollWidth: grid?.scrollWidth ?? 0,
-        tabsClientWidth: tabs?.clientWidth ?? 0,
-        tabsScrollWidth: tabs?.scrollWidth ?? 0,
-      };
-    });
-    expect(viewerBounds.viewerRight).toBeLessThanOrEqual(width + 1);
-    expect(viewerBounds.panelRight).toBeLessThanOrEqual(width + 1);
-    expect(viewerBounds.gridScrollWidth).toBeGreaterThanOrEqual(viewerBounds.gridClientWidth);
-    if (width === 360) expect(viewerBounds.tabsScrollWidth).toBeGreaterThan(viewerBounds.tabsClientWidth);
-    await xlsxViewer.screenshot({
-      path: test.info().outputPath(`b7-xlsx-${width}.png`),
-      animations: "disabled",
-    });
+    await page.setViewportSize({ width, height: 960 });
+    if (width < 768) await reviewWorkspace.getByRole("tab", { name: "Bukti", exact: true }).click();
+    const dimensions = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, page: document.documentElement.scrollWidth }));
+    expect(dimensions.page, `XLSX review overflow at ${width}px`).toBeLessThanOrEqual(dimensions.viewport + 1);
+    await reviewWorkspace.screenshot({ path: test.info().outputPath(`review-xlsx-${width}.png`), animations: "disabled" });
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
+  await files.selectOption({ label: "rotated.jpeg" });
+  await expect(evidencePanel.locator(".image-source-viewer img")).toBeVisible();
+  await expect(evidencePanel.locator(".image-anchor-overlay")).toBeVisible();
 
-  await queue.locator(".submission-file-select").filter({ hasText: "rotated.jpeg" }).click();
-  const imageViewer = queue.locator(".submission-detail-card > .submission-viewer-panel");
-  await expect(imageViewer.locator(".image-source-viewer img")).toBeVisible();
-  await expect(imageViewer.locator(".image-anchor-overlay")).toBeVisible();
-
-  const reviewWorkspace = queue.getByRole("region", { name: "Pemeriksaan dan publikasi" });
-  await expect(reviewWorkspace.getByRole("heading", { name: "Pemeriksaan dan publikasi" })).toBeVisible();
-  const releasesResponse = await page.request.get("/api/v1/runtime/releases");
-  expect(releasesResponse.ok()).toBeTruthy();
-  const releases = (await releasesResponse.json()) as { releases: Array<Record<string, unknown>> };
-  const activeBaseline = releases.releases.find((release) => release.state === "active");
-  expect(activeBaseline).toMatchObject({
-    version_label: "align-b5-synthetic-baseline-v2",
-    provider_mode: "mock",
-    data_mode: "synthetic",
-  });
-  expect(activeBaseline?.capabilities_available).toContain("b5_executor");
-  expect(activeBaseline?.paid_calls).toBe("blocked_before_network");
-  await reviewWorkspace.getByRole("button", { name: "Jalankan analisis" }).click();
-  await expect(reviewWorkspace.getByRole("status").filter({ hasText: /Run (partial|completed)/ })).toBeVisible({ timeout: 240_000 });
-  await expect(reviewWorkspace).toContainText("provider mock · data synthetic");
-  await expect(reviewWorkspace).toContainText("Applicability: applicable");
-  await expect(reviewWorkspace).toContainText("human_judgment_required");
-  await expect(reviewWorkspace).toContainText("semantic human_required");
-  for (const width of [360, 768, 1440]) {
-    await page.setViewportSize({ width, height: 900 });
-    const viewportWidth = await page.evaluate(() => document.documentElement.clientWidth);
-    const documentWidth = await page.evaluate(() => document.documentElement.scrollWidth);
-    const overflowingElements = documentWidth > viewportWidth + 1
-      ? await page.evaluate(() => Array.from(document.querySelectorAll("body *"))
-        .map((element) => {
-          const rect = element.getBoundingClientRect();
-          const style = getComputedStyle(element);
-          return {
-            tag: element.tagName.toLowerCase(),
-            className: typeof element.className === "string" ? element.className : "",
-            left: Math.round(rect.left),
-            right: Math.round(rect.right),
-            width: Math.round(rect.width),
-            scrollWidth: element.scrollWidth,
-            clientWidth: element.clientWidth,
-            overflowX: style.overflowX,
-          };
-        })
-        .filter((item) => item.right > window.innerWidth + 1 || item.left < -1)
-        .sort((left, right) => right.right - left.right)
-        .slice(0, 12))
-      : [];
-    expect(documentWidth, `horizontal overflow at ${width}px: ${JSON.stringify(overflowingElements)}`)
-      .toBeLessThanOrEqual(viewportWidth + 1);
-    if (width < 768) {
-      const reviewTabs = reviewWorkspace.getByRole("tablist", { name: "Panel review" });
-      const inspectTab = reviewTabs.getByRole("tab", { name: "Pemeriksaan" });
-      const evidenceTab = reviewTabs.getByRole("tab", { name: "Bukti" });
-      await inspectTab.focus();
-      await inspectTab.press("ArrowRight");
-      await expect(evidenceTab).toHaveAttribute("aria-selected", "true");
-      await expect(reviewWorkspace.getByRole("tabpanel", { name: "Bukti" })).toBeVisible();
-      await evidenceTab.press("Home");
-      await expect(inspectTab).toHaveAttribute("aria-selected", "true");
-    }
-    await reviewWorkspace.screenshot({
-      path: test.info().outputPath(`b7-review-${width}.png`),
-      animations: "disabled",
-    });
-  }
-  await page.setViewportSize({ width: 1440, height: 1000 });
-  await queue.locator(".submission-file-select").filter({ hasText: "native-two-pages.pdf" }).click();
-  const originalViewer = queue.locator(".submission-detail-card > .submission-viewer-panel");
-  await originalViewer.getByRole("navigation", { name: "Unit sumber" }).getByRole("button", { name: /page PDF p\.1/ }).click();
-  await expect(originalViewer.locator(".source-unit-content")).toContainText("PDF p.1");
-  await originalViewer.getByRole("button", { name: "Gunakan lokasi ini sebagai evidence manual" }).click();
-  await expect(reviewWorkspace).toContainText("Lokasi sumber terpilih: PDF hlm. 1");
-  await reviewWorkspace.getByRole("button", { name: "Simpan evidence manual" }).click();
-  await expect(reviewWorkspace.getByRole("status").filter({ hasText: "Evidence manual ditambahkan dari lokasi unit sumber" })).toBeVisible();
-  await reviewWorkspace.getByRole("button", { name: "Ikat evidence ke elemen" }).click();
-  await expect(reviewWorkspace.getByRole("status").filter({ hasText: "Binding sumber ke elemen" })).toBeVisible();
-  const annotationReason = reviewWorkspace.getByLabel("Alasan anotasi / koreksi");
-  await annotationReason.fill("Binding sintetis dihapus setelah pemeriksaan viewer.");
-  await reviewWorkspace.getByRole("button", { name: "Nonaktifkan anotasi" }).last().click();
-  await expect(reviewWorkspace.getByRole("status").filter({ hasText: "Anotasi dinonaktifkan" })).toBeVisible();
-  await expect(reviewWorkspace.getByText("Lihat histori append-only").first()).toBeVisible();
-  const bindingAnnotation = reviewWorkspace.locator(".b4-annotation-card").last();
-  await bindingAnnotation.getByText("Lihat histori append-only").click();
-  await bindingAnnotation.locator("details").getByRole("button", { name: "Buka sumber asli untuk revisi #1" }).click();
-  await expect(reviewWorkspace.getByRole("region", { name: "Sumber anotasi terpilih" })).toContainText("PDF hlm. 1");
-  await expect(reviewWorkspace.locator(".source-unit-content")).toContainText("PDF p.1");
-  const elementCount = await reviewWorkspace.locator(".b4-element-button").count();
-  expect(elementCount).toBeGreaterThan(0);
-  for (let index = 0; index < elementCount; index += 1) {
-    await reviewWorkspace.locator(".b4-element-button").nth(index).click();
-    await reviewWorkspace.getByLabel("Resolusi").selectOption("observed_no_issue");
-    const sourceChecklist = reviewWorkspace.locator(".b4-review-columns .b4-review-panel").first()
-      .locator("fieldset.b4-select-list").first().getByRole("checkbox");
-    if (await sourceChecklist.count()) await sourceChecklist.first().check();
-    const saveDecision = reviewWorkspace.getByRole("button", { name: "Simpan keputusan elemen" });
-    await saveDecision.scrollIntoViewIfNeeded();
-    await saveDecision.click();
-    await expect(reviewWorkspace.getByRole("status").filter({ hasText: "Keputusan elemen disimpan" })).toBeVisible();
-  }
-  const manualFinding = reviewWorkspace.locator(".b4-action-card").filter({ hasText: "Kategori resmi" });
-  await expect(manualFinding).toBeVisible();
-  await manualFinding.getByLabel("Kategori resmi").selectOption("missing_requirement");
-  await manualFinding.getByLabel("Pernyataan temuan").fill("Dosen menilai jawaban belum menjelaskan konsep yang diminta.");
-  await manualFinding.locator("fieldset.b4-select-list").first().getByRole("checkbox").first().check();
-  await manualFinding.getByRole("button", { name: "Simpan temuan manual" }).click();
-  await expect(reviewWorkspace.getByRole("status").filter({ hasText: "Temuan manual dosen ditambahkan" })).toBeVisible();
-  await reviewWorkspace.getByRole("button", { name: "Selesaikan pemeriksaan" }).click();
-  await expect(reviewWorkspace.getByText(/Pemeriksaan lengkap dan hash review dibekukan/)).toBeVisible();
-  await reviewWorkspace.getByRole("button", { name: "Buat draft dengan provider" }).click();
-  await expect(reviewWorkspace.getByText(/Draft model · draft/)).toBeVisible({ timeout: 120_000 });
-  await expect(reviewWorkspace.getByText("SIMULASI • data sintetis")).toBeVisible();
-  await expect(reviewWorkspace.getByText(/SIMULASI • data sintetis: Dosen menilai jawaban/)).toBeVisible();
-  await reviewWorkspace.getByRole("button", { name: "Buat feedback template" }).click();
-  await expect(reviewWorkspace.getByText(/Draft template · draft/)).toBeVisible();
-  await reviewWorkspace.getByRole("button", { name: "Setujui feedback" }).click();
-  await expect(reviewWorkspace.getByText(/Draft template · approved/)).toBeVisible();
+  await reviewWorkspace.getByText("Bantuan analisis (opsional)", { exact: true }).click();
+  const release = reviewWorkspace.getByLabel("Konfigurasi bantuan analisis");
+  const mockRelease = await release.locator("option").evaluateAll((options) => options.find((item) => item.textContent?.startsWith("Simulasi"))?.getAttribute("value"));
+  if (!mockRelease) throw new Error("This regression requires an explicitly labelled mock release; live provider is prohibited.");
+  await release.selectOption(mockRelease);
   page.once("dialog", (dialog) => dialog.accept());
-  await reviewWorkspace.getByRole("button", { name: "Terbitkan hasil" }).click();
-  await expect(reviewWorkspace.getByText("Snapshot publikasi immutable berhasil dibuat.")).toBeVisible();
+  await reviewWorkspace.getByRole("button", { name: "Jalankan analisis", exact: true }).click();
+  const adopt = reviewWorkspace.getByRole("button", { name: "Gunakan hasil pada pemeriksaan baru" });
+  await expect(adopt).toBeVisible({ timeout: 240_000 });
+  page.once("dialog", (dialog) => dialog.accept());
+  await adopt.click();
+  await expect(reviewWorkspace.getByText(/SIMULASI — bukan pemeriksaan semantik provider nyata/)).toBeVisible();
+
+  await files.selectOption({ label: "native-two-pages.pdf" });
+  await evidencePanel.getByRole("button", { name: "Pilih lokasi ini sebagai bukti" }).click();
+  await evidencePanel.getByRole("button", { name: "Simpan bukti manual" }).click();
+  await expect(reviewWorkspace.getByRole("status").filter({ hasText: /Bukti manual tersimpan/ })).toBeVisible();
+  await evidencePanel.getByRole("button", { name: "Ubah tautan bukti" }).click();
+  await evidencePanel.getByRole("button", { name: "Simpan tautan bukti" }).click();
+  await expect(reviewWorkspace.getByRole("status").filter({ hasText: "Tautan bukti ke pemeriksaan tersimpan" })).toBeVisible();
+  await evidencePanel.getByRole("button", { name: /Anotasi dan koreksi tersimpan/ }).click();
+  await evidencePanel.getByLabel("Alasan anotasi atau koreksi").fill("Tautan sintetis diperbaiki setelah pemeriksaan sumber.");
+  page.once("dialog", (dialog) => dialog.accept());
+  await evidencePanel.getByRole("button", { name: "Nonaktifkan tautan", exact: true }).last().click();
+  await expect(reviewWorkspace.getByRole("status").filter({ hasText: /Anotasi dinonaktifkan/ })).toBeVisible();
+  await evidencePanel.getByText(/Riwayat perubahan/).last().click();
+  await evidencePanel.getByRole("button", { name: "Lihat lokasi revisi ini" }).last().click();
+  await expect(evidencePanel.getByRole("region", { name: "Sumber anotasi terpilih" })).toContainText("Halaman");
+
+  const questionSelect = reviewWorkspace.getByLabel("Pilih pertanyaan", { exact: true });
+  const questionIds = await questionSelect.locator("option").evaluateAll((options) => options.map((item) => (item as HTMLOptionElement).value));
+  // Unsaved decisions survive stage/mobile-tab changes; leaving an element must warn.
+  await reviewWorkspace.getByLabel("Alasan atau keterbatasan", { exact: true }).fill("Catatan belum disimpan.");
+  if (questionIds.length > 1) {
+    page.once("dialog", (dialog) => dialog.dismiss());
+    await questionSelect.selectOption(questionIds[1]);
+    await expect(reviewWorkspace.getByLabel("Alasan atau keterbatasan", { exact: true })).toHaveValue("Catatan belum disimpan.");
+  }
+  page.once("dialog", (dialog) => dialog.accept());
+  await reviewWorkspace.getByRole("button", { name: "Batalkan isian", exact: true }).click();
+  for (const id of questionIds) {
+    await questionSelect.selectOption(id);
+    await reviewWorkspace.getByLabel("Keputusan pemeriksaan", { exact: true }).selectOption("observed_no_issue");
+    await reviewWorkspace.getByRole("button", { name: "Simpan keputusan", exact: true }).click();
+    await expect(reviewWorkspace.getByRole("status").filter({ hasText: "Keputusan pemeriksaan tersimpan" })).toBeVisible();
+  }
+  await reviewWorkspace.getByRole("button", { name: "Tambahkan temuan", exact: true }).click();
+  const manualFinding = reviewWorkspace.locator('[data-edit-scope="finding"]').first();
+  await manualFinding.getByLabel("Pernyataan temuan", { exact: true }).fill("Bukti yang diminta belum dijelaskan pada bagian konsep.");
+  await manualFinding.getByRole("checkbox").first().check();
+  await manualFinding.getByRole("button", { name: "Simpan temuan", exact: true }).click();
+  await expect(reviewWorkspace.getByRole("status").filter({ hasText: "Temuan manual dosen ditambahkan" })).toBeVisible();
+  await reviewWorkspace.getByRole("button", { name: "Selesaikan pemeriksaan", exact: true }).click();
+  await expect(reviewWorkspace.getByRole("status").filter({ hasText: "Pemeriksaan diselesaikan" })).toBeVisible();
+  await reviewWorkspace.getByRole("button", { name: "Feedback", exact: true }).click();
+  await reviewWorkspace.getByRole("button", { name: "Susun draf simulasi" }).click();
+  await expect(reviewWorkspace.getByText(/Draf bantuan analisis/)).toBeVisible({ timeout: 120_000 });
+  await reviewWorkspace.getByRole("button", { name: "Susun dari template" }).click();
+  await expect(reviewWorkspace.getByText(/Draf template/)).toBeVisible();
+  const feedbackText = reviewWorkspace.getByLabel("Teks feedback", { exact: true });
+  await feedbackText.fill(`${await feedbackText.inputValue()}\n\nTinjau sumber yang ditautkan sesuai kewajiban tugas.`);
+  await reviewWorkspace.getByRole("button", { name: "Simpan suntingan feedback" }).click();
+  await expect(reviewWorkspace.getByRole("status").filter({ hasText: "Revisi draf feedback tersimpan" })).toBeVisible();
+  const storedBody = await feedbackText.inputValue();
+  await page.reload();
+  await reviewWorkspace.getByRole("button", { name: "Feedback", exact: true }).click();
+  await expect(feedbackText).toHaveValue(storedBody);
+  await reviewWorkspace.getByRole("button", { name: "Setujui feedback", exact: true }).click();
+  await expect(reviewWorkspace.getByRole("status").filter({ hasText: "Feedback disetujui" })).toBeVisible();
+  for (const width of [360, 768, 1440]) {
+    await page.setViewportSize({ width, height: 960 });
+    const dimensions = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, page: document.documentElement.scrollWidth }));
+    expect(dimensions.page).toBeLessThanOrEqual(dimensions.viewport + 1);
+    await reviewWorkspace.screenshot({ path: test.info().outputPath(`review-approved-${width}.png`), animations: "disabled" });
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  page.once("dialog", async (dialog) => { expect(dialog.message()).toContain(storedBody); await dialog.accept(); });
+  await reviewWorkspace.getByRole("button", { name: "Terbitkan hasil", exact: true }).click();
+  await expect(reviewWorkspace.getByRole("status").filter({ hasText: "Hasil resmi berhasil diterbitkan" })).toBeVisible();
+  await page.reload();
+  await reviewWorkspace.getByRole("button", { name: "Riwayat", exact: true }).click();
+  await expect(reviewWorkspace.getByText(/Publikasi 1/)).toBeVisible();
+  await reviewWorkspace.getByRole("button", { name: "Lihat hasil tersimpan" }).first().click();
+  await expect(reviewWorkspace.getByRole("heading", { name: "Hasil resmi tersimpan" })).toBeVisible();
+  // UI-only response projections stress long labels and repeated limitations; original DB/files remain untouched.
+  await page.route("**/api/v1/reviews/*", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    const response = await route.fetch();
+    const data = await response.json();
+    if (Array.isArray(data.source_files)) for (const file of data.source_files) file.name = `Nama berkas sangat panjang ${"penjelasan-konsep-".repeat(20)}.docx`;
+    await route.fulfill({ response, json: data });
+  });
+  await page.route("**/api/v1/files/*/source-units?*", async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    data.limitations = Array.from({ length: 30 }, () => ({ code: "synthetic_ui_limitation", message: "Fixture tampilan: bagian sumber belum dapat dibaca; periksa original dan pertahankan batas cakupan." }));
+    await route.fulfill({ response, json: data });
+  });
+  await page.reload();
+  await expect(reviewWorkspace.getByLabel("Pilih pertanyaan", { exact: true })).toBeVisible();
+  for (const width of [360, 768, 1440]) {
+    await page.setViewportSize({ width, height: 960 });
+    if (width < 768) await reviewWorkspace.getByRole("tab", { name: "Bukti", exact: true }).click();
+    const limitation = reviewWorkspace.getByText("Ada 30 catatan keterbacaan sumber · 1 jenis", { exact: true });
+    await expect(limitation).toBeVisible();
+    if (!(await limitation.locator("..").getAttribute("open"))) await limitation.click();
+    const dimensions = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, page: document.documentElement.scrollWidth }));
+    expect(dimensions.page, `Long labels and limitations overflow at ${width}px`).toBeLessThanOrEqual(dimensions.viewport + 1);
+    await reviewWorkspace.screenshot({ path: test.info().outputPath(`review-long-labels-${width}.png`), animations: "disabled" });
+  }
+  await page.unroute("**/api/v1/reviews/*");
+  await page.unroute("**/api/v1/files/*/source-units?*");
+  await page.getByRole("link", { name: "← Kembali ke pengumpulan" }).click();
+  await expect(queue.getByLabel("Tugas", { exact: true }).locator("option:checked")).toHaveText(assignmentTitle);
+  await expect(queue.locator(".queue-item").first()).toContainText("Sudah diterbitkan");
 
   await page.getByRole("button", { name: "Keluar" }).click();
   await page.getByLabel("Email").fill(studentEmail);
@@ -499,20 +481,24 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
     await expect(touchPage.getByRole("heading", { name: "Mata kuliah" })).toBeVisible();
     await touchPage.getByRole("link", { name: courseLink }).tap();
     await touchPage.getByRole("tab", { name: "Pengumpulan" }).tap();
-    const touchQueue = touchPage.getByRole("region", { name: "Submission mahasiswa" });
-    await touchQueue.getByLabel("Pilih tugas").selectOption({ label: assignmentTitle });
-    const touchSubmission = touchQueue.locator(".submission-list-row").first();
-    await expect(touchSubmission).toBeVisible();
-    await touchSubmission.tap();
-    const touchFile = touchQueue.locator(".submission-file-select").filter({ hasText: "native-two-pages.pdf" });
-    await touchFile.tap();
-    const touchViewer = touchQueue.locator(".submission-detail-card > .submission-viewer-panel");
-    const sourceNavigation = touchViewer.getByRole("navigation", { name: "Unit sumber" });
-    const pageTwo = sourceNavigation.getByRole("button", { name: /^page PDF p\.2/ });
-    const accessibleTree = await sourceNavigation.ariaSnapshot();
-    expect(accessibleTree).toContain('button "page PDF p.2');
-    await pageTwo.tap();
-    await expect(touchViewer).toContainText("Halaman 2 / 2");
+    const touchQueue = touchPage.getByRole("region", { name: "Pekerjaan mahasiswa" });
+    await touchQueue.getByLabel("Tugas", { exact: true }).selectOption({ label: assignmentTitle });
+    await touchQueue.getByRole("link", { name: "Buka pemeriksaan" }).first().tap();
+    const touchReview = touchPage.getByRole("region", { name: "Pemeriksaan dan feedback" });
+    const touchTabs = touchReview.getByRole("tablist", { name: "Panel review" });
+    await touchTabs.getByRole("tab", { name: "Pemeriksaan", exact: true }).focus();
+    await touchTabs.getByRole("tab", { name: "Pemeriksaan", exact: true }).press("ArrowRight");
+    await expect(touchTabs.getByRole("tab", { name: "Bukti", exact: true })).toHaveAttribute("aria-selected", "true");
+    await touchTabs.getByRole("tab", { name: "Bukti", exact: true }).tap();
+    const touchEvidence = touchReview.getByRole("tabpanel", { name: "Bukti", exact: true });
+    await touchEvidence.getByLabel("Berkas asli", { exact: true }).selectOption({ label: "native-two-pages.pdf" });
+    const sourceNavigation = touchEvidence.getByLabel("Lokasi dalam berkas");
+    const pageTwoId = await sourceNavigation.locator("option").evaluateAll((options) => options.find((option) => option.textContent?.includes("Halaman 2"))?.getAttribute("value"));
+    if (!pageTwoId) throw new Error("Second-page source anchor is unavailable for touch regression.");
+    expect(await touchEvidence.ariaSnapshot()).toContain("Lokasi dalam berkas");
+    await sourceNavigation.selectOption(pageTwoId);
+    await expect(touchEvidence).toContainText("Halaman 2 / 2");
+
   } finally {
     await touchContext.close();
   }

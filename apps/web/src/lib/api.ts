@@ -113,3 +113,7 @@ export async function getProviderMode(): Promise<"mock" | "off" | "live" | "unkn
   }
 }
 
+
+export function getStaffSubmission(submissionId: string) {
+  return requestServer<import("@/components/SubmissionQueue").StaffSubmission>(`/submissions/${submissionId}/status`);
+}

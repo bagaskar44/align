@@ -16,7 +16,8 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select, text
-from sqlalchemy.orm import Session as DbSession, sessionmaker
+from sqlalchemy.orm import Session as DbSession
+from sqlalchemy.orm import sessionmaker
 
 from align_api.cli import ensure_budget_account
 from align_api.config import get_settings
@@ -46,8 +47,8 @@ from align_api.models import (
     GroupMembership,
     Job,
     MethodManifest,
-    PaidCallRun,
     NumericPolicyVersion,
+    PaidCallRun,
     ParseArtifact,
     ParserCheckpoint,
     Publication,
@@ -365,7 +366,7 @@ def _budget_exhausted():
         if actor is None:
             actor = User(
                 normalized_email=f"b4-budget-{nonce[:8]}@example.test",
-                display_name="Synthetic Budget Operator", password_hash="synthetic-test-only",
+                display_name="Synthetic Budget Operator", password_hash=hash_password(PASSWORD),
                 global_role="admin", active=True,
             )
             db.add(actor)
@@ -1183,3 +1184,77 @@ def test_b7_synthetic_retention_scrubs_source_and_preserves_authorized_tombstone
     assert outsider.get(f"/api/v1/files/{asset.id}/source-units").status_code == 404
     assert outsider.get(f"/api/v1/files/{asset.id}/content").status_code == 404
     assert outsider.get(f"/api/v1/submissions/{submission_id}/published-result").status_code == 404
+
+
+def test_review_queue_resume_filters_and_editable_neutral_template(_scenario) -> None:
+    """Staff projections and resume are authorised; no provider or methodology shortcut."""
+    scenario = _scenario
+    client, csrf = scenario["clients"]["lecturer"], scenario["csrf"]["lecturer"]
+    assignment_id, submission_id = scenario["assignment"].id, scenario["submission"].id
+    queue_path = f"/api/v1/assignments/{assignment_id}/submissions"
+    before = client.get(queue_path, params={"review_status": "not_started"})
+    assert before.status_code == 200, before.text
+    assert str(submission_id) in [item["id"] for item in before.json()["items"]]
+    review = client.post(f"/api/v1/submission-versions/{scenario['source'].id}/reviews",
+                        headers=_headers(csrf), json={"analysis_run_id": None})
+    assert review.status_code == 201, review.text
+    review = review.json()
+    review_id = review["id"]
+    drafts_path = f"/api/v1/reviews/{review_id}/feedback-drafts"
+    assert client.get(drafts_path).json() == {"items": [], "next_cursor": None}
+    for name in ("student", "classmate", "outsider"):
+        assert scenario["clients"][name].get(drafts_path).status_code == 404
+    student_status = scenario["clients"]["student"].get(f"/api/v1/submissions/{submission_id}/status")
+    assert student_status.status_code == 200
+    assert "staff_status" not in student_status.json()
+    assert "course_id" not in student_status.json()
+    active = client.get(queue_path, params={"review_status": "draft", "limit": 1})
+    assert active.status_code == 200, active.text
+    assert active.json()["items"][0]["staff_status"]["review_id"] == review_id
+    assert active.json()["items"][0]["course_id"] == str(scenario["course"].id)
+    assert client.get(queue_path, params={"q": "no-such-student"}).json()["items"] == []
+    assert client.get(queue_path, params={"q": "b4 STUDENT"}).json()["items"]
+    assert client.get(queue_path, params={"review_status": "complete"}).json()["items"] == []
+    assert client.get(queue_path, params={"publication_status": "released"}).json()["items"] == []
+    assert client.get(queue_path, params={"review_status": "invalid"}).status_code == 422
+    decision = client.put(f"/api/v1/reviews/{review_id}/element-decisions/{scenario['element'].element_id}",
+        headers=_headers(csrf), json={"review_status": "reviewed", "resolution": "observed_no_issue",
+            "applicability_override": None, "reason": None, "evidence_ids": [str(scenario["evidence"].id)],
+            "expected_revision": review["revision"]})
+    assert decision.status_code == 200, decision.text
+    completed = client.post(f"/api/v1/reviews/{review_id}/complete", headers=_headers(csrf),
+                            json={"expected_revision": decision.json()["revision"]})
+    assert completed.status_code == 200, completed.text
+    version = completed.json()["revision"]
+    for _ in range(2):
+        created = client.post(drafts_path, headers=_headers(csrf), json={
+            "mode": "template", "blocks": [], "included_review_finding_ids": [],
+            "exclusion_reasons": {}, "expected_revision": version})
+        assert created.status_code == 201, created.text
+    page = client.get(drafts_path, params={"limit": 1}).json()
+    draft = page["items"][0]
+    assert page["next_cursor"] == 1
+    older = client.get(drafts_path, params={"cursor": 1, "limit": 1}).json()
+    assert len(older["items"]) == 1 and older["items"][0]["sequence_no"] < draft["sequence_no"]
+    update = {"body_markdown": draft["body_markdown"], "blocks": [],
+              "included_review_finding_ids": [], "exclusion_reasons": {}, "expected_revision": draft["revision"]}
+    saved = client.put(f"/api/v1/feedback-drafts/{draft['id']}", headers=_headers(csrf), json=update)
+    assert saved.status_code == 200, saved.text
+    assert client.put(f"/api/v1/feedback-drafts/{draft['id']}", headers=_headers(csrf), json=update).status_code == 409
+    invalid = {**update, "body_markdown": "Kesimpulan akademik tanpa temuan resmi.", "expected_revision": saved.json()["revision"]}
+    assert client.put(f"/api/v1/feedback-drafts/{draft['id']}", headers=_headers(csrf), json=invalid).status_code == 422
+    approved = client.post(f"/api/v1/feedback-drafts/{draft['id']}/approve", headers=_headers(csrf),
+                           json={"expected_revision": saved.json()["revision"], "expected_review_revision": version})
+    assert approved.status_code == 200, approved.text
+    publication = client.post(f"/api/v1/reviews/{review_id}/publish", headers=_headers(csrf), json={
+        "feedback_draft_id": draft["id"], "expected_revision": version,
+        "expected_feedback_revision": approved.json()["revision"]})
+    assert publication.status_code == 201, publication.text
+    released = client.get(queue_path, params={"publication_status": "released", "review_status": "complete"})
+    assert released.status_code == 200 and released.json()["items"]
+    withdrawn = client.post(f"/api/v1/publications/{publication.json()['id']}/withdraw", headers=_headers(csrf),
+                            json={"reason": "Koreksi sintetis untuk pengujian riwayat."})
+    assert withdrawn.status_code == 200, withdrawn.text
+    filtered = client.get(queue_path, params={"publication_status": "withdrawn"})
+    assert filtered.status_code == 200 and filtered.json()["items"]
+    assert client.get(queue_path, params={"publication_status": "released"}).json()["items"] == []

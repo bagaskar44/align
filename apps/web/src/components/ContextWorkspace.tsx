@@ -17,7 +17,7 @@ type ContextVersion = {
   revision: number;
   processing: { status: string; completion_kind: string | null; reason: string | null; limitations?: Array<{ code: string; message: string }> } | null;
   fields: Record<string, unknown>;
-  instruction_sources: Array<{ file_id: string; source_role: string; original_name: string; sha256: string; download_path: string }>;
+  instruction_sources: Array<{ file_id: string; source_role: "kk" | "rpp"; original_name: string; sha256: string; download_path: string }>;
   conflicts: ContextConflict[];
   parse_artifacts: Array<{ id: string; file_id: string; status: string; limitations: Array<{ code: string; message: string }> }>;
   evidence: Array<{ id: string; file_id: string; file_name: string; type: string; anchor: Record<string, unknown>; content: Record<string, unknown>; limitations: Array<{ code: string; message: string }> }>;
@@ -37,6 +37,7 @@ const FIELD_LABELS: Record<string, string> = {
   number_locale: "Format angka / lokal",
   language: "Bahasa",
 };
+const VISIBLE_FIELD_KEYS = ["course_code", "course_title", "context_description"] as const;
 
 async function apiRequest<T>(path: ApiRequestPath, csrfToken: string, options: { method: ApiMethod; body?: unknown; idempotency?: boolean; form?: FormData }): Promise<T> {
   const headers = new Headers({ "X-CSRF-Token": csrfToken });
@@ -75,24 +76,24 @@ export function ContextWorkspace({ course, csrfToken, initialVersions, initialCu
   const [versions, setVersions] = useState(initialVersions);
   const [nextCursor, setNextCursor] = useState(initialCursor);
   const [activeContext, setActiveContext] = useState<ContextVersion | null>(null);
-  const [newFields, setNewFields] = useState({ context_description: "", number_locale: "id-ID", language: "id" });
+  const [newFields, setNewFields] = useState({ context_description: "" });
   const [formFields, setFormFields] = useState<Record<string, string>>({
     course_code: course.code,
     course_title: course.title,
     context_description: "",
-    number_locale: "id-ID",
-    language: "id",
   });
   const [outcomes, setOutcomes] = useState("");
   const [uploaded, setUploaded] = useState<UploadedSource[]>([]);
   const [uploadRole, setUploadRole] = useState<"kk" | "rpp">("kk");
   const [baseVersion, setBaseVersion] = useState("");
+  const [baseSources, setBaseSources] = useState<UploadedSource[]>([]);
   const [conflictChoices, setConflictChoices] = useState<Record<string, string>>({});
   const [conflictReasons, setConflictReasons] = useState<Record<string, string>>({});
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const dirty = useRef(false);
+  const newDescriptionRef = useRef<HTMLTextAreaElement>(null);
   const currentContext = useRef<ContextVersion | null>(null);
   const [refreshAvailable, setRefreshAvailable] = useState<ContextVersion | null>(null);
 
@@ -101,7 +102,7 @@ export function ContextWorkspace({ course, csrfToken, initialVersions, initialCu
     currentContext.current = context;
     setRefreshAvailable(null);
     setActiveContext(context);
-    setFormFields(Object.fromEntries(Object.keys(FIELD_LABELS).map((key) => [key, fieldValue(context.fields[key])] )));
+    setFormFields(Object.fromEntries(VISIBLE_FIELD_KEYS.map((key) => [key, fieldValue(context.fields[key])] )));
     setOutcomes(outcomeText(context.fields.learning_outcomes));
     setConflictChoices(Object.fromEntries(context.conflicts.map((conflict) => [
       conflict.field_path,
@@ -215,6 +216,9 @@ export function ContextWorkspace({ course, csrfToken, initialVersions, initialCu
     setMessage("");
     try {
       const manualFields = Object.fromEntries(Object.entries(newFields).filter(([, value]) => value.trim()));
+      const sourceByFileId = new Map(
+        [...baseSources, ...uploaded].map((source) => [source.file_id, source]),
+      );
       const response = await apiRequest<{ context: ContextVersion; job_id: string | null }>(
         `/courses/${course.id}/context-drafts`,
         csrfToken,
@@ -222,7 +226,7 @@ export function ContextWorkspace({ course, csrfToken, initialVersions, initialCu
           method: "POST",
           idempotency: true,
           body: {
-            sources: uploaded.map(({ file_id, source_role }) => ({ file_id, source_role })),
+            sources: [...sourceByFileId.values()].map(({ file_id, source_role }) => ({ file_id, source_role })),
             manual_fields: manualFields,
             ...(baseVersion ? { base_context_version_id: baseVersion } : {}),
           },
@@ -230,6 +234,8 @@ export function ContextWorkspace({ course, csrfToken, initialVersions, initialCu
       );
       activateContext(response.context);
       setUploaded([]);
+      setBaseVersion("");
+      setBaseSources([]);
       await refreshVersions(response.context.id);
       setMessage(response.job_id ? "Draft dibuat; ekstraksi berjalan di antrean lokal." : "Draft konteks manual dibuat.");
     } catch (caught) {
@@ -237,6 +243,36 @@ export function ContextWorkspace({ course, csrfToken, initialVersions, initialCu
     } finally {
       setBusy(false);
     }
+  }
+
+  function prepareDraftFromApprovedContext() {
+    if (!activeContext || activeContext.state !== "approved") return;
+    const hasUnsubmittedDraft = Boolean(
+      newFields.context_description.trim()
+      || uploaded.length > 0
+      || baseVersion,
+    );
+    if (hasUnsubmittedDraft && !window.confirm(
+      "Persiapan draft baru akan mengganti isian dan berkas yang belum dikirim. Lanjutkan?",
+    )) return;
+
+    setBaseVersion(activeContext.id);
+    setBaseSources(activeContext.instruction_sources.map((source) => ({
+      file_id: source.file_id,
+      source_role: source.source_role,
+      original_name: source.original_name,
+      sha256: source.sha256,
+    })));
+    setUploaded([]);
+    setNewFields({
+      context_description: fieldValue(activeContext.fields.context_description),
+    });
+    setError("");
+    setMessage(`Form draft baru memakai versi ${activeContext.version_no} sebagai dasar. Versi disahkan tetap utuh.`);
+    requestAnimationFrame(() => {
+      newDescriptionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      newDescriptionRef.current?.focus({ preventScroll: true });
+    });
   }
 
   async function saveDraft(event: FormEvent<HTMLFormElement>) {
@@ -247,7 +283,9 @@ export function ContextWorkspace({ course, csrfToken, initialVersions, initialCu
     setMessage("");
     try {
       const blockedFields = new Set(activeContext.conflicts.map((conflict) => conflict.field_path));
-      const fields = Object.fromEntries(Object.entries(formFields).filter(([key]) => !blockedFields.has(key)));
+      const fields = Object.fromEntries(VISIBLE_FIELD_KEYS
+        .filter((key) => !blockedFields.has(key))
+        .map((key) => [key, formFields[key] ?? ""]));
       const parsedOutcomes = outcomes.split("\n").map((line) => {
         const separator = line.indexOf("|");
         return separator < 0 ? null : { code: line.slice(0, separator).trim(), description: line.slice(separator + 1).trim() };
@@ -336,26 +374,8 @@ export function ContextWorkspace({ course, csrfToken, initialVersions, initialCu
         <h2 id="draft-title">Buat draft konteks</h2>
         <p className="muted-copy">Sumber KK dan RPP diproses lokal. Hasil ekstraksi menjadi usulan dengan jejak ke berkas sumber.</p>
         <form id="create-context-form" className="form-stack" onSubmit={createDraft}>
-          <label className="field">Deskripsi konteks<textarea required={uploaded.length === 0 && !baseVersion} maxLength={4000} value={newFields.context_description} onChange={(event) => setNewFields({ ...newFields, context_description: event.target.value })} /></label>
-          <div className="field-row">
-            <label className="field">Format lokal<input required maxLength={40} value={newFields.number_locale} onChange={(event) => setNewFields({ ...newFields, number_locale: event.target.value })} /></label>
-            <label className="field">Bahasa<input required maxLength={40} value={newFields.language} onChange={(event) => setNewFields({ ...newFields, language: event.target.value })} /></label>
-          </div>
-          <label className="field">Mulai dari versi disahkan (opsional)
-            <select value={baseVersion} onChange={(event) => {
-              const id = event.target.value;
-              setBaseVersion(id);
-              if (!id) { setNewFields({ context_description: "", number_locale: "id-ID", language: "id" }); return; }
-              void fetch(`/api/v1/context-versions/${id}`, { cache: "no-store" }).then(async (response) => {
-                if (!response.ok) throw new Error("Versi dasar tidak dapat dimuat.");
-                const context = await response.json() as ContextVersion;
-                setNewFields({ context_description: fieldValue(context.fields.context_description), number_locale: fieldValue(context.fields.number_locale), language: fieldValue(context.fields.language) });
-              }).catch(() => setError("Versi dasar tidak dapat dimuat."));
-            }}>
-              <option value="">Konteks kosong</option>
-              {versions.filter((version) => version.state === "approved").map((version) => <option key={version.id} value={version.id}>Versi {version.version_no}</option>)}
-            </select>
-          </label>
+          <label className="field">Deskripsi konteks<textarea ref={newDescriptionRef} required={uploaded.length === 0 && !baseVersion} maxLength={4000} value={newFields.context_description} onChange={(event) => setNewFields({ ...newFields, context_description: event.target.value })} /></label>
+          {baseVersion && <p className="notice notice-muted">Draft baru akan memakai konteks dan sumber dari versi disahkan sebagai dasar. Anda dapat menambahkan sumber baru sebelum membuat draft.</p>}
         </form>
         <div className="source-upload">
             <h3>Tambahkan sumber normatif</h3>
@@ -383,15 +403,18 @@ export function ContextWorkspace({ course, csrfToken, initialVersions, initialCu
         {nextCursor && <button className="button button-quiet" type="button" disabled={busy} onClick={() => void loadMoreVersions()}>Muat versi sebelumnya</button>}
         {activeContext && <>
           <div className="context-meta"><span className={`state-pill ${activeContext.state === "approved" ? "state-approved" : ""}`}>{activeContext.state === "approved" ? "DISAHKAN" : "DRAFT"}</span><span>Versi {activeContext.version_no} · revisi {activeContext.revision}</span></div>
+          {activeContext.state === "approved" && <button className="button button-quiet context-new-version" type="button" disabled={busy} onClick={prepareDraftFromApprovedContext}>Gunakan sebagai dasar draft baru</button>}
           {refreshAvailable && <p className="notice" role="status">Hasil ekstraksi atau revisi baru tersedia. Perubahan formulir belum diganti. <button className="text-button" type="button" onClick={() => activateContext(refreshAvailable)}>Muat revisi terbaru</button></p>}
           {activeContext.processing && ["queued", "running", "blocked"].includes(activeContext.processing.status) && <p className="muted-copy" role="status">{activeContext.processing.status === "blocked" ? "Ekstraksi menunggu kapasitas atau layanan. Konteks tetap dapat diperbaiki manual." : "Ekstraksi sedang diantrekan atau diproses. Status diperbarui otomatis."}</p>}
           {activeContext.processing?.limitations?.map((item) => <p key={item.code} className="notice notice-muted" role="status">{item.message}</p>)}
           <form className="form-stack context-form" onSubmit={saveDraft} onChange={() => { dirty.current = true; }}>
-            {Object.entries(FIELD_LABELS).map(([key, label]) => <div key={key}><label className="field">{label}<input value={formFields[key] ?? ""} readOnly={activeContext.state !== "draft"} maxLength={key === "context_description" ? 4000 : key === "course_code" ? 64 : key === "course_title" ? 240 : 40} onChange={(event) => setFormFields({ ...formFields, [key]: event.target.value })} /></label>{sourceDetails(activeContext.fields[key])}</div>)}
+            {VISIBLE_FIELD_KEYS.map((key) => <div key={key}><label className="field">{FIELD_LABELS[key]}<input value={formFields[key] ?? ""} readOnly={activeContext.state !== "draft"} maxLength={key === "context_description" ? 4000 : key === "course_code" ? 64 : 240} onChange={(event) => setFormFields({ ...formFields, [key]: event.target.value })} /></label>{sourceDetails(activeContext.fields[key])}</div>)}
             <label className="field">Capaian pembelajaran (opsional; satu baris per capaian, format kode | deskripsi)<textarea value={outcomes} readOnly={activeContext.state !== "draft"} onChange={(event) => setOutcomes(event.target.value)} placeholder="CPMK-1 | Menjelaskan prinsip ..." /></label>
             {activeContext.state === "draft" && <button className="button button-quiet" type="submit" disabled={busy}>Simpan perubahan</button>}
           </form>
-          {activeContext.conflicts.length > 0 && <section className="subsection" aria-labelledby="conflict-title" onChange={() => { dirty.current = true; }}><h3 id="conflict-title">Usulan yang berkonflik</h3>{activeContext.conflicts.map((conflict) => <article className="conflict-card" key={conflict.field_path}>
+          {activeContext.conflicts.length > 0 && <section className="subsection" aria-labelledby="conflict-title" onChange={() => { dirty.current = true; }}><h3 id="conflict-title">Usulan yang berkonflik</h3>{activeContext.conflicts.map((conflict) => {
+            const metadataConflict = !VISIBLE_FIELD_KEYS.includes(conflict.field_path as typeof VISIBLE_FIELD_KEYS[number]);
+            const card = <article className="conflict-card" key={conflict.field_path}>
             <h4>{FIELD_LABELS[conflict.field_path] ?? conflict.field_path}</h4>
             {conflict.resolution && <p className="muted-copy">Pilihan tersimpan: <strong>{conflict.resolution.value}</strong></p>}
             <label className="field">Nilai yang dipilih<select disabled={activeContext.state !== "draft"} value={conflict.candidate_values.some((candidate) => candidate.value === conflictChoices[conflict.field_path]) ? conflictChoices[conflict.field_path] : ""} onChange={(event) => setConflictChoices({ ...conflictChoices, [conflict.field_path]: event.target.value })}><option value="">Koreksi manual</option>{conflict.candidate_values.map((candidate, index) => <option key={`${candidate.value}-${index}`} value={candidate.value}>{candidate.value}</option>)}</select></label>
@@ -399,7 +422,11 @@ export function ContextWorkspace({ course, csrfToken, initialVersions, initialCu
             <details><summary>Asal kandidat dan anchor</summary>{conflict.candidate_values.map((candidate, index) => <pre key={index}>{JSON.stringify({ value: candidate.value, source: candidate.source_ref }, null, 2)}</pre>)}</details>
             <label className="field">Alasan keputusan<input disabled={activeContext.state !== "draft"} value={conflictReasons[conflict.field_path] ?? ""} onChange={(event) => setConflictReasons({ ...conflictReasons, [conflict.field_path]: event.target.value })} maxLength={500} placeholder="Contoh: disesuaikan dengan dokumen KK terbaru" /></label>
             {activeContext.state === "draft" && <button className="button button-quiet" type="button" disabled={busy} onClick={() => void resolveConflict(conflict)}>Simpan keputusan</button>}
-          </article>)}</section>}
+          </article>;
+            return metadataConflict
+              ? <details className="technical-details" key={conflict.field_path}><summary>Detail teknis · konflik {FIELD_LABELS[conflict.field_path] ?? conflict.field_path}</summary>{card}</details>
+              : card;
+          })}</section>}
           <section className="subsection" aria-labelledby="source-title"><h3 id="source-title">Sumber dan status ekstraksi</h3>
             {activeContext.instruction_sources.length === 0 ? <p className="muted-copy">Draft ini belum memiliki berkas sumber.</p> : <ul className="compact-list">{activeContext.instruction_sources.map((source) => <li key={`${source.file_id}-${source.source_role}`}><span><strong>{source.source_role.toUpperCase()}</strong> · {source.original_name}<small>SHA-256 {source.sha256}</small></span><a href={source.download_path}>Unduh</a></li>)}</ul>}
             {activeContext.parse_artifacts.length > 0 && <ul className="compact-list">{activeContext.parse_artifacts.map((artifact) => <li key={artifact.id}><span>Status parser: <strong>{artifact.status}</strong>{artifact.limitations.map((item) => <small key={item.code}>{item.message}</small>)}</span></li>)}</ul>}

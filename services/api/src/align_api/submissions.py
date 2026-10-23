@@ -53,6 +53,9 @@ from align_api.models import (
     OutboxEvent,
     ParseArtifact,
     ProcessingTimeReservation,
+    Publication,
+    PublicationEvent,
+    ReviewVersion,
     SourceUnit,
     Submission,
     SubmissionVersion,
@@ -240,6 +243,25 @@ def _submission_summary(db: DbSession, submission: Submission, *, staff: bool) -
             select(SubmissionVersionMember).where(SubmissionVersionMember.submission_version_id == version.id)
             .order_by(SubmissionVersionMember.display_name_snapshot)
         ).all()]
+    if staff:
+        assignment = db.get(Assignment, submission.assignment_id)
+        payload["course_id"] = str(assignment.course_id) if assignment else None
+        payload["assignment_title"] = assignment.title if assignment else ""
+        latest_review = db.scalar(select(ReviewVersion).where(
+            ReviewVersion.submission_version_id == version.id
+        ).order_by(ReviewVersion.version_no.desc()).limit(1)) if version else None
+        latest_publication = db.scalar(select(Publication).where(
+            Publication.submission_id == submission.id
+        ).order_by(Publication.sequence_no.desc()).limit(1))
+        latest_event = db.scalar(select(PublicationEvent.event).where(
+            PublicationEvent.publication_id == latest_publication.id
+        ).order_by(PublicationEvent.event_at.desc(), PublicationEvent.id.desc()).limit(1)) if latest_publication else None
+        payload["staff_status"] = {
+            "review": latest_review.state if latest_review else "not_started",
+            "review_id": str(latest_review.id) if latest_review else None,
+            "publication": latest_event or "not_published",
+            "publication_source_version_id": str(latest_publication.submission_version_id) if latest_publication else None,
+        }
     if staff and version:
         parsed = db.execute(
             select(FileAsset, ParseArtifact).join(SubmissionVersionFile, SubmissionVersionFile.file_asset_id == FileAsset.id)
@@ -592,6 +614,9 @@ def list_submissions(
     db: Annotated[DbSession, Depends(get_db)],
     cursor: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    q: Annotated[str, Query(max_length=240)] = "",
+    review_status: Annotated[str, Query(pattern="^(|not_started|draft|complete)$")] = "",
+    publication_status: Annotated[str, Query(pattern="^(|not_published|released|withdrawn)$")] = "",
 ) -> dict[str, Any]:
     assignment = db.get(Assignment, assignment_id)
     if assignment is None:
@@ -618,6 +643,26 @@ def list_submissions(
                 )
             ),
         ))
+    if role in {"lecturer", "admin"}:
+        if q.strip():
+            term = q.strip()
+            query = query.where(or_(
+                Submission.individual_user_id.in_(select(User.id).where(User.display_name.icontains(term, autoescape=True))),
+                Submission.group_id.in_(select(AssignmentGroup.id).where(AssignmentGroup.name.icontains(term, autoescape=True))),
+                Submission.active_final_version_id.in_(select(SubmissionVersionMember.submission_version_id).where(
+                    SubmissionVersionMember.display_name_snapshot.icontains(term, autoescape=True))),
+            ))
+        if review_status:
+            latest_review_state = select(ReviewVersion.state).where(
+                ReviewVersion.submission_version_id == Submission.active_final_version_id
+            ).order_by(ReviewVersion.version_no.desc()).limit(1).correlate(Submission).scalar_subquery()
+            query = query.where(func.coalesce(latest_review_state, "not_started") == review_status)
+        if publication_status:
+            latest_pub = select(Publication.id).where(Publication.submission_id == Submission.id).order_by(
+                Publication.sequence_no.desc()).limit(1).correlate(Submission).scalar_subquery()
+            latest_event = select(PublicationEvent.event).where(PublicationEvent.publication_id == latest_pub).order_by(
+                PublicationEvent.event_at.desc(), PublicationEvent.id.desc()).limit(1).correlate(Submission).scalar_subquery()
+            query = query.where(func.coalesce(latest_event, "not_published") == publication_status)
     rows = db.scalars(query.order_by(Submission.created_at, Submission.id).offset(cursor).limit(limit + 1)).all()
     has_more = len(rows) > limit
     page = rows[:limit]
