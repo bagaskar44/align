@@ -13,7 +13,16 @@ from sqlalchemy.orm import Session as DbSession
 
 from align_api.config import Settings, get_settings
 from align_api.db import get_db
-from align_api.models import AuditEvent, Enrollment, User
+from align_api.models import (
+    AuditEvent,
+    Enrollment,
+    LmsCourseAssignmentMapping,
+    LtiCoursePermission,
+    LtiIdentityBinding,
+    LtiPlatform,
+    LtiSessionBinding,
+    User,
+)
 from align_api.models import Session as LoginSession
 from align_api.security import (
     csrf_digest,
@@ -129,19 +138,41 @@ def login(
     _check_origin(request, settings)
     normalized_email = normalize_email(body.email)
     redis_prefix = settings.redis_queue_prefix
-    email_key = f"{redis_prefix}:login:email:{hashlib.sha256(normalized_email.encode()).hexdigest()}"
+    email_key = (
+        f"{redis_prefix}:login:email:{hashlib.sha256(normalized_email.encode()).hexdigest()}"
+    )
     forwarded = request.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
     ip = forwarded or (request.client.host if request.client else "unknown")
     ip_key = f"{redis_prefix}:login:ip:{hashlib.sha256(ip.encode()).hexdigest()}"
     _check_login_limit(settings, email_key, ip_key)
 
-    user = db.scalar(select(User).where(User.normalized_email == normalized_email).with_for_update())
+    user = db.scalar(
+        select(User).where(User.normalized_email == normalized_email).with_for_update()
+    )
     valid = verify_password(body.password, user.password_hash if user and user.active else None)
     if user is None or not user.active or not valid:
         _record_login_failure(settings, email_key, ip_key)
         raise HTTPException(status_code=401, detail="invalid login")
 
     _clear_login_failures(settings, email_key)
+    _session, csrf_token = issue_session(
+        db, user, settings, response, request, audit_action="auth.login"
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return {"user": _user_summary(user), "csrf_token": csrf_token}
+
+
+def issue_session(
+    db: DbSession,
+    user: User,
+    settings: Settings,
+    response: Response,
+    request: Request,
+    *,
+    audit_action: str,
+    commit: bool = True,
+) -> tuple[LoginSession, str]:
+    """Issue the same local session and CSRF policy for password and LTI login."""
     now = datetime.now(UTC)
     raw_token = new_session_token()
     session = LoginSession(
@@ -159,26 +190,25 @@ def login(
     db.add(
         AuditEvent(
             actor_user_id=user.id,
-            action="auth.login",
+            action=audit_action,
             object_type="session",
             object_id=session.id,
             request_id=request.state.request_id,
         )
     )
-    db.commit()
-
-    secure_cookie = settings.app_origin.startswith("https://")
+    if commit:
+        db.commit()
     response.set_cookie(
         key=SESSION_COOKIE,
         value=raw_token,
         httponly=True,
-        secure=secure_cookie,
+        secure=settings.app_origin.startswith("https://"),
         samesite="lax",
         path="/",
         max_age=settings.session_absolute_hours * 60 * 60,
     )
     response.headers["Cache-Control"] = "private, no-store"
-    return {"user": _user_summary(user), "csrf_token": csrf_token}
+    return session, csrf_token
 
 
 def current_identity(
@@ -200,6 +230,34 @@ def current_identity(
     )
     if session is None:
         raise HTTPException(status_code=401, detail="invalid session")
+    lti_session = db.get(LtiSessionBinding, session.id)
+    if lti_session is not None:
+        allowed = db.scalar(
+            select(LtiIdentityBinding.id)
+            .join(LtiPlatform, LtiPlatform.id == LtiIdentityBinding.platform_id)
+            .join(
+                LmsCourseAssignmentMapping,
+                LmsCourseAssignmentMapping.id == lti_session.mapping_id,
+            )
+            .join(
+                LtiCoursePermission,
+                (LtiCoursePermission.platform_id == LtiPlatform.id)
+                & (LtiCoursePermission.course_id == LmsCourseAssignmentMapping.local_course_id),
+            )
+            .where(
+                LtiIdentityBinding.id == lti_session.identity_binding_id,
+                LtiIdentityBinding.user_id == session.user_id,
+                LtiIdentityBinding.active.is_(True),
+                LtiPlatform.id == lti_session.platform_id,
+                LtiPlatform.active.is_(True),
+                LmsCourseAssignmentMapping.active.is_(True),
+                LmsCourseAssignmentMapping.platform_id == LtiPlatform.id,
+                LmsCourseAssignmentMapping.revision == lti_session.mapping_revision,
+                LtiCoursePermission.active.is_(True),
+            )
+        )
+        if allowed is None:
+            raise HTTPException(status_code=401, detail="invalid session")
     user = db.get(User, session.user_id)
     if user is None or not user.active:
         raise HTTPException(status_code=401, detail="inactive account")
@@ -208,7 +266,9 @@ def current_identity(
         raise HTTPException(status_code=401, detail="session secret changed")
 
     session.last_seen_at = now
-    session.expires_at = min(now + timedelta(hours=settings.session_idle_hours), session.absolute_expires_at)
+    session.expires_at = min(
+        now + timedelta(hours=settings.session_idle_hours), session.absolute_expires_at
+    )
     db.commit()
     return Identity(user=user, session=session, csrf_token=csrf_token)
 
@@ -296,6 +356,7 @@ def me(
         "user": _user_summary(identity.user),
         "memberships": courses,
         "csrf_token": identity.csrf_token,
+        "capabilities": {"lms": settings.lms_adapter_enabled},
         "runtime_limits": {
             "max_files_per_bundle": settings.max_files_per_bundle,
             "max_file_bytes": settings.max_file_bytes,

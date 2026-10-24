@@ -1368,6 +1368,47 @@
         "title": "GroupInput",
         "type": "object"
       },
+      "GroupMappingCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "local_group_id": {
+            "format": "uuid",
+            "title": "Local Group Id",
+            "type": "string"
+          },
+          "moodle_group_id": {
+            "minimum": 1.0,
+            "title": "Moodle Group Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "moodle_group_id",
+          "local_group_id"
+        ],
+        "title": "GroupMappingCreate",
+        "type": "object"
+      },
+      "GroupMappingPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "active"
+        ],
+        "title": "GroupMappingPatch",
+        "type": "object"
+      },
       "GroupUpdate": {
         "additionalProperties": false,
         "properties": {
@@ -1416,6 +1457,55 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ImportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_id": {
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "confirmed_owner_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed Owner User Id"
+          },
+          "confirmed_roster_user_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Confirmed Roster User Ids",
+            "type": "array"
+          },
+          "expected_mapping_revision": {
+            "minimum": 1.0,
+            "title": "Expected Mapping Revision",
+            "type": "integer"
+          },
+          "mapping_id": {
+            "format": "uuid",
+            "title": "Mapping Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mapping_id",
+          "expected_mapping_revision",
+          "attempt_id"
+        ],
+        "title": "ImportRequest",
         "type": "object"
       },
       "LearningOutcomeInput": {
@@ -1873,6 +1963,159 @@
           "expected_revision"
         ],
         "title": "ManualFindingPatchBody",
+        "type": "object"
+      },
+      "MappingCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "assignment_version_id": {
+            "format": "uuid",
+            "title": "Assignment Version Id",
+            "type": "string"
+          },
+          "local_course_id": {
+            "format": "uuid",
+            "title": "Local Course Id",
+            "type": "string"
+          },
+          "lti_context_id": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Lti Context Id",
+            "type": "string"
+          },
+          "lti_resource_link_id": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Lti Resource Link Id",
+            "type": "string"
+          },
+          "moodle_assignment_id": {
+            "minimum": 1.0,
+            "title": "Moodle Assignment Id",
+            "type": "integer"
+          },
+          "moodle_course_id": {
+            "minimum": 1.0,
+            "title": "Moodle Course Id",
+            "type": "integer"
+          },
+          "platform_id": {
+            "format": "uuid",
+            "title": "Platform Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "platform_id",
+          "lti_context_id",
+          "lti_resource_link_id",
+          "moodle_course_id",
+          "moodle_assignment_id",
+          "local_course_id",
+          "assignment_version_id"
+        ],
+        "title": "MappingCreate",
+        "type": "object"
+      },
+      "MappingPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active"
+          },
+          "assignment_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignment Version Id"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "local_course_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Local Course Id"
+          },
+          "lti_context_id": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lti Context Id"
+          },
+          "lti_resource_link_id": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lti Resource Link Id"
+          },
+          "moodle_assignment_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moodle Assignment Id"
+          },
+          "moodle_course_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moodle Course Id"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "MappingPatch",
         "type": "object"
       },
       "NewVersionBody": {
@@ -5959,6 +6202,601 @@
         ]
       }
     },
+    "/api/v1/integrations/lti/jwks": {
+      "get": {
+        "description": "Publish only the configured public signing key for Moodle tool registration.",
+        "operationId": "lti_tool_jwks_api_v1_integrations_lti_jwks_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Lti Tool Jwks",
+        "tags": [
+          "lti"
+        ]
+      }
+    },
+    "/api/v1/integrations/lti/login": {
+      "get": {
+        "operationId": "lti_login_get_api_v1_integrations_lti_login_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Lti Login Get",
+        "tags": [
+          "lti"
+        ]
+      },
+      "post": {
+        "operationId": "lti_login_post_api_v1_integrations_lti_login_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Lti Login Post",
+        "tags": [
+          "lti"
+        ]
+      }
+    },
+    "/api/v1/integrations/moodle/imports": {
+      "get": {
+        "operationId": "list_imports_api_v1_integrations_moodle_imports_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "mapping_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mapping Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Imports Api V1 Integrations Moodle Imports Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Imports",
+        "tags": [
+          "moodle-integrations"
+        ]
+      },
+      "post": {
+        "operationId": "import_attempt_api_v1_integrations_moodle_imports_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Import Attempt Api V1 Integrations Moodle Imports Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Attempt",
+        "tags": [
+          "moodle-integrations"
+        ]
+      }
+    },
+    "/api/v1/integrations/moodle/imports/{import_id}": {
+      "get": {
+        "operationId": "get_import_api_v1_integrations_moodle_imports__import_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Import Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Import Api V1 Integrations Moodle Imports  Import Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Import",
+        "tags": [
+          "moodle-integrations"
+        ]
+      }
+    },
+    "/api/v1/integrations/moodle/mappings": {
+      "get": {
+        "operationId": "list_mappings_api_v1_integrations_moodle_mappings_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "course_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Course Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Mappings Api V1 Integrations Moodle Mappings Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Mappings",
+        "tags": [
+          "moodle-integrations"
+        ]
+      },
+      "post": {
+        "operationId": "create_mapping_api_v1_integrations_moodle_mappings_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MappingCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Mapping Api V1 Integrations Moodle Mappings Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Mapping",
+        "tags": [
+          "moodle-integrations"
+        ]
+      }
+    },
+    "/api/v1/integrations/moodle/mappings/{mapping_id}": {
+      "patch": {
+        "operationId": "patch_mapping_api_v1_integrations_moodle_mappings__mapping_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mapping_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mapping Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MappingPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Patch Mapping Api V1 Integrations Moodle Mappings  Mapping Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Mapping",
+        "tags": [
+          "moodle-integrations"
+        ]
+      }
+    },
+    "/api/v1/integrations/moodle/mappings/{mapping_id}/groups": {
+      "post": {
+        "operationId": "create_group_mapping_api_v1_integrations_moodle_mappings__mapping_id__groups_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mapping_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mapping Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupMappingCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Group Mapping Api V1 Integrations Moodle Mappings  Mapping Id  Groups Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Group Mapping",
+        "tags": [
+          "moodle-integrations"
+        ]
+      }
+    },
+    "/api/v1/integrations/moodle/mappings/{mapping_id}/groups/{group_mapping_id}": {
+      "patch": {
+        "operationId": "patch_group_mapping_api_v1_integrations_moodle_mappings__mapping_id__groups__group_mapping_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mapping_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mapping Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "group_mapping_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Group Mapping Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupMappingPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Patch Group Mapping Api V1 Integrations Moodle Mappings  Mapping Id  Groups  Group Mapping Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Group Mapping",
+        "tags": [
+          "moodle-integrations"
+        ]
+      }
+    },
+    "/api/v1/integrations/moodle/platforms": {
+      "get": {
+        "operationId": "list_platforms_for_course_api_v1_integrations_moodle_platforms_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "course_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Course Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Platforms For Course Api V1 Integrations Moodle Platforms Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Platforms For Course",
+        "tags": [
+          "moodle-integrations"
+        ]
+      }
+    },
     "/api/v1/jobs/{job_id}": {
       "get": {
         "operationId": "get_submission_job_api_v1_jobs__job_id__get",
@@ -6073,6 +6911,25 @@
         "tags": [
           "submissions",
           "evidence"
+        ]
+      }
+    },
+    "/api/v1/lti/launch": {
+      "post": {
+        "operationId": "lti_launch_api_v1_lti_launch_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Lti Launch",
+        "tags": [
+          "lti"
         ]
       }
     },

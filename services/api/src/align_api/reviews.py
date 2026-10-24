@@ -2395,6 +2395,13 @@ def _student_snapshot(db: DbSession, publication: Publication) -> dict[str, Any]
                     if isinstance(annotation, dict) else None)})
         safe_findings.append({"category": finding["category"], "criterion_title": finding["criterion_title"],
             "claim": finding["claim"], "evidence": safe_evidence})
+    source_payload = {
+        "submission_version": source.version_no if source else None,
+        "finalized_at": snap["source"]["finalized_at"],
+    }
+    if source is not None and source.manifest_json.get("source", {}).get("kind") == "moodle":
+        source_payload["origin"] = "Moodle"
+        source_payload["origin_label"] = "Diimpor dari Moodle (read-only)"
     return {"publication_id": str(publication.id), "status": "released",
         "submission_version": source.version_no if source else None,
         "assignment_version": snap["assignment"]["version_no"], "published_at": publication.published_at.isoformat(),
@@ -2404,8 +2411,7 @@ def _student_snapshot(db: DbSession, publication: Publication) -> dict[str, Any]
             "next_action": item.get("next_action"), "limitation": item.get("limitation")}
             for item in snap["feedback"].get("blocks", [])],
         "source_labels": sorted({item["file_name"] for finding in safe_findings for item in finding["evidence"]}),
-        "source": {"submission_version": source.version_no if source else None,
-            "finalized_at": snap["source"]["finalized_at"]}}
+        "source": source_payload}
 
 
 @router.get("/submissions/{submission_id}/published-result")

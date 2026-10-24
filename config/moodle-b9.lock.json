@@ -1,0 +1,22 @@
+{
+  "moodle": {
+    "version": "4.5.15",
+    "source_url": "https://packaging.moodle.org/stable405/moodle-4.5.15.tgz",
+    "source_sha256": "f0e09f636c2900806bf208dffdc462f3b6b0ad24163559e9aa9b4f339ddc2096"
+  },
+  "runtime": {
+    "image": "moodlehq/moodle-php-apache:8.3",
+    "image_digest": "sha256:1db7b6ed013fcb5268095b5e28c410ba9117d38d9b6a324c100c48fcbe69745e",
+    "platform": "linux/amd64",
+    "manifest_digest": "sha256:e61f687fcc6e65ea32e6386915c8769442884cc4e46f2f1ce5e9c0b7c587c2a4"
+  },
+  "database": {
+    "image": "postgres:16.10-alpine",
+    "image_index_digest": "sha256:029660641a0cfc575b14f336ba448fb8a75fd595d42e1fa316b9fb4378742297",
+    "linux_amd64_digest": "sha256:ab8380566c3ea09690a9ecaa85a59d82bfc6eb86744151a2a54335866c83a3e9",
+    "major": 16,
+    "verified_source": "https://hub.docker.com/layers/library/postgres/16.10-alpine/"
+  },
+  "verified_source": "https://packaging.moodle.org/stable405/moodle-4.5.15.tgz.sha256",
+  "verified_runtime": "https://hub.docker.com/layers/moodlehq/moodle-php-apache/8.3/images/sha256-e61f687fcc6e65ea32e6386915c8769442884cc4e46f2f1ce5e9c0b7c587c2a4"
+}

@@ -1,0 +1,157 @@
+name: align-b9-sandbox
+
+services:
+  operator:
+    environment:
+      LTI_ALLOWED_ORIGINS: https://moodle-b9.localhost:8443
+      LTI_CALLBACK_URL: https://align-b9.localhost:8443/api/v1/lti/launch
+      LTI_TOOL_JWKS_FILE: /run/b9-config/lti-tool-jwks.json
+      MOODLE_WS_TOKEN_FILE: /run/b9-secrets/ws-token.txt
+      MOODLE_WS_TIMEOUT_SECONDS: "120"
+      MOODLE_WS_MAX_RESPONSE_BYTES: "1048576"
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+    volumes:
+      - ./data/b9/private/ca.crt:/usr/local/share/ca-certificates/align-b9-ca.crt:ro
+      - b9-truststore:/etc/ssl/certs:ro
+      - moodle-ws-secrets:/run/b9-secrets:ro
+      - ./data/b9/private/lti-tool-jwks.json:/run/b9-config/lti-tool-jwks.json:ro
+    depends_on:
+      ca-store:
+        condition: service_completed_successfully
+      moodle:
+        condition: service_healthy
+    networks: [private]
+
+  postgres:
+    networks:
+      private:
+        aliases: [align-b9-db]
+
+  redis:
+    networks:
+      private:
+        aliases: [align-b9-redis]
+
+  object-storage:
+    networks:
+      private:
+        aliases: [align-b9-storage]
+
+  migrate:
+    networks: [private]
+
+  api:
+    environment:
+      APP_DEMO_MODE: "true"
+      APP_ORIGIN: https://align-b9.localhost:8443
+      LTI_CALLBACK_URL: https://align-b9.localhost:8443/api/v1/lti/launch
+      LTI_ALLOWED_ORIGINS: https://moodle-b9.localhost:8443
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+    volumes:
+      - ./data/b9/private/ca.crt:/usr/local/share/ca-certificates/align-b9-ca.crt:ro
+      - b9-truststore:/etc/ssl/certs:ro
+      - moodle-ws-secrets:/run/b9-secrets:ro
+      - ./data/b9/private/lti-tool-jwks.json:/run/b9-config/lti-tool-jwks.json:ro
+    depends_on:
+      ca-store:
+        condition: service_completed_successfully
+      moodle:
+        condition: service_healthy
+    networks: [private]
+
+  web:
+    networks: [private]
+
+  proxy:
+    environment:
+      ALIGN_CADDYFILE: ./docker/Caddyfile.b9
+    ports: !override
+      - "127.0.0.1:8443:8443"
+    volumes: !override
+      - ./docker/Caddyfile.b9:/etc/caddy/Caddyfile:ro
+      - ./data/b9/private/align-b9.crt:/run/b9/align-b9.crt:ro
+      - ./data/b9/private/align-b9.key:/run/b9/align-b9.key:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      edge: {}
+      private:
+        aliases: [align-b9.localhost, moodle-b9.localhost]
+
+  ca-store:
+    image: moodlehq/moodle-php-apache@sha256:1db7b6ed013fcb5268095b5e28c410ba9117d38d9b6a324c100c48fcbe69745e
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - cp /run/b9/ca.crt /usr/local/share/ca-certificates/align-b9-ca.crt && update-ca-certificates --fresh
+    volumes:
+      - ./data/b9/private/ca.crt:/run/b9/ca.crt:ro
+      - b9-truststore:/etc/ssl/certs
+    restart: "no"
+
+  moodle-db:
+    image: postgres:16.10-alpine@sha256:029660641a0cfc575b14f336ba448fb8a75fd595d42e1fa316b9fb4378742297
+    environment:
+      POSTGRES_DB: moodle_b9
+      POSTGRES_USER: moodle_b9
+      POSTGRES_PASSWORD: ${B9_MOODLE_DB_PASSWORD}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    volumes:
+      - moodle-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U moodle_b9 -d moodle_b9"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [moodle-private]
+    restart: unless-stopped
+
+  moodle:
+    build:
+      context: .
+      dockerfile: docker/moodle-b9.Dockerfile
+    environment:
+      MOODLE_B9_WWWROOT: https://moodle-b9.localhost:8443
+      MOODLE_B9_DB_HOST: moodle-db
+      MOODLE_B9_DB_NAME: moodle_b9
+      MOODLE_B9_DB_USER: moodle_b9
+      MOODLE_B9_DB_PASSWORD: ${B9_MOODLE_DB_PASSWORD}
+      MOODLE_B9_ADMIN_USER: ${B9_MOODLE_ADMIN_USER}
+      MOODLE_B9_ADMIN_PASSWORD: ${B9_MOODLE_ADMIN_PASSWORD}
+      MOODLE_B9_ADMIN_EMAIL: ${B9_MOODLE_ADMIN_EMAIL}
+      MOODLE_B9_TEST_PASSWORD: ${B9_MOODLE_TEST_PASSWORD}
+      ALIGN_B9_LOGIN_URL: https://align-b9.localhost:8443/api/v1/integrations/lti/login
+      ALIGN_B9_LAUNCH_URL: https://align-b9.localhost:8443/api/v1/lti/launch
+    volumes:
+      - moodle-data:/var/www/moodledata
+      - moodle-config:/run/moodle-config
+      - moodle-ws-secrets:/run/b9-secrets
+      - ./data/b9/private/ca.crt:/usr/local/share/ca-certificates/align-b9-ca.crt:ro
+      - b9-truststore:/etc/ssl/certs:ro
+    depends_on:
+      ca-store:
+        condition: service_completed_successfully
+      moodle-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --silent --fail --max-time 5 http://127.0.0.1/login/index.php >/dev/null"]
+      interval: 10s
+      timeout: 6s
+      retries: 30
+      start_period: 90s
+    networks:
+      moodle-private: {}
+      private:
+        aliases: [moodle]
+    restart: unless-stopped
+
+volumes:
+  moodle-postgres-data:
+  moodle-data:
+  moodle-config:
+  b9-truststore:
+  moodle-ws-secrets:
+
+networks:
+  moodle-private:
+    driver: bridge
+    internal: true

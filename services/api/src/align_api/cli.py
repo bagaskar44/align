@@ -539,6 +539,7 @@ def seed_synthetic() -> None:
         ("mahasiswa@align.local", "Mahasiswa Sintetis", "member"),
         ("dosen2@align.local", "Dosen Sintetis Dua", "member"),
         ("mahasiswa2@align.local", "Mahasiswa Sintetis Dua", "member"),
+        ("mahasiswa3@align.local", "Mahasiswa Sintetis Tiga", "member"),
     ]
     course_specs = [("IF101", "Pengantar Informatika"), ("IF202", "Sistem Informasi")]
     created_accounts = 0
@@ -576,8 +577,10 @@ def seed_synthetic() -> None:
         for code, email, role in [
             ("IF101", "dosen@align.local", "lecturer"),
             ("IF101", "mahasiswa@align.local", "student"),
+            ("IF101", "mahasiswa2@align.local", "student"),
             ("IF202", "dosen2@align.local", "lecturer"),
             ("IF202", "mahasiswa2@align.local", "student"),
+            ("IF202", "mahasiswa3@align.local", "student"),
         ]:
             exists = db.scalar(
                 select(Enrollment.id).where(
@@ -1352,6 +1355,53 @@ def _parser() -> argparse.ArgumentParser:
     import_objects.add_argument("--input", required=True, type=Path)
     backup_sub.add_parser("reconcile", help="check database pointers, object hashes, tombstones, and liabilities")
 
+    lms = subparsers.add_parser("lms", help="registered LMS platform and identity operations")
+    lms_sub = lms.add_subparsers(dest="lms_command", required=True)
+    platform_register = lms_sub.add_parser(
+        "platform-register", help="register a pinned LTI platform"
+    )
+    platform_register.add_argument("--issuer", required=True)
+    platform_register.add_argument("--client-id", required=True)
+    platform_register.add_argument("--deployment-id", required=True)
+    platform_register.add_argument("--authorization-url", required=True)
+    platform_register.add_argument("--token-url", required=True)
+    platform_register.add_argument("--jwks-url", required=True)
+    platform_register.add_argument("--moodle-origin", required=True)
+    platform_register.add_argument("--actor-user-id", required=True)
+    lms_sub.add_parser("platform-list", help="list safe LTI platform registration metadata")
+    for command_name, help_text in (
+        ("platform-disable", "disable a platform and invalidate its sessions"),
+        ("platform-enable", "enable a registered platform"),
+    ):
+        command_parser = lms_sub.add_parser(command_name, help=help_text)
+        command_parser.add_argument("--platform-id", required=True)
+        command_parser.add_argument("--actor-user-id", required=True)
+    identity_bind = lms_sub.add_parser("identity-bind", help="explicitly bind one Moodle identity")
+    identity_bind.add_argument("--platform-id", required=True)
+    identity_bind.add_argument("--subject", required=True)
+    identity_bind.add_argument("--moodle-user-id", required=True, type=int)
+    identity_bind.add_argument("--user-id", required=True)
+    identity_bind.add_argument("--actor-user-id", required=True)
+    for command_name, help_text in (
+        ("identity-revoke", "revoke an identity binding and its sessions"),
+        ("identity-enable", "enable an existing identity binding"),
+    ):
+        command_parser = lms_sub.add_parser(command_name, help=help_text)
+        command_parser.add_argument("--binding-id", required=True)
+        command_parser.add_argument("--actor-user-id", required=True)
+    for command_name, help_text in (
+        ("course-grant", "allow one platform/course pair"),
+        ("course-revoke", "revoke one platform/course pair"),
+    ):
+        command_parser = lms_sub.add_parser(command_name, help=help_text)
+        command_parser.add_argument("--platform-id", required=True)
+        command_parser.add_argument("--course-id", required=True)
+        command_parser.add_argument("--actor-user-id", required=True)
+    ws_check = lms_sub.add_parser(
+        "ws-check", help="verify the Moodle token and its read-function allowlist"
+    )
+    ws_check.add_argument("--platform-id", required=True)
+
     evaluate = subparsers.add_parser("evaluate", help="offline robustness and protocol evaluations")
     evaluate_sub = evaluate.add_subparsers(dest="evaluate_command", required=True)
     metrics = evaluate_sub.add_parser("metrics", help="score gold labels and predictions offline")
@@ -1528,6 +1578,26 @@ def main() -> None:
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         if args.backup_command == "reconcile" and result["status"] != "reconciled":
             raise SystemExit("restored state is incomplete; keep service closed")
+    elif args.command == "lms":
+        from align_api import lms_cli
+
+        if args.lms_command == "platform-register":
+            lms_cli.register_platform(args)
+        elif args.lms_command == "platform-list":
+            lms_cli.list_platforms(args)
+        elif args.lms_command in {"platform-disable", "platform-enable"}:
+            args.active = args.lms_command == "platform-enable"
+            lms_cli.set_platform_active(args)
+        elif args.lms_command == "identity-bind":
+            lms_cli.bind_identity(args)
+        elif args.lms_command in {"identity-revoke", "identity-enable"}:
+            args.active = args.lms_command == "identity-enable"
+            lms_cli.set_binding_active(args)
+        elif args.lms_command in {"course-grant", "course-revoke"}:
+            args.active = args.lms_command == "course-grant"
+            lms_cli.set_course_permission(args)
+        elif args.lms_command == "ws-check":
+            lms_cli.verify_webservice(args)
     else:
         raise SystemExit("unknown command")
 

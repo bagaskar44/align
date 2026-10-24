@@ -196,6 +196,14 @@ export type ApiSchemas = {
     "member_user_ids": Array<string>;
     "name": string;
   };
+  "GroupMappingCreate": {
+    "local_group_id": string;
+    "moodle_group_id": number;
+  };
+  "GroupMappingPatch": {
+    "active": boolean;
+    "expected_revision": number;
+  };
   "GroupUpdate": {
     "active"?: boolean;
     "expected_revision": number;
@@ -204,6 +212,13 @@ export type ApiSchemas = {
   };
   "HTTPValidationError": {
     "detail"?: Array<ApiSchemas["ValidationError"]>;
+  };
+  "ImportRequest": {
+    "attempt_id": string;
+    "confirmed_owner_user_id"?: (string) | (null);
+    "confirmed_roster_user_ids"?: Array<string>;
+    "expected_mapping_revision": number;
+    "mapping_id": string;
   };
   "LearningOutcomeInput": {
     "code": string;
@@ -266,6 +281,25 @@ export type ApiSchemas = {
     "primary_criterion_id"?: (string) | (null);
     "reason"?: (string) | (null);
     "requirement_ids"?: (Array<string>) | (null);
+  };
+  "MappingCreate": {
+    "assignment_version_id": string;
+    "local_course_id": string;
+    "lti_context_id": string;
+    "lti_resource_link_id": string;
+    "moodle_assignment_id": number;
+    "moodle_course_id": number;
+    "platform_id": string;
+  };
+  "MappingPatch": {
+    "active"?: (boolean) | (null);
+    "assignment_version_id"?: (string) | (null);
+    "expected_revision": number;
+    "local_course_id"?: (string) | (null);
+    "lti_context_id"?: (string) | (null);
+    "lti_resource_link_id"?: (string) | (null);
+    "moodle_assignment_id"?: (number) | (null);
+    "moodle_course_id"?: (number) | (null);
   };
   "NewVersionBody": {
     "base_version_id": string;
@@ -635,6 +669,54 @@ export interface ApiOperations {
   [key: string]: unknown;
 } };
   };
+  "/integrations/lti/jwks": {
+    GET: { operationId: "lti_tool_jwks_api_v1_integrations_lti_jwks_get"; requestBody: void; response: unknown };
+  };
+  "/integrations/lti/login": {
+    GET: { operationId: "lti_login_get_api_v1_integrations_lti_login_get"; requestBody: void; response: unknown };
+    POST: { operationId: "lti_login_post_api_v1_integrations_lti_login_post"; requestBody: void; response: unknown };
+  };
+  "/integrations/moodle/imports": {
+    GET: { operationId: "list_imports_api_v1_integrations_moodle_imports_get"; requestBody: void; response: {
+  [key: string]: unknown;
+} };
+    POST: { operationId: "import_attempt_api_v1_integrations_moodle_imports_post"; requestBody: ApiSchemas["ImportRequest"]; response: {
+  [key: string]: unknown;
+} };
+  };
+  "/integrations/moodle/imports/{import_id}": {
+    GET: { operationId: "get_import_api_v1_integrations_moodle_imports__import_id__get"; requestBody: void; response: {
+  [key: string]: unknown;
+} };
+  };
+  "/integrations/moodle/mappings": {
+    GET: { operationId: "list_mappings_api_v1_integrations_moodle_mappings_get"; requestBody: void; response: {
+  [key: string]: unknown;
+} };
+    POST: { operationId: "create_mapping_api_v1_integrations_moodle_mappings_post"; requestBody: ApiSchemas["MappingCreate"]; response: {
+  [key: string]: unknown;
+} };
+  };
+  "/integrations/moodle/mappings/{mapping_id}": {
+    PATCH: { operationId: "patch_mapping_api_v1_integrations_moodle_mappings__mapping_id__patch"; requestBody: ApiSchemas["MappingPatch"]; response: {
+  [key: string]: unknown;
+} };
+  };
+  "/integrations/moodle/mappings/{mapping_id}/groups": {
+    POST: { operationId: "create_group_mapping_api_v1_integrations_moodle_mappings__mapping_id__groups_post"; requestBody: ApiSchemas["GroupMappingCreate"]; response: {
+  [key: string]: unknown;
+} };
+  };
+  "/integrations/moodle/mappings/{mapping_id}/groups/{group_mapping_id}": {
+    PATCH: { operationId: "patch_group_mapping_api_v1_integrations_moodle_mappings__mapping_id__groups__group_mapping_id__patch"; requestBody: ApiSchemas["GroupMappingPatch"]; response: {
+  [key: string]: unknown;
+} };
+  };
+  "/integrations/moodle/platforms": {
+    GET: { operationId: "list_platforms_for_course_api_v1_integrations_moodle_platforms_get"; requestBody: void; response: {
+  [key: string]: unknown;
+} };
+  };
   "/jobs/{job_id}": {
     GET: { operationId: "get_submission_job_api_v1_jobs__job_id__get"; requestBody: void; response: {
   [key: string]: unknown;
@@ -644,6 +726,9 @@ export interface ApiOperations {
     POST: { operationId: "retry_submission_job_api_v1_jobs__job_id__retry_post"; requestBody: void; response: {
   [key: string]: unknown;
 } };
+  };
+  "/lti/launch": {
+    POST: { operationId: "lti_launch_api_v1_lti_launch_post"; requestBody: void; response: unknown };
   };
   "/me": {
     GET: { operationId: "me_api_v1_me_get"; requestBody: void; response: {
@@ -903,8 +988,18 @@ export interface ApiOperationMethods {
   "/files/{file_id}/source-units": "GET";
   "/files/{file_id}/spreadsheet-cells": "GET";
   "/groups/{group_id}": "PUT";
+  "/integrations/lti/jwks": "GET";
+  "/integrations/lti/login": "GET" | "POST";
+  "/integrations/moodle/imports": "GET" | "POST";
+  "/integrations/moodle/imports/{import_id}": "GET";
+  "/integrations/moodle/mappings": "GET" | "POST";
+  "/integrations/moodle/mappings/{mapping_id}": "PATCH";
+  "/integrations/moodle/mappings/{mapping_id}/groups": "POST";
+  "/integrations/moodle/mappings/{mapping_id}/groups/{group_mapping_id}": "PATCH";
+  "/integrations/moodle/platforms": "GET";
   "/jobs/{job_id}": "GET";
   "/jobs/{job_id}/retry": "POST";
+  "/lti/launch": "POST";
   "/me": "GET";
   "/me/password": "PUT";
   "/numeric-policy-versions/{policy_id}": "GET" | "PUT";

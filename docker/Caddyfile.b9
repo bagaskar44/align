@@ -1,0 +1,21 @@
+https://align-b9.localhost:8443 {
+	tls /run/b9/align-b9.crt /run/b9/align-b9.key
+	@api path /api/v1 /api/v1/* /health/*
+	handle @api {
+		reverse_proxy api:8000
+	}
+	handle {
+		reverse_proxy web:3000
+	}
+}
+
+https://moodle-b9.localhost:8443 {
+	tls /run/b9/align-b9.crt /run/b9/align-b9.key
+	header {
+		Strict-Transport-Security "max-age=0"
+		X-Content-Type-Options "nosniff"
+	}
+	reverse_proxy moodle:80 {
+		header_up Host moodle
+	}
+}

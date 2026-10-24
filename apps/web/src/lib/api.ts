@@ -27,6 +27,7 @@ export type Profile = {
   memberships: Array<{ course_id: string; code: string; title: string; role: "lecturer" | "student" }>;
   csrf_token: string;
   runtime_limits: Record<string, number>;
+  capabilities?: { lms: boolean };
 };
 
 export type AssignmentSummary = {
@@ -44,6 +45,26 @@ export type AssignmentSummary = {
   mode?: "individual" | "group";
   opens_at?: string;
   due_at?: string;
+};
+
+export type MoodlePlatform = { id: string; issuer: string; moodle_origin: string };
+export type MoodleMapping = {
+  id: string;
+  platform_id: string;
+  lti_context_id: string;
+  lti_resource_link_id: string;
+  moodle_course_id: number;
+  moodle_assignment_id: number;
+  local_course_id: string;
+  assignment_version_id: string;
+  active: boolean;
+  revision: number;
+  groups: Array<{ id: string; moodle_group_id: number; local_group_id: string; active: boolean; revision: number }>;
+};
+export type MoodleImportList = {
+  candidate_status: string;
+  candidates: Array<Record<string, unknown>>;
+  items: Array<Record<string, unknown>>;
 };
 
 type ApiResult<T> =
@@ -92,6 +113,22 @@ export function getContextVersions(courseId: string): Promise<ApiResult<{ items:
 
 export function getCourseAssignments(courseId: string): Promise<ApiResult<{ items: AssignmentSummary[]; next_cursor: string | null }>> {
   return requestServer(`/courses/${courseId}/assignments`);
+}
+
+export function getMoodlePlatforms(courseId: string): Promise<ApiResult<{ items: MoodlePlatform[] }>> {
+  return requestServer(`/integrations/moodle/platforms?course_id=${encodeURIComponent(courseId)}`);
+}
+
+export function getMoodleMappings(courseId: string): Promise<ApiResult<{ items: MoodleMapping[] }>> {
+  return requestServer(`/integrations/moodle/mappings?course_id=${encodeURIComponent(courseId)}`);
+}
+
+export function getMoodleImports(mappingId: string): Promise<ApiResult<MoodleImportList>> {
+  return requestServer(`/integrations/moodle/imports?mapping_id=${encodeURIComponent(mappingId)}`);
+}
+
+export function getPublishedResult(submissionId: string): Promise<ApiResult<Record<string, unknown>>> {
+  return requestServer(`/submissions/${submissionId}/published-result`);
 }
 
 export function getAdminUsers(): Promise<ApiResult<{ items: AdminUser[]; next_cursor: string | null }>> {

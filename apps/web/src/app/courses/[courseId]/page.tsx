@@ -7,7 +7,8 @@ import { SubmissionWorkspace } from "@/components/SubmissionWorkspace";
 import { SubmissionQueue, type QueueQuery } from "@/components/SubmissionQueue";
 import { LogoutButton } from "@/components/LogoutButton";
 import { CourseWorkspaceTabs } from "@/components/CourseWorkspaceTabs";
-import { getContextVersions, getCourse, getCourseAssignments, getProfile, getProviderMode } from "@/lib/api";
+import { MoodleWorkspace } from "@/components/MoodleWorkspace";
+import { getContextVersions, getCourse, getCourseAssignments, getMoodleMappings, getMoodlePlatforms, getProfile, getProviderMode } from "@/lib/api";
 
 export default async function CourseContextPage({ params, searchParams }: { params: Promise<{ courseId: string }>; searchParams: Promise<QueueQuery & { tab?: string }> }) {
   const { courseId } = await params;
@@ -20,14 +21,20 @@ export default async function CourseContextPage({ params, searchParams }: { para
   if (!membership) {
     return <main className="centered-page"><section className="auth-card"><Link href="/">← Kembali ke mata kuliah</Link><h1>Ruang mata kuliah</h1><p className="intro-copy">Akun ini tidak memiliki keanggotaan aktif pada mata kuliah tersebut.</p></section></main>;
   }
+  const lmsEnabled = membership.role === "lecturer" && profileResult.data.capabilities?.lms === true;
   const [courseResult, assignmentsResult, versionsResult, providerMode] = await Promise.all([
     getCourse(courseId),
     getCourseAssignments(courseId),
     membership.role === "lecturer" ? getContextVersions(courseId) : Promise.resolve(null),
     membership.role === "lecturer" ? getProviderMode() : Promise.resolve("unknown" as const),
   ]);
-  if (courseResult.kind === "unauthenticated" || assignmentsResult.kind === "unauthenticated" || versionsResult?.kind === "unauthenticated") redirect("/login");
+  const [moodlePlatformsResult, moodleMappingsResult] = lmsEnabled
+    ? await Promise.all([getMoodlePlatforms(courseId), getMoodleMappings(courseId)])
+    : [null, null];
+  if (courseResult.kind === "unauthenticated" || assignmentsResult.kind === "unauthenticated" || versionsResult?.kind === "unauthenticated" || moodlePlatformsResult?.kind === "unauthenticated" || moodleMappingsResult?.kind === "unauthenticated") redirect("/login");
   if (courseResult.kind === "unavailable") return <PageError message="Data mata kuliah tidak dapat dimuat. Muat ulang halaman beberapa saat lagi." />;
+  const moodlePlatforms = moodlePlatformsResult?.kind === "ok" ? moodlePlatformsResult.data.items : [];
+  const moodleMappings = moodleMappingsResult?.kind === "ok" ? moodleMappingsResult.data.items : [];
 
   return (
     <main className="page-shell">
@@ -62,6 +69,13 @@ export default async function CourseContextPage({ params, searchParams }: { para
                 ? <SubmissionQueue courseId={courseId} initialQuery={query} assignments={assignmentsResult.data.items} />
                 : <WorkspaceUnavailable title="Antrean pengumpulan belum dapat dimuat" />,
             },
+            ...(lmsEnabled ? [{
+              id: "moodle",
+              label: "Moodle",
+              content: assignmentsResult.kind === "ok"
+                ? <MoodleWorkspace courseId={courseId} csrfToken={profileResult.data.csrf_token} assignments={assignmentsResult.data.items} initialPlatforms={moodlePlatforms} initialMappings={moodleMappings} />
+                : <WorkspaceUnavailable title="Mapping Moodle belum dapat dimuat tanpa daftar tugas" />,
+            }] : []),
           ]} />
         ) : membership.role === "lecturer" ? (
           <CourseWorkspaceTabs initialPanel={query.tab} panels={[
@@ -80,6 +94,13 @@ export default async function CourseContextPage({ params, searchParams }: { para
                 ? <SubmissionQueue courseId={courseId} initialQuery={query} assignments={assignmentsResult.data.items} />
                 : <WorkspaceUnavailable title="Antrean pengumpulan belum dapat dimuat" />,
             },
+            ...(lmsEnabled ? [{
+              id: "moodle",
+              label: "Moodle",
+              content: assignmentsResult.kind === "ok"
+                ? <MoodleWorkspace courseId={courseId} csrfToken={profileResult.data.csrf_token} assignments={assignmentsResult.data.items} initialPlatforms={moodlePlatforms} initialMappings={moodleMappings} />
+                : <WorkspaceUnavailable title="Mapping Moodle belum dapat dimuat tanpa daftar tugas" />,
+            }] : []),
           ]} />
         ) : assignmentsResult.kind === "ok" ? (
           <CourseWorkspaceTabs initialPanel={query.tab} panels={[

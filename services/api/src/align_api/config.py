@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -20,7 +21,9 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://align_api:align_api@localhost:5432/align"
     operator_database_url: str | None = None
     worker_database_url: str = "postgresql+psycopg://align_worker:align_worker@localhost:5432/align"
-    migration_database_url: str = "postgresql+psycopg://align_migration:align_migration@localhost:5432/align"
+    migration_database_url: str = (
+        "postgresql+psycopg://align_migration:align_migration@localhost:5432/align"
+    )
     redis_url: str = "redis://localhost:6379/0"
     redis_queue_prefix: str = "align-dev"
     s3_endpoint: str = "http://localhost:9000"
@@ -47,6 +50,13 @@ class Settings(BaseSettings):
 
     data_mode: Literal["synthetic", "institutional"] = "synthetic"
     lms_adapter_enabled: bool = False
+    lti_callback_url: str = "https://align-b9.localhost:8443/api/v1/lti/launch"
+    lti_allowed_origins: str = ""
+    lti_tool_jwks_file: Path | None = None
+    moodle_ws_token: SecretStr | None = None
+    moodle_ws_token_file: Path | None = None
+    moodle_ws_timeout_seconds: int = Field(default=120, ge=1, le=120)
+    moodle_ws_max_response_bytes: int = Field(default=1_048_576, ge=1024, le=10_485_760)
     align_seed_password: SecretStr | None = None
     budget_confirmed_usd: Decimal = Decimal("25.00")
     budget_reserve_usd: Decimal = Decimal("5.00")
@@ -153,7 +163,10 @@ class Settings(BaseSettings):
             raise ValueError("parser node headroom cannot be negative")
         if self.parser_document_memory_bytes > self.parser_node_memory_budget_bytes:
             raise ValueError("document parser memory override exceeds the parser node budget")
-        if self.batch_baseline_elements != 1 or self.batch_max_elements < self.batch_baseline_elements:
+        if (
+            self.batch_baseline_elements != 1
+            or self.batch_max_elements < self.batch_baseline_elements
+        ):
             raise ValueError("baseline batching must start at exactly one element")
         if self.budget_planned_topup_usd != Decimal("0.00"):
             raise ValueError("BUDGET_PLANNED_TOPUP_USD is informational and must not be funded")
@@ -164,7 +177,10 @@ class Settings(BaseSettings):
                 raise ValueError("debug mode is forbidden in production")
             if not self.app_origin.startswith("https://"):
                 raise ValueError("production requires an explicit HTTPS APP_ORIGIN")
-            if self.csrf_server_secret.get_secret_value() == "development-only-csrf-secret-change-me":
+            if (
+                self.csrf_server_secret.get_secret_value()
+                == "development-only-csrf-secret-change-me"
+            ):
                 raise ValueError("production requires a generated CSRF_SERVER_SECRET")
             if self.s3_secret_access_key.get_secret_value() == "development-only-secret":
                 raise ValueError("production requires a storage service credential")
@@ -188,8 +204,15 @@ class Settings(BaseSettings):
     def csrf_secret_bytes(self) -> bytes:
         return self.csrf_server_secret.get_secret_value().encode("utf-8")
 
+    @property
+    def lti_allowed_origin_set(self) -> frozenset[str]:
+        return frozenset(
+            origin.strip().rstrip("/")
+            for origin in self.lti_allowed_origins.split(",")
+            if origin.strip()
+        )
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
-

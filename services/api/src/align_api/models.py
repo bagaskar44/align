@@ -81,6 +81,210 @@ class Session(RevisionMixin, Base):
     user: Mapped[User] = relationship()
 
 
+class LtiPlatform(RevisionMixin, Base):
+    __tablename__ = "lti_platforms"
+    __table_args__ = (
+        UniqueConstraint(
+            "issuer", "client_id", "deployment_id", name="uq_lti_platform_registration"
+        ),
+        CheckConstraint("revision >= 1", name="ck_lti_platform_revision"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    issuer: Mapped[str] = mapped_column(String(500), nullable=False)
+    client_id: Mapped[str] = mapped_column(String(240), nullable=False)
+    deployment_id: Mapped[str] = mapped_column(String(240), nullable=False)
+    authorization_url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    token_url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    jwks_url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    moodle_origin: Mapped[str] = mapped_column(String(500), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+
+class LtiLoginFlow(TimestampMixin, Base):
+    __tablename__ = "lti_login_flows"
+    __table_args__ = (
+        UniqueConstraint("state_hash", name="uq_lti_login_flow_state_hash"),
+        CheckConstraint("expires_at > created_at", name="ck_lti_login_flow_expiry"),
+        Index("ix_lti_login_flows_expiry", "expires_at", "consumed_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    platform_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("lti_platforms.id", ondelete="CASCADE"), nullable=False
+    )
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    nonce_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    correlation_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_link_uri: Mapped[str] = mapped_column(String(1000), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class LtiIdentityBinding(RevisionMixin, Base):
+    __tablename__ = "lti_identity_bindings"
+    __table_args__ = (
+        UniqueConstraint("platform_id", "subject", name="uq_lti_binding_subject"),
+        UniqueConstraint("platform_id", "moodle_user_id", name="uq_lti_binding_moodle_user"),
+        UniqueConstraint("platform_id", "id", name="uq_lti_binding_platform_id"),
+        CheckConstraint("revision >= 1", name="ck_lti_binding_revision"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    platform_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("lti_platforms.id", ondelete="CASCADE"), nullable=False
+    )
+    subject: Mapped[str] = mapped_column(String(500), nullable=False)
+    moodle_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+
+class LtiCoursePermission(TimestampMixin, Base):
+    __tablename__ = "lti_course_permissions"
+    __table_args__ = (
+        UniqueConstraint("platform_id", "course_id", name="uq_lti_course_permission"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    platform_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("lti_platforms.id", ondelete="CASCADE"), nullable=False
+    )
+    course_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), nullable=False
+    )
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    changed_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+
+class LmsCourseAssignmentMapping(RevisionMixin, Base):
+    __tablename__ = "lms_course_assignment_mappings"
+    __table_args__ = (
+        CheckConstraint("revision >= 1", name="ck_lms_mapping_revision"),
+        UniqueConstraint("platform_id", "id", name="uq_lms_mapping_platform_id"),
+        Index(
+            "uq_lms_mapping_active_external",
+            "platform_id",
+            "lti_context_id",
+            "lti_resource_link_id",
+            unique=True,
+            postgresql_where=text("active IS TRUE"),
+        ),
+        Index("ix_lms_mapping_local_course", "local_course_id", "active"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    platform_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("lti_platforms.id", ondelete="CASCADE"), nullable=False
+    )
+    lti_context_id: Mapped[str] = mapped_column(String(500), nullable=False)
+    lti_resource_link_id: Mapped[str] = mapped_column(String(500), nullable=False)
+    moodle_course_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    moodle_assignment_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    local_course_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("courses.id", ondelete="RESTRICT"), nullable=False
+    )
+    assignment_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assignment_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    changed_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+
+class LmsGroupMapping(RevisionMixin, Base):
+    __tablename__ = "lms_group_mappings"
+    __table_args__ = (
+        UniqueConstraint("mapping_id", "moodle_group_id", name="uq_lms_group_moodle_id"),
+        UniqueConstraint("mapping_id", "local_group_id", name="uq_lms_group_local_id"),
+        CheckConstraint("revision >= 1", name="ck_lms_group_mapping_revision"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    mapping_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("lms_course_assignment_mappings.id", ondelete="CASCADE"), nullable=False
+    )
+    moodle_group_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    local_group_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("groups.id", ondelete="RESTRICT"), nullable=False
+    )
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    changed_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+
+class LtiSessionBinding(TimestampMixin, Base):
+    __tablename__ = "lti_session_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["platform_id", "identity_binding_id"],
+            ["lti_identity_bindings.platform_id", "lti_identity_bindings.id"],
+            name="fk_lti_session_binding_platform_identity",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["platform_id", "mapping_id"],
+            ["lms_course_assignment_mappings.platform_id", "lms_course_assignment_mappings.id"],
+            name="fk_lti_session_binding_platform_mapping",
+            ondelete="RESTRICT",
+        ),
+    )
+
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    platform_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("lti_platforms.id", ondelete="RESTRICT"), nullable=False
+    )
+    identity_binding_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("lti_identity_bindings.id", ondelete="RESTRICT"), nullable=False
+    )
+    mapping_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("lms_course_assignment_mappings.id", ondelete="RESTRICT"), nullable=False
+    )
+    mapping_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class LmsImportEvent(TimestampMixin, Base):
+    __tablename__ = "lms_import_events"
+    __table_args__ = (
+        UniqueConstraint("fingerprint", name="uq_lms_import_fingerprint"),
+        CheckConstraint("status IN ('imported','blocked')", name="ck_lms_import_status"),
+        Index("ix_lms_import_mapping_created", "mapping_id", "created_at"),
+        ForeignKeyConstraint(
+            ["platform_id", "mapping_id"],
+            ["lms_course_assignment_mappings.platform_id", "lms_course_assignment_mappings.id"],
+            name="fk_lms_import_platform_mapping",
+            ondelete="RESTRICT",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    platform_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("lti_platforms.id", ondelete="RESTRICT"), nullable=False
+    )
+    mapping_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("lms_course_assignment_mappings.id", ondelete="RESTRICT"), nullable=False
+    )
+    mapping_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    moodle_attempt_id: Mapped[str] = mapped_column(String(240), nullable=False)
+    moodle_user_id: Mapped[int | None] = mapped_column(Integer)
+    moodle_group_id: Mapped[int | None] = mapped_column(Integer)
+    moodle_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    local_submission_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("submissions.id", ondelete="RESTRICT")
+    )
+    submission_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("submission_versions.id", ondelete="RESTRICT")
+    )
+    job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("jobs.id", ondelete="RESTRICT"))
+    imported_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    safe_detail: Mapped[str | None] = mapped_column(String(240))
+
+
 class Course(RevisionMixin, Base):
     __tablename__ = "courses"
     __table_args__ = (UniqueConstraint("code", name="uq_courses_code"),)

@@ -1,6 +1,6 @@
 # B9 — Moodle Sandbox
 
-**Status implementasi: BELUM DIMULAI. Hasil pengujian: BELUM DIJALANKAN. Tahap ini di luar MVP B0–B8.**
+**Status per 24 Oktober 2026: software B9, fixture, dan sandbox terisolasi tersedia pada worktree dari `b7cbb01`; pemeriksaan fixture terarah lulus. AC-SBX-01–05 terhadap Moodle yang benar-benar berjalan masih pending.**
 
 [Indeks dan matriks](README.md) · [Master](../../ALIGN_IMPLEMENTATION_SPEC.md) · [Predecessor: B8](B8-handover-dan-pilot-readiness.md)
 
@@ -65,6 +65,7 @@ Daftar endpoint master22.1 memakai konvensi prefix `/api/v1` master16.1. Login s
 | Surface normatif | Kontrak |
 |---|---|
 | `/api/v1/integrations/lti/login` | Third-party initiated login menurut LTI/OIDC, registered platform only, state/nonce5menit; method/protocol validation diuji terhadap sandbox aktual |
+| `/api/v1/integrations/lti/jwks` | Public RS256 keyset untuk pendaftaran LTI 1.3 Moodle; menolak file yang berisi private key dan tidak aktif saat feature flag off |
 | `/api/v1/lti/launch` | Validasi form POST launch, state/nonce/JWT sekali pakai, explicit local binding lalu session/authorized destination |
 | `/api/v1/integrations/moodle/mappings` | Authorized admin/lecturer metadata mapping; academic access tetap enrollment; revision/audit/CSRF pada mutasi |
 | `/api/v1/integrations/moodle/imports` | Lecturer memulai import attempt final yang sah; idempotent event/job/status, bukan student spending endpoint |
@@ -73,6 +74,12 @@ Daftar endpoint master22.1 memakai konvensi prefix `/api/v1` master16.1. Login s
 Verb/payload WS mengikuti official functions yang diaktifkan server dan recorded contract fixture. Resource action import mengikuti konvensi POST untuk pembuatan dan GET untuk status; mapping CRUD tetap hanya operasi metadata yang diperlukan. Jangan mengubah signature/CSRF core demi memenuhi launch.
 
 Integration state/job/error memakai typed contract/common error envelope, immutable source/version binding dan existing outbox/recovery. Missing platform config tidak mengubah aplikasi core menjadi not-ready. Source/assignment mapping yang berubah tidak menulis ulang event/history lama.
+
+### Registrasi tool di Moodle 4.5
+
+Untuk acceptance lokal, admin Moodle mendaftarkan ALIGN sebagai external tool tingkat situs melalui **Site administration → Plugins → Activity modules → External tool → Manage tools → Configure a tool manually**. Beri nama persis `ALIGN B9 LTI 1.3 Tool`, isi Tool URL dengan `https://align-b9.localhost:8443/api/v1/lti/launch`, Initiate login URL dengan `https://align-b9.localhost:8443/api/v1/integrations/lti/login`, pilih LTI 1.3 dan Public key type **Keyset URL**, lalu isi keyset dengan `https://align-b9.localhost:8443/api/v1/integrations/lti/jwks` dan Redirection URI dengan `https://align-b9.localhost:8443/api/v1/lti/launch`. Pilih **Show in activity chooser as a preconfigured tool**. Matikan grade services/grade acceptance serta pengiriman email/name yang tidak dibutuhkan.
+
+Sesudah disimpan, admin mengambil Platform ID/issuer, Client ID, Deployment ID, Authentication Request URL, Access Token URL, dan Public keyset URL dari detail registrasi Moodle, lalu memasukkannya ke `align lms platform-register`. Jangan menebak endpoint atau mengganti issuer berdasarkan host lain. Seeder membuat aktivitas LTI terpisah memakai type ID tool pra-konfigurasi hanya setelah registrasi aktif dan URL cocok; sebelum itu aktivitas tidak dibuat (placeholder lama disembunyikan). Setelah registrasi, jalankan ulang seed dengan `docker compose --project-name align-b9-sandbox --env-file data/b9/private/compose.env -f docker-compose.yml -f docker-compose.b9.yml exec moodle php /usr/local/bin/moodle-b9-seed.php`. Langkah dan istilah UI mengikuti [dokumentasi Moodle 4.5 tentang LTI External tools](https://docs.moodle.org/405/en/LTI_External_tools); perilaku registrasi, seed, dan launch aktual tetap harus diuji pada server yang hidup.
 
 ## 5. Verifikasi
 
