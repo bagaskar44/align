@@ -167,6 +167,8 @@ test("lecturer can create and approve a manual context without learning outcomes
   await page.getByRole("link", { name: /IF101/ }).click();
   await page.getByRole("tab", { name: "Konteks" }).click();
   await expect(page.getByRole("heading", { name: "Konteks tersimpan" })).toBeVisible();
+  const contextWorkspace = page.locator(".workspace-grid");
+  await expect(contextWorkspace.getByText(/SHA-256|Hash versi|Detail teknis/i)).toHaveCount(0);
   await expect(page.getByLabel("Format lokal", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Bahasa", { exact: true })).toHaveCount(0);
 

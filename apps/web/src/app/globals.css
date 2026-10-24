@@ -549,7 +549,7 @@ h1 { margin-bottom: 10px; font-size: clamp(30px, 5vw, 42px); line-height: 1.15; 
 .review-page-shell [hidden] { display: none !important; }
 .review-stage-nav { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
 .review-stage-nav > button { flex: 1 1 140px; }
-.review-page-shell .b4-review-columns { grid-template-columns: minmax(0, var(--review-left, 46fr)) minmax(0, var(--review-right, 54fr)); gap: 20px; }
+.review-page-shell .b4-review-columns { grid-template-columns: minmax(0, 46fr) minmax(0, 54fr); gap: 20px; }
 .review-page-shell .b4-review-panel { padding: 16px; background: #fff; align-content: start; }
 .review-page-shell .b4-review-panel > :is(h3, h4) { margin-block: 0 4px; }
 .review-page-shell .review-decision-question { font-size: 19px; font-weight: 600; line-height: 1.5; }
@@ -564,7 +564,6 @@ h1 { margin-bottom: 10px; font-size: clamp(30px, 5vw, 42px); line-height: 1.15; 
 .review-page-shell .button-row { flex-wrap: wrap; gap: 8px; }
 .review-source-summary { margin-bottom: 20px; background: #fff; }
 .review-source-summary li { margin-block: 8px; }
-.review-resize { grid-template-columns: auto minmax(100px, 220px); align-items: center; justify-content: start; gap: 16px; }
 .review-source-preview { padding: 12px; background: var(--surface-muted); border-radius: 8px; }
 .review-history-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 12px; }
 .review-history-list li { display: flex; flex-wrap: wrap; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; }
@@ -589,7 +588,6 @@ h1 { margin-bottom: 10px; font-size: clamp(30px, 5vw, 42px); line-height: 1.15; 
   .review-page-shell .b4-mobile-hidden { display: none; }
   .review-page-shell .b4-mobile-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: visible; }
   .review-page-shell .b4-mobile-tabs .button { padding-inline: 6px; }
-  .review-resize { display: none; }
   .queue-item, .queue-filters { grid-template-columns: minmax(0, 1fr); }
   .queue-item .button { justify-self: start; }
 }
