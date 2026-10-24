@@ -264,10 +264,13 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await submission.getByRole("checkbox", { name: /memeriksa berkas/ }).check();
   await submission.getByRole("button", { name: "Finalisasi pengumpulan" }).click();
   await expect(submission.getByText(/Receipt finalisasi v1/)).toBeVisible({ timeout: 30_000 });
+  await expect(submission.getByText(/Hash manifest|SHA-256/i)).toHaveCount(0);
+  await expect(submission).toContainText("Waktu server:");
+  await expect(submission).toContainText("complex-submission.xlsx");
   await expect.poll(async () => {
     const text = await submission.innerText();
-    return text.match(/Status teknis parser: ([\w]+)/)?.[1] ?? "";
-  }, { timeout: 480_000, intervals: [5_000, 10_000, 15_000] }).toBe("ready_for_review");
+    return text.match(/Status pemrosesan berkas: ([^\n]+)/)?.[1] ?? "";
+  }, { timeout: 480_000, intervals: [5_000, 10_000, 15_000] }).toBe("Siap diperiksa.");
   await expect(submission).toContainText("complex-submission.xlsx");
 
   await page.getByRole("button", { name: "Keluar" }).click();
@@ -280,11 +283,16 @@ test("lecturer builds and publishes a B2 task from shared rubric parser evidence
   await queue.getByLabel("Tugas", { exact: true }).selectOption({ label: assignmentTitle });
   const submissionRow = queue.locator(".queue-item").first();
   await expect(submissionRow).toBeVisible({ timeout: 30_000 });
+  await expect(queue.getByText(/SHA-256|fingerprint|Detail teknis/i)).toHaveCount(0);
+  await expect(submissionRow).toContainText("Mahasiswa Sintetis");
   await submissionRow.getByRole("link", { name: "Buka pemeriksaan" }).click();
   await expect(page).toHaveURL(/\/courses\/[^/]+\/submissions\//);
   const reviewWorkspace = page.getByRole("region", { name: "Pemeriksaan dan feedback" });
   await expect(reviewWorkspace.getByLabel("Keputusan pemeriksaan", { exact: true })).toHaveValue("");
   await expect(reviewWorkspace.getByText("Manifest SHA-256:")).toHaveCount(0);
+  await expect(reviewWorkspace.getByText(/SHA-256|fingerprint|Detail teknis/i)).toHaveCount(0);
+  await expect(reviewWorkspace.getByLabel("Lebar panel pemeriksaan")).toHaveCount(0);
+  await expect(reviewWorkspace.getByText(/\{\s*"/)).toHaveCount(0);
   await expect(reviewWorkspace.getByLabel("Pernyataan temuan", { exact: true })).not.toBeVisible();
   const evidencePanel = reviewWorkspace.getByRole("tabpanel", { name: "Bukti", exact: true });
   const files = evidencePanel.getByLabel("Berkas asli", { exact: true });

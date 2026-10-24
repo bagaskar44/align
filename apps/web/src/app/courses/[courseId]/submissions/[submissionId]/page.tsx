@@ -25,7 +25,7 @@ export default async function SubmissionReviewPage({ params, searchParams }: {
   return <main className="page-shell">
     <header className="topbar"><Link className="brand" href="/"><span className="brand-mark" aria-hidden="true">A</span>ALIGN</Link><div className="topbar-actions"><span className="user-name">{profile.data.user.display_name}</span><LogoutButton csrfToken={profile.data.csrf_token} /></div></header>
     <div className="review-page-shell"><nav aria-label="Lokasi halaman"><Link href={`/courses/${courseId}?${back}`}>← Kembali ke pengumpulan</Link><span> · {course.data.code} · {course.data.title}</span></nav>
-      <header className="review-page-heading"><div><p className="eyebrow">PEMERIKSAAN DOSEN</p><h1>{submission.data.owner.label ?? "Pekerjaan mahasiswa"}</h1><p>{submission.data.assignment_title}</p></div><div><p>Pengumpulan versi {submission.data.active_final_version?.version_no ?? "—"}</p>{submission.data.active_final_version?.is_late && <span className="state-pill">Terlambat</span>}</div></header>
+      <header className="review-page-heading"><div><h1>{submission.data.owner.label ?? "Pekerjaan mahasiswa"}</h1><p>{submission.data.assignment_title}</p></div><div><p>Pengumpulan versi {submission.data.active_final_version?.version_no ?? "—"}</p>{submission.data.active_final_version?.is_late && <span className="state-pill">Terlambat</span>}</div></header>
       <LecturerSubmissionReview submission={submission.data} csrfToken={profile.data.csrf_token} />
     </div>
   </main>;

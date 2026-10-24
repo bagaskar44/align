@@ -125,7 +125,6 @@ export function SubmissionFileViewer({ fileId, initialSourceUnitId, onManualAnch
         </div>
         <ParserLimitations entries={sources.limitations} />
         {!sources.items.length && <p className="notice">Lokasi terstruktur belum tersedia. Anda tetap dapat mengunduh berkas asli dan mencatat bukti manual.</p>}
-        <details><summary>Detail teknis sumber</summary><p>{sources.file.mime}</p><pre>{JSON.stringify({ source: selected?.source_unit, evidence: selected?.evidence }, null, 2)}</pre></details>
         {selectionPending && <p role="status" className="help-text">Memuat anchor unit yang dipilih…</p>}
         {selected && onManualAnchor && <button type="button" className="button button-quiet" disabled={selectionPending} onClick={() => onManualAnchor({
           file_id: selected.file.id, source_sha256: selected.file.sha256, anchor: selected.source_unit.anchor,

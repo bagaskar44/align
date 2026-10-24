@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import type { ApiMethod, ApiRequestPath } from "@/lib/api-contract.generated";
+import { processingLabel } from "./reviewPresentation";
 
 type Assignment = { id: string; title: string; version_no?: number | null; due_at?: string; mode?: "individual" | "group" };
 type DraftFile = { id: string; name: string; size_bytes: number; mime: string; sha256: string; preflight: Record<string, unknown> };
@@ -247,7 +248,7 @@ export function SubmissionWorkspace({ assignments, csrfToken }: { assignments: A
           <label className="button button-secondary file-picker">Pilih berkas<input type="file" multiple accept=".pdf,.docx,.xlsx,.jpg,.jpeg,.png" onChange={(event) => void uploadFiles(event)} /></label>
           <div className="submission-file-list">
             {(submission?.draft_files ?? []).map((file) => <div className="submission-file-row" key={file.id}>
-              <span><strong>{file.name}</strong><small>{(file.size_bytes / 1024 / 1024).toFixed(2)} MiB · {file.mime}</small></span>
+              <span><strong>{file.name}</strong><small>{(file.size_bytes / 1024 / 1024).toFixed(2)} MiB</small></span>
               <button className="button button-quiet" type="button" onClick={() => void deleteDraft(file.id)}>Hapus draft</button>
             </div>)}
           </div>
@@ -258,11 +259,10 @@ export function SubmissionWorkspace({ assignments, csrfToken }: { assignments: A
         </>}
         {submission?.active_final_version && <div className="notice" role="status">
           <strong>Receipt finalisasi v{submission.active_final_version.version_no}</strong>
-          <p>Hash manifest: <code>{submission.active_final_version.manifest_hash}</code></p>
           <p>Waktu server: {new Date(submission.active_final_version.finalized_at).toLocaleString("id-ID")} · {submission.active_final_version.is_late ? "terlambat" : "tepat waktu"}</p>
-          <p>Status teknis parser: {job?.status ?? submission.processing ?? "queued"}. Detail parsing internal tidak ditampilkan kepada mahasiswa.</p>
+          <p>Status pemrosesan berkas: {processingLabel(job?.status ?? submission.processing ?? "queued")}.</p>
           <ul className="submission-file-list" aria-label="Berkas final">
-            {submission.final_files.map((file) => <li key={file.id}><strong>{file.name}</strong><span>{file.mime} · {file.size_bytes} byte</span></li>)}
+            {submission.final_files.map((file) => <li key={file.id}><strong>{file.name}</strong><span>{(file.size_bytes / 1024 / 1024).toFixed(2)} MiB</span></li>)}
           </ul>
         </div>}
         {submission?.active_final_version && <section className="student-publication" aria-labelledby="student-publication-title">

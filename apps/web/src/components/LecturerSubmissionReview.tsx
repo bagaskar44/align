@@ -41,7 +41,6 @@ export function LecturerSubmissionReview({ submission, csrfToken }: { submission
     <details className="review-source-summary"><summary>Berkas pengumpulan ({files.length})</summary>
       <ul>{files.map((file) => <li key={file.id}><strong>{file.name}</strong> · {processingLabel(file.parse_status)}</li>)}</ul>
       <ParserLimitations entries={files.flatMap((file) => file.limitations.map((item) => ({ ...item, source: file.name })))} />
-      <details><summary>Detail teknis pengumpulan</summary><p>Manifest SHA-256: <code>{submission.active_final_version?.manifest_hash}</code></p></details>
     </details>
     <ReviewWorkspace key={submission.active_final_version?.id ?? submission.id} submission={submission} sourceRefreshKey={sourceRefreshKey} csrfToken={csrfToken} manualAnchorSelection={selection} onManualAnchorSelection={setSelection} />
   </>;

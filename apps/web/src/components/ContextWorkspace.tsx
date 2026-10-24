@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import type { ApiMethod, ApiRequestPath } from "@/lib/api-contract.generated";
+import { ParserLimitations } from "./ParserLimitations";
+import { processingLabel, sourceLocation } from "./reviewPresentation";
 
 type ConflictCandidate = { value: string; source_ref?: Record<string, unknown> };
 type ContextConflict = {
@@ -69,6 +71,32 @@ function outcomeText(value: unknown): string {
     .filter((item): item is { code: string; description: string } => Boolean(item && typeof item === "object" && "code" in item && "description" in item))
     .map((item) => `${item.code} | ${item.description}`)
     .join("\n");
+}
+
+function evidenceText(value: Record<string, unknown> | undefined): string {
+  if (!value) return "Kutipan teks tidak tersedia; tinjau berkas sumber asli.";
+  for (const key of ["text", "value", "quote", "description"]) {
+    if (typeof value[key] === "string" && value[key]) return value[key] as string;
+  }
+  return "Bukti terstruktur tersedia; tinjau berkas sumber asli.";
+}
+
+function sourceReferenceLabel(value: unknown, sources: ContextVersion["instruction_sources"]): string {
+  if (!value || typeof value !== "object") return "Asal dokumen tidak tersedia";
+  const ref = value as { file_id?: unknown; source_role?: unknown; anchor?: unknown };
+  const source = sources.find((item) => item.file_id === ref.file_id);
+  const role = ref.source_role === "kk" ? "KK" : ref.source_role === "rpp" ? "RPP" : null;
+  const location = ref.anchor && typeof ref.anchor === "object" ? sourceLocation(ref.anchor as Record<string, unknown>) : null;
+  return [role, source?.original_name ?? (role ? "Sumber normatif" : "Metadata mata kuliah"), location].filter(Boolean).join(" · ");
+}
+
+function sourceUnitLabel(value: string): string {
+  const labels: Record<string, string> = {
+    file: "Berkas", root: "Berkas", page: "Halaman", pdf_page: "Halaman PDF",
+    paragraph: "Paragraf", table: "Tabel", table_cell: "Sel tabel", image: "Gambar",
+    sheet: "Lembar kerja", spreadsheet_cell: "Sel lembar kerja", spreadsheet_range: "Rentang lembar kerja",
+  };
+  return labels[value] ?? "Bagian sumber";
 }
 
 export function ContextWorkspace({ course, csrfToken, initialVersions, initialCursor }: { course: Course; csrfToken: string; initialVersions: VersionSummary[]; initialCursor: string | null }) {
@@ -355,14 +383,14 @@ export function ContextWorkspace({ course, csrfToken, initialVersions, initialCu
 
   function sourceDetails(value: unknown) {
     if (!value || typeof value !== "object" || !("source_refs" in value) || !Array.isArray(value.source_refs)) return null;
-    const refs = value.source_refs as Array<{ file_id?: string; source_role?: string; source_sha256?: string; anchor?: Record<string, unknown> }>;
+    const refs = value.source_refs as Array<{ file_id?: string; source_role?: string; anchor?: Record<string, unknown> }>;
     return refs.length > 0 && <details><summary>Asal field dan cuplikan sumber</summary>{refs.map((ref, index) => {
       const source = activeContext?.instruction_sources.find((item) => item.file_id === ref.file_id);
       const evidence = activeContext?.evidence.find((item) => item.file_id === ref.file_id && JSON.stringify(item.anchor) === JSON.stringify(ref.anchor));
       return <div key={index}>
         <p>{ref.source_role?.toUpperCase()} · {source?.original_name ?? "Metadata mata kuliah"}{source && <> · <a href={source.download_path}>Unduh sumber asli</a></>}</p>
-        <pre>{JSON.stringify({ anchor: ref.anchor, ...(evidence ? { cuplikan: evidence.content } : {}) }, null, 2)}</pre>
-        {ref.source_sha256 && <small>SHA-256 {ref.source_sha256}</small>}
+        <p>{ref.anchor ? sourceLocation(ref.anchor) : "Lokasi seluruh berkas"}</p>
+        {evidence && <blockquote>{evidenceText(evidence.content)}</blockquote>}
       </div>;
     })}</details>;
   }
@@ -419,27 +447,26 @@ export function ContextWorkspace({ course, csrfToken, initialVersions, initialCu
             {conflict.resolution && <p className="muted-copy">Pilihan tersimpan: <strong>{conflict.resolution.value}</strong></p>}
             <label className="field">Nilai yang dipilih<select disabled={activeContext.state !== "draft"} value={conflict.candidate_values.some((candidate) => candidate.value === conflictChoices[conflict.field_path]) ? conflictChoices[conflict.field_path] : ""} onChange={(event) => setConflictChoices({ ...conflictChoices, [conflict.field_path]: event.target.value })}><option value="">Koreksi manual</option>{conflict.candidate_values.map((candidate, index) => <option key={`${candidate.value}-${index}`} value={candidate.value}>{candidate.value}</option>)}</select></label>
             <label className="field">Nilai keputusan<input disabled={activeContext.state !== "draft"} value={conflictChoices[conflict.field_path] ?? ""} maxLength={conflict.field_path === "context_description" ? 4000 : conflict.field_path === "course_code" ? 64 : conflict.field_path === "course_title" ? 240 : 40} onChange={(event) => setConflictChoices({ ...conflictChoices, [conflict.field_path]: event.target.value })} /></label>
-            <details><summary>Asal kandidat dan anchor</summary>{conflict.candidate_values.map((candidate, index) => <pre key={index}>{JSON.stringify({ value: candidate.value, source: candidate.source_ref }, null, 2)}</pre>)}</details>
+            <details><summary>Asal nilai yang diusulkan</summary>{conflict.candidate_values.map((candidate, index) => <div key={index}><p><strong>{candidate.value}</strong></p><p>{sourceReferenceLabel(candidate.source_ref, activeContext.instruction_sources)}</p></div>)}</details>
             <label className="field">Alasan keputusan<input disabled={activeContext.state !== "draft"} value={conflictReasons[conflict.field_path] ?? ""} onChange={(event) => setConflictReasons({ ...conflictReasons, [conflict.field_path]: event.target.value })} maxLength={500} placeholder="Contoh: disesuaikan dengan dokumen KK terbaru" /></label>
             {activeContext.state === "draft" && <button className="button button-quiet" type="button" disabled={busy} onClick={() => void resolveConflict(conflict)}>Simpan keputusan</button>}
           </article>;
             return metadataConflict
-              ? <details className="technical-details" key={conflict.field_path}><summary>Detail teknis · konflik {FIELD_LABELS[conflict.field_path] ?? conflict.field_path}</summary>{card}</details>
+              ? <details key={conflict.field_path}><summary>Konflik metadata yang perlu ditinjau · {FIELD_LABELS[conflict.field_path] ?? conflict.field_path}</summary>{card}</details>
               : card;
           })}</section>}
           <section className="subsection" aria-labelledby="source-title"><h3 id="source-title">Sumber dan status ekstraksi</h3>
-            {activeContext.instruction_sources.length === 0 ? <p className="muted-copy">Draft ini belum memiliki berkas sumber.</p> : <ul className="compact-list">{activeContext.instruction_sources.map((source) => <li key={`${source.file_id}-${source.source_role}`}><span><strong>{source.source_role.toUpperCase()}</strong> · {source.original_name}<small>SHA-256 {source.sha256}</small></span><a href={source.download_path}>Unduh</a></li>)}</ul>}
-            {activeContext.parse_artifacts.length > 0 && <ul className="compact-list">{activeContext.parse_artifacts.map((artifact) => <li key={artifact.id}><span>Status parser: <strong>{artifact.status}</strong>{artifact.limitations.map((item) => <small key={item.code}>{item.message}</small>)}</span></li>)}</ul>}
+            {activeContext.instruction_sources.length === 0 ? <p className="muted-copy">Draft ini belum memiliki berkas sumber.</p> : <ul className="compact-list">{activeContext.instruction_sources.map((source) => <li key={`${source.file_id}-${source.source_role}`}><span><strong>{source.source_role.toUpperCase()}</strong> · {source.original_name}</span><a href={source.download_path}>Unduh</a></li>)}</ul>}
+            {activeContext.parse_artifacts.length > 0 && <ul className="compact-list">{activeContext.parse_artifacts.map((artifact) => <li key={artifact.id}><span>Status pembacaan: <strong>{processingLabel(artifact.status)}</strong>{artifact.limitations.map((item) => <small key={item.code}>{item.message}</small>)}</span></li>)}</ul>}
             {activeContext.source_unit_summary.total > 0 && <details><summary>Inventaris {activeContext.source_unit_summary.total} unit sumber</summary>
-              <p>{Object.entries(activeContext.source_unit_summary.by_status).map(([status, count]) => `${status}: ${count}`).join(" · ")}</p>
-              {activeContext.source_unit_summary.unresolved_samples.map((unit, index) => <div key={index}><strong>{unit.type} · {unit.parse_status}</strong><pre>{JSON.stringify(unit.anchor, null, 2)}</pre>{unit.limitations.map((item) => <p key={item.code}>{item.message}</p>)}</div>)}
+              <p>{Object.entries(activeContext.source_unit_summary.by_status).map(([status, count]) => `${processingLabel(status)}: ${count}`).join(" · ")}</p>
+              {activeContext.source_unit_summary.unresolved_samples.map((unit, index) => <div key={index}><strong>{activeContext.instruction_sources.find((source) => source.file_id === unit.file_id)?.original_name ?? "Sumber"} · {sourceUnitLabel(unit.type)} · {processingLabel(unit.parse_status)}</strong><p>{sourceLocation(unit.anchor)}</p>{unit.limitations.map((item) => <p key={item.code}>{item.message}</p>)}</div>)}
               {activeContext.source_unit_summary.has_more_unresolved && <p>Daftar ini menampilkan 50 unit yang memerlukan peninjauan. Sumber asli dan total inventaris tetap tersedia.</p>}
             </details>}
           </section>
-          {activeContext.evidence.length > 0 && <section className="subsection" aria-labelledby="evidence-title"><h3 id="evidence-title">Bukti dan anchor</h3><ul className="evidence-list">{activeContext.evidence.map((item) => <li key={item.id}><strong>{item.file_name} · {item.type}</strong><pre>{JSON.stringify({ anchor: item.anchor, content: item.content }, null, 2)}</pre></li>)}</ul></section>}
+          {activeContext.evidence.length > 0 && <section className="subsection" aria-labelledby="evidence-title"><h3 id="evidence-title">Bukti sumber</h3><ul className="evidence-list">{activeContext.evidence.map((item) => <li key={item.id}><strong>{item.file_name} · {item.type}</strong><p>{sourceLocation(item.anchor)}</p><blockquote>{evidenceText(item.content)}</blockquote><ParserLimitations entries={item.limitations} /></li>)}</ul></section>}
           {activeContext.evidence_truncated && <p className="muted-copy">Menampilkan {activeContext.evidence.length} dari {activeContext.evidence_total} bukti. Unduh sumber asli untuk meninjau keseluruhan dokumen.</p>}
           {activeContext.state === "draft" && <button className="button button-primary approval-button" type="button" disabled={busy} onClick={() => void approveContext()}>Sahkan versi ini</button>}
-          {activeContext.content_hash && <p className="hash-note">Hash versi disahkan: <code>{activeContext.content_hash}</code></p>}
         </>}
       </section>
       {error && <p className="form-error workspace-message" role="alert">{error}</p>}

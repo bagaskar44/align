@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { ApiMethod, ApiRequestPath } from "@/lib/api-contract.generated";
 import { NumericComparisonEditor, type NumericComparison } from "./NumericComparisonEditor";
 import { ParserLimitations } from "./ParserLimitations";
@@ -193,7 +193,6 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
   const [notice, setNotice] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const [stage, setStage] = useState<"inspect" | "feedback" | "history">("inspect");
-  const [split, setSplit] = useState(46);
   const [sourceFileId, setSourceFileId] = useState(submission.files?.[0]?.id ?? "");
   const [requestedReviewId, setRequestedReviewId] = useState("");
   const [reviewHistory, setReviewHistory] = useState<Array<{ id: string; version_no: number; state: string; analysis_run_id: string | null }>>([]);
@@ -684,7 +683,7 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
       {dirtyScopes.length > 0 && <button type="button" className="text-button" onClick={() => { if (window.confirm("Batalkan semua isian yang belum tersimpan?")) discardForms(); }}>Batalkan isian</button>}
     </header>
     <nav className="review-stage-nav" aria-label="Tahap pemeriksaan">{([["inspect", "Pemeriksaan"], ["feedback", "Feedback"], ["history", "Riwayat"]] as const).map(([key, label]) => <button key={key} type="button" aria-current={stage === key ? "step" : undefined} className={`button ${stage === key ? "button-primary" : "button-quiet"}`} onClick={() => setStage(key)}>{label}</button>)}</nav>
-    {error && <div className="form-error" role="alert"><p>{error.split("\n")[0]}</p>{error.includes("\n") && <details><summary>Detail teknis kendala</summary><pre>{error.split("\n").slice(1).join("\n")}</pre></details>}<button className="button button-quiet" type="button" disabled={busy} onClick={() => setRefreshKey((value) => value + 1)}>Muat ulang data (pertahankan isian)</button></div>}{notice && <p className="form-success" role="status">{notice}</p>}
+    {error && <div className="form-error" role="alert"><p>{error.split("\n")[0]}</p><button className="button button-quiet" type="button" disabled={busy} onClick={() => setRefreshKey((value) => value + 1)}>Muat ulang data (pertahankan isian)</button></div>}{notice && <p className="form-success" role="status">{notice}</p>}
     {remoteReview && <aside className="notice" role="alert"><h3>Pemeriksaan telah berubah di server</h3><p>Isian lokal belum diganti. Bandingkan dengan keputusan tersimpan sebelum memilih revisi server sebagai dasar. Menyimpan isian lokal setelah itu dapat mengganti keputusan pada bagian yang Anda sunting.</p><details><summary>Lihat keputusan terbaru di server</summary><ul>{remoteReview.elements.map((element) => <li key={element.id}>{element.decision_question}: {reviewLabel(element.decision.resolution ?? "pending")} · {element.decision.reason}</li>)}</ul><p>{remoteReview.lecturer_notes}</p><ul>{remoteReview.limitations.map((text, index) => <li key={index}>{text}</li>)}</ul></details><button className="button button-quiet" type="button" onClick={() => { setCurrentReview(remoteReview); setRemoteReview(null); setRefreshKey((value) => value + 1); }}>Gunakan revisi server sebagai dasar, pertahankan isian lokal</button></aside>}
     {!review && !error && <p role="status">Memuat ruang pemeriksaan…</p>}
     {review && <>
@@ -705,15 +704,13 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
               setRequestedReviewId(created.id); setPendingRunId(""); setAnalysisWatchId(""); try { sessionStorage.removeItem(`align:analysis:${activeVersion.id}`); } catch { /* Resume hint is optional. */ } setSelectedElementId(""); setSelectedEvidenceId(""); setAnnotationSource(null); onManualAnchorSelection(null);
             }, "Pemeriksaan baru dibuat dari hasil analisis yang dipilih.");
           }}>Gunakan hasil pada pemeriksaan baru</button>}
-          <details><summary>Detail teknis analisis</summary><pre>{JSON.stringify({ releases: runtimeReleases, run: review.analysis_run }, null, 2)}</pre></details>
         </details>
         <nav className="b4-mobile-tabs" role="tablist" aria-label="Panel review">{([["inspect", "Pemeriksaan"], ["evidence", "Bukti"], ["decision", "Keputusan"]] as const).map(([key, label], index) => <button key={key} id={`${reviewTabsId}-tab-${key}`} role="tab" type="button" aria-selected={mode === key} aria-controls={`${reviewTabsId}-panel-${key}`} tabIndex={mode === key ? 0 : -1} className={`button ${mode === key ? "button-primary" : "button-quiet"}`} onClick={() => setMode(key)} onKeyDown={(event) => {
           const modes = ["inspect", "evidence", "decision"] as const;
           const next = event.key === "Home" ? 0 : event.key === "End" ? 2 : event.key === "ArrowRight" ? (index + 1) % 3 : event.key === "ArrowLeft" ? (index + 2) % 3 : null;
           if (next !== null) { event.preventDefault(); setMode(modes[next]); document.getElementById(`${reviewTabsId}-tab-${modes[next]}`)?.focus(); }
         }}>{label}</button>)}</nav>
-        <label className="review-resize field-label">Lebar panel pemeriksaan<input aria-label="Lebar panel pemeriksaan" type="range" min={35} max={60} value={split} onChange={(event) => setSplit(Number(event.target.value))} /></label>
-        <div className="b4-review-columns" style={{ "--review-left": `${split}fr`, "--review-right": `${100 - split}fr` } as CSSProperties}>
+        <div className="b4-review-columns">
           <section id={`${reviewTabsId}-panel-inspect`} role="tabpanel" tabIndex={0} aria-label="Pemeriksaan" className={`b4-review-panel${mode !== "inspect" ? " b4-mobile-hidden" : ""}`}>
             <h3>Pertanyaan pemeriksaan</h3>
             <label className="field-label">Pilih pertanyaan<select value={selectedElement?.id ?? ""} onChange={(event) => selectElement(event.target.value)}>{review.elements.map((item, index) => <option key={item.id} value={item.id}>{index + 1}. {item.criterion?.title ?? item.decision_question} · {item.decision.review_status === "reviewed" ? "Sudah diperiksa" : "Belum diperiksa"}</option>)}</select></label>
@@ -725,7 +722,7 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
                 {selectedElement.analysis.grounding?.semantic_status !== "verified" && <p className="notice">Dukungan makna masih memerlukan penelaahan dosen. Kutipan cocok saja tidak membuktikan kesimpulan.</p>}
                 {selectedElement.analysis.coverage && <p>Cakupan: {selectedElement.analysis.coverage.inspected_count} dari {selectedElement.analysis.coverage.compatible_count} unit sumber yang sesuai diperiksa; {selectedElement.analysis.coverage.unresolved_count} belum terselesaikan. {selectedElement.analysis.coverage.exhaustive_for_negative ? "Inspeksi tercatat menyeluruh untuk pemeriksaan ketiadaan." : "Ketiadaan belum dibuktikan dari cakupan ini."}</p>}
                 <ParserLimitations entries={selectedElement.analysis.coverage?.limitations ?? []} />
-                <details><summary>Observasi sumber</summary><ul>{selectedElement.analysis.observations.map((item, index) => <li key={index}>{String(item.text ?? (item.kind === "applicability_task_fact" ? "Fakta tugas terverifikasi digunakan untuk menentukan keberlakuan pemeriksaan." : "Observasi terstruktur; rincian tersedia di detail teknis."))}</li>)}</ul></details>
+                <details><summary>Observasi sumber</summary><ul>{selectedElement.analysis.observations.map((item, index) => <li key={index}>{String(item.text ?? (item.kind === "applicability_task_fact" ? "Fakta tugas terverifikasi digunakan untuk menentukan keberlakuan pemeriksaan." : "Observasi sumber tercatat; periksa kutipan dan berkas asli sebelum mengambil keputusan."))}</li>)}</ul></details>
               </section>}
               <div className="b4-action-card" data-edit-scope="decision">
                 <label className="field-label">Keputusan pemeriksaan<select value={resolution} onChange={(event) => setResolution(event.target.value)}><option value="">Pilih keputusan setelah menelaah sumber</option>{["observed_no_issue", "confirmed_issue", "not_applicable", "unable_to_conclude"].map((key) => <option key={key} value={key}>{reviewLabel(key)}</option>)}</select></label>
@@ -733,7 +730,6 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
                 <details><summary>Pilih bukti yang diperiksa ({decisionEvidenceIds.length})</summary><fieldset><legend>Bukti sumber</legend>{evidence.map((item) => <label key={item.id} className="check-row"><input type="checkbox" checked={decisionEvidenceIds.includes(item.id)} onChange={() => updateChecklist(setDecisionEvidenceIds, decisionEvidenceIds, item.id)} />{item.file_name} · {anchorText(item.anchor)}</label>)}{!evidence.length && <p>Belum ada bukti hasil ekstraksi. Anda dapat memilih lokasi dari sumber asli atau menambahkan bukti manual di panel Bukti.</p>}</fieldset></details>
                 <button className="button button-primary" type="button" disabled={busy || !resolution} onClick={() => void saveElementDecision()}>Simpan keputusan</button>
               </div>
-              <details><summary>Detail teknis pertanyaan dan derivasi</summary><pre>{JSON.stringify({ code: selectedElement.code, payload: selectedElement.payload, analysis: selectedElement.analysis }, null, 2)}</pre></details>
             </>}
             <button type="button" className="button button-quiet" aria-expanded={showFinding} onClick={() => setShowFinding((value) => !value)}>Tambahkan temuan</button>
             <section hidden={!showFinding} className="b4-action-card" data-edit-scope="finding">
@@ -778,7 +774,6 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
           {review.findings.length === 0 && <p>Belum ada temuan. Pemeriksaan tetap dapat diselesaikan tanpa memaksakan adanya masalah.</p>}
           {review.findings.map((finding) => <article className="b4-finding-card" key={finding.id}><h4>{finding.origin === "lecturer" ? "Temuan dosen" : "Kandidat temuan"} · {reviewLabel(finding.category)}</h4><p>{finding.claim}</p><p>{reviewLabel(finding.action)}</p>
             {finding.evidence_ids.map((id) => <button key={id} className="text-button" type="button" onClick={() => { setSelectedFindingId(finding.id); setSelectedEvidenceId(id); setAnnotationSource(null); setMode("evidence"); requestAnimationFrame(() => document.getElementById(`${reviewTabsId}-panel-evidence`)?.focus()); }}>Buka bukti: {evidence.find((item) => item.id === id)?.file_name ?? "sumber tertaut"}</button>)}
-            <details><summary>Detail teknis temuan</summary><pre>{JSON.stringify(finding, null, 2)}</pre></details>
             {finding.candidate_id && finding.action === "pending" && <div data-edit-scope="candidate"><label className="field-label">Alasan (wajib jika belum dapat disimpulkan)<textarea maxLength={2000} value={candidateReason} onChange={(event) => setCandidateReason(event.target.value)} /></label><div className="button-row">
               <button className="button button-quiet" type="button" disabled={busy || finding.technical_validation === "invalid"} onClick={() => void candidateAction(finding, "accept")}>Konfirmasi</button><button className="button button-quiet" type="button" disabled={busy} onClick={() => void candidateAction(finding, "reject")}>Tolak</button>
               <button className="button button-quiet" type="button" disabled={busy} onClick={() => { const target = finding.targets.find((item) => item.kind === "element"); if (!allowDiscard()) return; if (target && target.id !== selectedElementId) selectElement(target.id); markDirty("finding"); setCandidateEditId(finding.id); setFindingCategory(finding.category); setFindingClaim(finding.claim); setFindingEvidenceIds(finding.evidence_ids); setSelectedFindingId(finding.id); setNumericValue(null); }}>Sunting dan konfirmasi</button><button className="button button-quiet" type="button" disabled={busy || !candidateReason.trim()} onClick={() => void candidateAction(finding, "defer")}>Belum dapat disimpulkan</button>
@@ -820,11 +815,13 @@ export function ReviewWorkspace({ submission, csrfToken, manualAnchorSelection, 
 
 function SourcePreview({ file, anchor, version }: { file?: SourceFile; anchor?: Record<string, unknown>; version: number }) {
   if (!file) return <p>Pilih sumber terlebih dahulu.</p>;
-  return <aside className="review-source-preview"><p>{file.name} · pengumpulan versi {version} · {anchor ? anchorText(anchor) : "Lokasi seluruh berkas"}</p><p className="help-text">Fingerprint sumber: {file.sha256.slice(0, 12)}</p><details><summary>Detail teknis sumber</summary><p>SHA-256: {file.sha256}</p><pre>{JSON.stringify(anchor, null, 2)}</pre></details></aside>;
+  return <aside className="review-source-preview"><p>{file.name} · pengumpulan versi {version} · {anchor ? anchorText(anchor) : "Lokasi seluruh berkas"}</p></aside>;
 }
 function PublicationPreview({ value }: { value: Record<string, unknown> }) {
-  const snapshot = value.snapshot as { feedback?: { body_markdown?: string }; limitations?: string[]; source?: { version_no?: number }; confirmed_findings?: Array<{ claim: string }> } | undefined;
-  return <article className="b4-action-card"><h4>Hasil resmi tersimpan</h4><p>{reviewLabel(String(value.status))} · versi sumber {snapshot?.source?.version_no ?? "tercatat dalam snapshot"}</p><pre className="b4-evidence-content">{snapshot?.feedback?.body_markdown ?? "Teks hasil tidak tersedia."}</pre><ul>{snapshot?.limitations?.map((text, index) => <li key={index}>{text}</li>)}</ul><details><summary>Detail teknis publikasi</summary><pre>{JSON.stringify(value, null, 2)}</pre></details></article>;
+  const snapshot = value.snapshot as { feedback?: { body_markdown?: string }; limitations?: string[]; source?: { version_no?: number }; confirmed_findings?: Array<{ claim?: string; criterion_title?: string; evidence?: Array<{ file_name?: string; anchor?: Record<string, unknown> }> }> } | undefined;
+  return <article className="b4-action-card"><h4>Hasil resmi tersimpan</h4><p>{reviewLabel(String(value.status))} · versi sumber {snapshot?.source?.version_no ?? "tercatat dalam snapshot"}</p><h5>Feedback mahasiswa</h5><div className="b4-evidence-content">{snapshot?.feedback?.body_markdown ?? "Teks hasil tidak tersedia."}</div>
+    {snapshot?.confirmed_findings?.length ? <section><h5>Temuan yang disertakan</h5><ul>{snapshot.confirmed_findings.map((finding, index) => <li key={index}><strong>{finding.criterion_title ?? "Temuan pemeriksaan"}</strong>{finding.claim ? <p>{finding.claim}</p> : null}{finding.evidence?.map((item, evidenceIndex) => <p key={evidenceIndex} className="help-text">{item.file_name ?? "Berkas sumber"}{item.anchor ? ` · ${anchorText(item.anchor)}` : ""}</p>)}</li>)}</ul></section> : null}
+    {snapshot?.limitations?.length ? <section><h5>Batas pemeriksaan</h5><ul>{snapshot.limitations.map((text, index) => <li key={index}>{text}</li>)}</ul></section> : null}</article>;
 }
 function roleLabel(value: string): string { return ({ content: "Isi", relation: "Hubungan antarbukti", left: "Sumber pertama", right: "Sumber pembanding", basis: "Dasar pembandingan", claim: "Pernyataan", support: "Pendukung", method: "Metode", application: "Penerapan", artifact: "Hasil pekerjaan", trace: "Jejak pendukung" } as Record<string, string>)[value] ?? "Peran bukti"; }
 function relationshipLabel(value: string): string { return ({ covers: "Cakupan", compares: "Perbandingan", supports: "Dukungan", applies: "Penerapan", traces_to: "Keterlacakan", reports_same_quantity: "Pelaporan besaran yang sama" } as Record<string, string>)[value] ?? "Hubungan bukti"; }
