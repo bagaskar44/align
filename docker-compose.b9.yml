@@ -52,6 +52,8 @@ services:
       - b9-truststore:/etc/ssl/certs:ro
       - moodle-ws-secrets:/run/b9-secrets:ro
       - ./data/b9/private/lti-tool-jwks.json:/run/b9-config/lti-tool-jwks.json:ro
+      - ./data/b9/qa:/run/b9-qa:rw
+      - ./scripts/b9/seed_align_fixtures.py:/run/b9-config/seed_align_fixtures.py:ro
     depends_on:
       ca-store:
         condition: service_completed_successfully
@@ -121,6 +123,7 @@ services:
       MOODLE_B9_TEST_PASSWORD: ${B9_MOODLE_TEST_PASSWORD}
       ALIGN_B9_LOGIN_URL: https://align-b9.localhost:8443/api/v1/integrations/lti/login
       ALIGN_B9_LAUNCH_URL: https://align-b9.localhost:8443/api/v1/lti/launch
+      ALIGN_B9_JWKS_URL: https://align-b9.localhost:8443/api/v1/integrations/lti/jwks
     volumes:
       - moodle-data:/var/www/moodledata
       - moodle-config:/run/moodle-config
@@ -143,6 +146,41 @@ services:
       private:
         aliases: [moodle]
     restart: unless-stopped
+
+  browser-qa:
+    profiles: ["b9-qa"]
+    build:
+      context: .
+      dockerfile: docker/b9-browser-qa.Dockerfile
+    environment:
+      ALIGN_B9_ORIGIN: https://align-b9.localhost:8443
+      MOODLE_B9_TEST_PASSWORD: ${B9_MOODLE_TEST_PASSWORD}
+    volumes:
+      - ./data/b9/private/ca.crt:/run/b9/ca.crt:ro
+      - ./data/b9/qa:/run/b9-qa:rw
+      - ./scripts/b9/browser_acceptance.cjs:/run/b9-config/browser_acceptance.cjs:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      moodle:
+        condition: service_healthy
+      proxy:
+        condition: service_started
+    networks: [private]
+    restart: "no"
+
+  api-test-runner:
+    profiles: ["b9-qa"]
+    image: align-b9-sandbox-api-tests
+    build:
+      context: .
+      dockerfile: docker/b9-api-tests.Dockerfile
+    environment:
+      APP_DEMO_MODE: "true"
+      APP_ENV: development
+      PROVIDER_MODE: mock
+      PAID_CALLS_ENABLED: "false"
+    restart: "no"
 
 volumes:
   moodle-postgres-data:

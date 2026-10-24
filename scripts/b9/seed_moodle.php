@@ -16,10 +16,15 @@ require_once($CFG->dirroot . '/mod/lti/locallib.php');
 $siteadmins = explode(',', (string)$CFG->siteadmins);
 $adminid = (int)$siteadmins[0];
 $USER = $DB->get_record('user', ['id' => $adminid], '*', MUST_EXIST);
+$adminpassword = getenv('MOODLE_B9_ADMIN_PASSWORD');
 $testpassword = getenv('MOODLE_B9_TEST_PASSWORD');
+if (!is_string($adminpassword) || strlen($adminpassword) < 20) {
+    throw new RuntimeException('Synthetic Moodle admin password is unavailable.');
+}
 if (!is_string($testpassword) || strlen($testpassword) < 20) {
     throw new RuntimeException('Synthetic Moodle test password is unavailable.');
 }
+update_internal_user_password($USER, $adminpassword);
 
 function b9_course(string $shortname, string $fullname): stdClass {
     global $DB;
@@ -172,12 +177,24 @@ function b9_submission(stdClass $assignmentrecord, stdClass $course, int $userid
     }
     $fs = get_file_storage();
     $context = context_module::instance($cm->id);
+    $fixture = getenv('MOODLE_B9_SYNTHETIC_FILE') ?: '/usr/local/share/moodle-b9/final.pdf';
+    if (!in_array($fixture, [
+        '/usr/local/share/moodle-b9/final.pdf',
+        '/usr/local/share/moodle-b9/final-v2.pdf',
+    ], true) || !is_file($fixture)) {
+        throw new RuntimeException('Synthetic Moodle PDF fixture is missing.');
+    }
     $area = $fs->get_area_files($context->id, 'assignsubmission_file', 'submission_files', $submission->id, 'id', false);
-    if (!$area) {
-        $fixture = '/usr/local/share/moodle-b9/final.pdf';
-        if (!is_file($fixture)) {
-            throw new RuntimeException('Synthetic Moodle PDF fixture is missing.');
+    $expectedhash = sha1_file($fixture);
+    $needsreplacement = !$area;
+    foreach ($area as $storedfile) {
+        if ($storedfile->get_filename() !== '.' && !hash_equals($expectedhash, $storedfile->get_contenthash())) {
+            $needsreplacement = true;
+            break;
         }
+    }
+    if ($needsreplacement) {
+        $fs->delete_area_files($context->id, 'assignsubmission_file', 'submission_files', $submission->id);
         $fs->create_file_from_pathname([
             'contextid' => $context->id,
             'component' => 'assignsubmission_file',
@@ -198,12 +215,13 @@ function b9_submission(stdClass $assignmentrecord, stdClass $course, int $userid
                 'numfiles' => 1,
             ]);
         }
+        $submission->timemodified = time();
+        $DB->update_record('assign_submission', $submission);
     }
 }
 
-function b9_lti_activity(stdClass $course): bool {
+function b9_lti_activity(stdClass $course, string $name = 'ALIGN B9 LTI Launch Activity'): bool {
     global $DB;
-    $name = 'ALIGN B9 LTI Launch Activity';
     $toolname = 'ALIGN B9 LTI 1.3 Tool';
     $tool = $DB->get_record('lti_types', [
         'course' => SITEID,
@@ -383,8 +401,10 @@ $teacher2 = b9_user('b9teacher2', 'Dosen', 'B9 Dua', 'teacher2@b9.localhost', $t
 $student1 = b9_user('b9student1', 'Mahasiswa', 'B9 Satu', 'student1@b9.localhost', $testpassword);
 $student2 = b9_user('b9student2', 'Mahasiswa', 'B9 Dua', 'student2@b9.localhost', $testpassword);
 $student3 = b9_user('b9student3', 'Mahasiswa', 'B9 Tiga', 'student3@b9.localhost', $testpassword);
+$unbound = b9_user('b9unbound', 'Mahasiswa', 'Tanpa Binding B9', 'unbound@b9.localhost', $testpassword);
+$roleMismatch = b9_user('b9rolemismatch', 'Mahasiswa', 'Role Mismatch B9', 'role-mismatch@b9.localhost', $testpassword);
 $serviceuser = b9_user('alignb9webservice', 'ALIGN B9', 'Read Only', 'lms-service@b9.localhost', $testpassword);
-foreach ([[$course1, $teacher1, 'editingteacher'], [$course1, $student1, 'student'], [$course1, $student2, 'student'], [$course1, $student3, 'student'], [$course1, $serviceuser, 'editingteacher'], [$course2, $teacher2, 'editingteacher'], [$course2, $student3, 'student'], [$course2, $serviceuser, 'editingteacher']] as [$course, $user, $role]) {
+foreach ([[$course1, $teacher1, 'editingteacher'], [$course1, $student1, 'student'], [$course1, $student2, 'student'], [$course1, $student3, 'student'], [$course1, $unbound, 'student'], [$course1, $roleMismatch, 'student'], [$course1, $serviceuser, 'editingteacher'], [$course2, $teacher2, 'editingteacher'], [$course2, $student3, 'student'], [$course2, $serviceuser, 'editingteacher']] as [$course, $user, $role]) {
     b9_enrol($course, $user, $role);
 }
 $group1 = b9_group($course1, 'IF101 Kelompok A', [$student1, $student2]);
@@ -396,12 +416,14 @@ b9_submission($individual1, $course1, (int)$student1->id, 0, 'if101-individu-fin
 b9_submission($team1, $course1, (int)$student1->id, (int)$group1->id, 'if101-kelompok-a-final.pdf');
 b9_submission($individual2, $course2, (int)$student3->id, 0, 'if202-individu-final.pdf');
 $course1LtiSeeded = b9_lti_activity($course1);
+$course1GroupLtiSeeded = b9_lti_activity($course1, 'ALIGN B9 LTI Group Launch Activity');
+$course1UnmappedLtiSeeded = b9_lti_activity($course1, 'ALIGN B9 LTI Unmapped Activity');
 $course2LtiSeeded = b9_lti_activity($course2);
-$ltiActivitiesSeeded = $course1LtiSeeded && $course2LtiSeeded;
+$ltiActivitiesSeeded = $course1LtiSeeded && $course1GroupLtiSeeded && $course1UnmappedLtiSeeded && $course2LtiSeeded;
 b9_readonly_webservice($serviceuser, [$course1, $course2]);
 
 if ($ltiActivitiesSeeded) {
-    echo "Moodle B9 synthetic fixture ensured: 2 courses, 3 students, 2 groups, file assignments, one preconfigured LTI activity per course, and read-only Web Services.\n";
+    echo "Moodle B9 synthetic fixture ensured: 2 courses, synthetic launch identities, 2 groups, file assignments, mapped and unmapped LTI activities, and read-only Web Services.\n";
 } else {
     echo "Moodle B9 synthetic fixture ensured; LTI activities remain unavailable until the site admin registers the ALIGN B9 LTI 1.3 Tool and reruns this seed.\n";
 }

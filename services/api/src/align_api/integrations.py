@@ -36,6 +36,7 @@ from align_api.models import (
     Enrollment,
     FileAsset,
     GroupMembership,
+    IdempotencyRecord,
     LmsCourseAssignmentMapping,
     LmsGroupMapping,
     LmsImportEvent,
@@ -64,6 +65,38 @@ UUIDInput = Annotated[
     UUID,
     BeforeValidator(lambda value: UUID(value) if isinstance(value, str) else value),
 ]
+
+
+def _cached_import_response(
+    db: DbSession, actor_id: UUID, idempotency_key: str, body: ImportRequest
+) -> dict[str, Any] | None:
+    """Return a completed import receipt before contacting Moodle on a retry."""
+    try:
+        UUID(idempotency_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="idempotency key must be a UUID") from exc
+
+    record = db.scalar(
+        select(IdempotencyRecord).where(
+            IdempotencyRecord.actor_id == actor_id,
+            IdempotencyRecord.method == "POST",
+            IdempotencyRecord.route == "/api/v1/integrations/moodle/imports",
+            IdempotencyRecord.key == idempotency_key,
+        )
+    )
+    if record is None:
+        return None
+    expires_at = record.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if expires_at <= datetime.now(UTC):
+        return None
+
+    if record.body_hash != canonical_hash(body.model_dump(mode="json")):
+        raise HTTPException(status_code=409, detail="idempotency key reused with a different request")
+    if record.response_status == 0 or record.response_json is None:
+        raise HTTPException(status_code=409, detail="request with this idempotency key is in progress")
+    return record.response_json
 
 
 class MappingCreate(StrictRequest):
@@ -313,17 +346,28 @@ async def _external_roster(
     matching = [
         group
         for group in member_groups
-        if isinstance(group, dict) and group.get("id") == moodle_group_id
+        if isinstance(group, dict)
+        and group.get("id", group.get("groupid")) == moodle_group_id
     ]
-    if len(matching) != 1 or not isinstance(matching[0].get("users"), list):
+    if len(matching) != 1:
         raise HTTPException(status_code=409, detail="Moodle group roster is unavailable")
     member_ids: list[int] = []
-    for member in matching[0]["users"]:
-        if not isinstance(member, dict) or type(member.get("id")) is not int:
+    raw_users = matching[0].get("users")
+    raw_user_ids = matching[0].get("userids")
+    if isinstance(raw_users, list):
+        for member in raw_users:
+            if not isinstance(member, dict) or type(member.get("id")) is not int:
+                raise MoodleAdapterError("moodle_group_response_invalid")
+            member_ids.append(member["id"])
+    elif isinstance(raw_user_ids, list):
+        if any(type(user_id) is not int for user_id in raw_user_ids):
             raise MoodleAdapterError("moodle_group_response_invalid")
-        if member["id"] not in enrolled_ids:
+        member_ids.extend(raw_user_ids)
+    else:
+        raise HTTPException(status_code=409, detail="Moodle group roster is unavailable")
+    for member_id in member_ids:
+        if member_id not in enrolled_ids:
             raise HTTPException(status_code=409, detail="Moodle group has a non-enrolled member")
-        member_ids.append(member["id"])
     if not member_ids or len(member_ids) != len(set(member_ids)):
         raise HTTPException(status_code=409, detail="Moodle group roster is ambiguous")
     attempt_user_id = attempt.get("userid")
@@ -674,6 +718,9 @@ async def import_attempt(
         or version.state != "published"
     ):
         raise HTTPException(status_code=409, detail="Moodle mapping is no longer active")
+    cached = _cached_import_response(db, identity.user.id, idempotency_key, body)
+    if cached is not None:
+        return cached
     try:
         client, attempts = await _load_current_attempts(settings, platform, mapping)
     except MoodleAdapterError as exc:
@@ -1059,6 +1106,7 @@ async def import_attempt(
         submission.revision += 1
         job_id = _queue_parse_job(db, final_version, assets, settings)
         event = LmsImportEvent(
+            id=uuid4(),
             platform_id=platform.id,
             mapping_id=mapping.id,
             mapping_revision=mapping.revision,

@@ -244,6 +244,11 @@ def current_identity(
                 (LtiCoursePermission.platform_id == LtiPlatform.id)
                 & (LtiCoursePermission.course_id == LmsCourseAssignmentMapping.local_course_id),
             )
+            .join(
+                Enrollment,
+                (Enrollment.course_id == LmsCourseAssignmentMapping.local_course_id)
+                & (Enrollment.user_id == session.user_id),
+            )
             .where(
                 LtiIdentityBinding.id == lti_session.identity_binding_id,
                 LtiIdentityBinding.user_id == session.user_id,
@@ -254,6 +259,7 @@ def current_identity(
                 LmsCourseAssignmentMapping.platform_id == LtiPlatform.id,
                 LmsCourseAssignmentMapping.revision == lti_session.mapping_revision,
                 LtiCoursePermission.active.is_(True),
+                Enrollment.active.is_(True),
             )
         )
         if allowed is None:

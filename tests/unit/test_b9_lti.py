@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from align_api.config import Settings, get_settings
 from align_api.lti import (
+    FLOW_TTL,
     LTI_CLAIM,
     _local_role,
     _parse_login_fields,
@@ -61,6 +62,10 @@ def _setup() -> tuple[Any, Any, dict[str, Any], Any, str]:
     )
     token = jwt.encode(claims, private_key, algorithm="RS256", headers={"kid": "test-key"})
     return private_key, platform, {"keys": [public_jwk]}, flow, token
+
+
+def test_lti_login_flow_ttl_is_five_minutes() -> None:
+    assert FLOW_TTL == timedelta(minutes=5)
 
 
 def test_lti_launch_requires_registered_rsa_claims_and_signed_context() -> None:

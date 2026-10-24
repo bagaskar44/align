@@ -3,16 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def main() -> None:
-    output = Path("fixtures/b9/moodle-final.pdf")
-    output.parent.mkdir(parents=True, exist_ok=True)
+def _build_pdf(label: str) -> bytes:
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     ]
-    stream = b"BT /F1 18 Tf 72 720 Td (Synthetic B9 Moodle submission - test data only.) Tj ET\n"
+    stream = f"BT /F1 18 Tf 72 720 Td ({label}) Tj ET\n".encode("ascii")
     objects.append(b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"endstream")
     document = bytearray(b"%PDF-1.4\n% ALIGN B9 synthetic fixture\n")
     offsets = [0]
@@ -29,8 +27,21 @@ def main() -> None:
     document.extend(
         f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n".encode("ascii")
     )
-    output.write_bytes(document)
-    print(f"Wrote synthetic Moodle PDF fixture to {output} ({len(document)} bytes).")
+    return bytes(document)
+
+
+def main() -> None:
+    output_dir = Path("fixtures/b9")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fixtures = {
+        "moodle-final.pdf": "Synthetic B9 Moodle submission - test data only.",
+        "moodle-final-v2.pdf": "Synthetic B9 changed source version - test data only.",
+    }
+    for filename, label in fixtures.items():
+        output = output_dir / filename
+        document = _build_pdf(label)
+        output.write_bytes(document)
+        print(f"Wrote synthetic Moodle PDF fixture to {output} ({len(document)} bytes).")
 
 
 if __name__ == "__main__":

@@ -17,9 +17,13 @@ RUN echo "${MOODLE_SOURCE_SHA256}  /tmp/moodle-4.5.15.tgz" | sha256sum --check -
 COPY scripts/b9/moodle-entrypoint.sh /usr/local/bin/moodle-b9-entrypoint
 COPY scripts/b9/moodle_proxy_config.php /usr/local/bin/moodle-b9-proxy-config.php
 COPY scripts/b9/seed_moodle.php /usr/local/bin/moodle-b9-seed.php
+COPY scripts/b9/register_moodle_tool.php /usr/local/bin/moodle-b9-register-tool.php
+COPY scripts/b9/describe_moodle_fixtures.php /usr/local/bin/moodle-b9-fixtures.php
 COPY fixtures/b9/moodle-final.pdf /usr/local/share/moodle-b9/final.pdf
+COPY fixtures/b9/moodle-final-v2.pdf /usr/local/share/moodle-b9/final-v2.pdf
 RUN chmod 0755 /usr/local/bin/moodle-b9-entrypoint \
-    && chmod 0644 /usr/local/bin/moodle-b9-proxy-config.php /usr/local/bin/moodle-b9-seed.php
+    && chmod 0644 /usr/local/bin/moodle-b9-proxy-config.php /usr/local/bin/moodle-b9-seed.php \
+        /usr/local/bin/moodle-b9-register-tool.php /usr/local/bin/moodle-b9-fixtures.php
 
 EXPOSE 80
 ENTRYPOINT ["/usr/local/bin/moodle-b9-entrypoint"]

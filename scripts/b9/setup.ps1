@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $privateDir = Join-Path $repoRoot 'data\b9\private'
 New-Item -ItemType Directory -Path $privateDir -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $repoRoot 'data\b9\qa') -Force | Out-Null
 
 function New-RandomSecret([int]$ByteCount = 32) {
     $bytes = New-Object byte[] $ByteCount
@@ -26,6 +27,19 @@ function Get-OrCreateSecret([string]$Name, [int]$ByteCount = 32) {
     }
     $secret = New-RandomSecret $ByteCount
     [System.IO.File]::WriteAllText($path, $secret + "`n", [System.Text.UTF8Encoding]::new($false))
+    return $secret
+}
+
+function Get-OrCreateMoodlePassword([string]$Name) {
+    $path = Join-Path $privateDir $Name
+    if (Test-Path -LiteralPath $path) {
+        $existing = (Get-Content -LiteralPath $path -Raw).Trim()
+        if ($existing -match '^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{20,}$') {
+            return $existing
+        }
+    }
+    $secret = 'B9-' + (New-RandomSecret 32) + 'xA1!'
+    Write-PrivateText $Name ($secret + "`n")
     return $secret
 }
 
@@ -66,8 +80,8 @@ $operatorDbPassword = Get-OrCreateSecret 'operator-db-password.txt'
 $csrfSecret = Get-OrCreateSecret 'csrf-secret.txt'
 $storageSecret = Get-OrCreateSecret 'storage-secret.txt'
 $seedPassword = Get-OrCreateSecret 'align-seed-password.txt'
-$moodleAdminPassword = Get-OrCreateSecret 'moodle-admin-password.txt'
-$moodleTestPassword = Get-OrCreateSecret 'moodle-test-password.txt'
+$moodleAdminPassword = Get-OrCreateMoodlePassword 'moodle-admin-password.txt'
+$moodleTestPassword = Get-OrCreateMoodlePassword 'moodle-test-password.txt'
 $python = Join-Path $repoRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $python)) {
     throw 'B9 setup needs the repository Python environment (.venv).'

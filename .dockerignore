@@ -22,4 +22,7 @@ __pycache__
 .codex-tools
 .corepack-cache
 research/iterations/**
+data/b9/private
+data/b9/qa
+data/b9/artifacts
 
